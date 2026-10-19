@@ -143,6 +143,77 @@ Use the wipe command whenever you change table structures during early developme
 | Connection refused on startup     | The database is still starting; wait a few seconds and check `docker compose ps`                               |
 | PowerShell blocks venv activation | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once                                                 |
 
+## LLM Providers
+
+Shorts Studio includes a small, swappable LLM layer in `app/llm/` supporting **Mock** (default, zero cost), **Google Gemini**, and **OpenAI**. You can switch providers globally or configure task-specific overrides purely using `.env`.
+
+### 1. Global Configuration
+
+In your `.env` file, choose a global provider and optional model:
+
+```bash
+# Provider choices: mock | gemini | openai
+LLM_PROVIDER=mock
+
+# Gemini settings
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_THINKING_LEVEL=minimal  # minimal | low | medium | high
+
+# OpenAI settings
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+# OPENAI_REASONING_EFFORT=low  # for reasoning models like o1 or o3-mini
+```
+
+### 2. Per-Task Overrides
+
+Route specific pipeline tasks (`script`, `storyboard`, `metadata`, `factcheck`) to different providers or models without changing code:
+
+```bash
+# Example: Keep everything on mock, but run script generation on OpenAI:
+LLM_PROVIDER_SCRIPT=openai
+LLM_MODEL_SCRIPT=gpt-4o
+
+# Example: Run storyboard scene generation on Gemini:
+LLM_PROVIDER_STORYBOARD=gemini
+LLM_MODEL_STORYBOARD=gemini-2.5-flash
+```
+
+If an override is omitted, it automatically falls back to `LLM_PROVIDER`.
+
+### 3. Testing and Inspecting Routing
+
+Use `scripts/try_llm.py` to inspect active routes and test models:
+
+```bash
+# 1. View active routing table (Task -> Provider -> Model)
+python scripts/try_llm.py --show-routing
+
+# 2. Test Mock provider (no API key needed)
+python scripts/try_llm.py --provider mock --prompt "Write a short hook about space"
+
+# 3. Test Gemini provider
+python scripts/try_llm.py --provider gemini --prompt "Write a short hook about space"
+
+# 4. Test OpenAI provider
+python scripts/try_llm.py --provider openai --prompt "Write a short hook about space"
+
+# 5. Test task routing (uses .env overrides or defaults)
+python scripts/try_llm.py --task script --prompt "Hook on black holes"
+
+# 6. Test structured output validation
+python scripts/try_llm.py --provider mock --structured
+```
+
+### 4. Running Unit Tests
+
+Run the test suite (requires no network or API keys):
+
+```bash
+pytest tests/test_llm.py -v
+```
+
 ## Roadmap
 
 - [ ] Make the `script` step real (LLM) with structured output
