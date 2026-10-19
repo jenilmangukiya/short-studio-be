@@ -1,0 +1,156 @@
+# Shorts Studio
+
+A backend for automating short-form video creation (YouTube Shorts / Instagram Reels).
+
+A user registers, adds channels, and creates videos inside a channel by giving a topic and description. Each video moves through a pipeline of steps: **script → storyboard → images → voiceover → render**. During development you run the pipeline one step at a time by pressing "next", so you don't burn AI credits. Any step can be redone with a revision prompt.
+
+> **Status:** backend only. The step handlers are mocks (no real AI calls yet). The only UI is the auto-generated API page at `/docs`.
+
+## Tech stack
+
+- **FastAPI**: the API
+- **PostgreSQL 16** (in Docker): the database
+- **SQLAlchemy 2.0**: database models
+- **JWT + argon2**: login and password hashing
+
+## Project structure
+
+```
+shorts-studio/
+├── docker-compose.yml     # Postgres database
+├── requirements.txt       # Python packages
+├── .env                   # your local settings (not committed)
+├── .env.example           # template for .env
+└── app/
+    ├── main.py            # app entry point, creates tables on startup
+    ├── config.py          # reads settings from .env
+    ├── db.py              # database connection and session
+    ├── models.py          # tables: users, channels, videos, video_steps
+    ├── schemas.py         # request/response shapes
+    ├── security.py        # password hashing, JWT tokens
+    ├── deps.py            # login check, ownership checks
+    ├── pipeline.py        # step engine + mock handlers (plug real AI in here)
+    └── routers/
+        ├── auth.py        # register, login, me
+        ├── channels.py    # channel CRUD
+        └── videos.py      # videos + step controls
+```
+
+## Prerequisites
+
+- Python 3.10+
+- Docker Desktop (must be running)
+
+## First-time setup (do once)
+
+Run all commands from the project root (the folder containing `docker-compose.yml`).
+
+```bash
+# 1. Start the database
+docker compose up -d
+
+# 2. Create the virtual environment
+python -m venv .venv
+
+# 3. Activate it (see "Daily startup" below for your OS)
+
+# 4. Install packages
+pip install -r requirements.txt
+
+# 5. Create your settings file
+#    Windows:      copy .env.example .env
+#    Mac/Linux:    cp .env.example .env
+#    Then edit .env and set SECRET_KEY to a long random value:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+## Daily startup
+
+**1. Start the database** (skip if Docker already shows it running):
+
+```bash
+docker compose start
+```
+
+**2. Activate the virtual environment:**
+
+| OS                 | Command                      |
+| ------------------ | ---------------------------- |
+| Windows PowerShell | `.venv\Scripts\Activate.ps1` |
+| Windows cmd        | `.venv\Scripts\activate.bat` |
+| Mac / Linux        | `source .venv/bin/activate`  |
+
+**3. Run the API:**
+
+```bash
+uvicorn app.main:app --reload
+```
+
+**4. Open the docs:** http://localhost:8000/docs
+
+## Daily shutdown
+
+```bash
+# Stop the API: press Ctrl+C in its terminal, then:
+docker compose stop
+```
+
+## Using the API
+
+In `/docs`:
+
+1. `POST /auth/register`, then click **Authorize** (username = your email) to log in
+2. `POST /channels` to add a channel
+3. `POST /channels/{id}/videos` with a topic and description
+4. `POST /videos/{id}/start` creates the 5 pending steps (nothing runs yet)
+5. `POST /videos/{id}/next` runs **one** step. Check progress with `GET /videos/{id}`. Repeat until `completed`.
+6. `POST /videos/{id}/run-all` runs all remaining steps at once
+7. `POST /videos/{id}/steps/{name}/rerun` with `{"prompt": "..."}` redoes a step; later steps become `stale`
+8. `GET /videos/{id}/download` gets the final output
+
+Step statuses: `pending`, `running`, `done`, `failed`, `stale`.
+
+## Useful commands
+
+```bash
+# Check the database container
+docker compose ps
+
+# List tables
+docker compose exec db psql -U studio -d studio -c "\dt"
+
+# Query data (example)
+docker compose exec db psql -U studio -d studio -c "select email from users;"
+
+# View database logs
+docker compose logs db
+
+# WIPE the database (deletes all data) and start fresh
+docker compose down -v
+docker compose up -d
+```
+
+Use the wipe command whenever you change table structures during early development. Tables are created automatically on startup, but existing tables are never altered. Switch to Alembic migrations before you store data you care about.
+
+## Troubleshooting
+
+| Problem                           | Fix                                                                                                            |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Can't connect to Docker daemon    | Open Docker Desktop and wait until it has started                                                              |
+| Port 5432 already in use          | Change `5432:5432` to `5433:5432` in `docker-compose.yml` and use `localhost:5433` in `DATABASE_URL` in `.env` |
+| `uvicorn: command not found`      | The virtual environment isn't activated                                                                        |
+| `No module named 'app'`           | You're in the wrong folder; `cd` to the project root                                                           |
+| Connection refused on startup     | The database is still starting; wait a few seconds and check `docker compose ps`                               |
+| PowerShell blocks venv activation | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once                                                 |
+
+## Roadmap
+
+- [ ] Make the `script` step real (LLM) with structured output
+- [ ] Make the `storyboard` step real (scenes with timing and image prompts)
+- [ ] Mock/real switch per step plus a daily AI-call cap
+- [ ] Per-step approval (`awaiting_approval` status) and version history
+- [ ] Real images, voiceover, captions, music, and FFmpeg render
+- [ ] Alembic migrations
+- [ ] Background worker queue (RQ or Dramatiq) instead of in-process tasks
+- [ ] Frontend (Next.js or Streamlit)
+- [ ] Publishing to YouTube and Instagram
