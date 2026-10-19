@@ -7,6 +7,7 @@ from .exceptions import (
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
+    LLMTruncatedError,
 )
 from .router import (
     ALLOWED_TASKS,
@@ -25,6 +26,7 @@ __all__ = [
     "LLMRateLimitError",
     "LLMTimeoutError",
     "LLMProviderError",
+    "LLMTruncatedError",
     "ALLOWED_TASKS",
     "get_llm",
     "create_llm_instance",

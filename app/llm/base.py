@@ -12,6 +12,7 @@ from .exceptions import (
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
+    LLMTruncatedError,
 )
 from .types import LLMResult
 
@@ -38,6 +39,14 @@ class BaseLLM(ABC):
     def provider_name(self) -> str:
         """The identifier of this provider (e.g. 'mock', 'gemini', 'openai')."""
         pass
+
+    def _check_truncation(self, finish: str | None) -> None:
+        """Raise LLMTruncatedError if the model finish reason indicates truncation."""
+        if finish and finish.upper() in ("MAX_TOKENS", "LENGTH"):
+            raise LLMTruncatedError(
+                f"{self.provider_name} output hit the token limit and was cut off (finish_reason: '{finish}'). "
+                f"Consider raising LLM_MAX_OUTPUT_TOKENS (currently set to {self.max_output_tokens})."
+            )
 
     @abstractmethod
     def _execute_text(self, prompt: str, system_prompt: str | None) -> tuple[str, int, int, int | None, str | None]:
@@ -74,6 +83,8 @@ class BaseLLM(ABC):
         output, in_tokens, out_tokens, think_tokens, finish = self._execute_text(prompt, system_prompt)
         latency = time.perf_counter() - start
 
+        self._check_truncation(finish)
+
         return LLMResult(
             output=output,
             provider=self.provider_name,
@@ -104,6 +115,8 @@ class BaseLLM(ABC):
         raw, in_tokens, out_tokens, think_tokens, finish = self._execute_structured(
             prompt, response_model, system_prompt
         )
+        self._check_truncation(finish)
+
         validated, err = self._validate_model(raw, response_model)
 
         if validated is not None:
@@ -130,6 +143,7 @@ class BaseLLM(ABC):
         raw_retry, in_tokens_2, out_tokens_2, think_tokens_2, finish_2 = self._execute_structured(
             retry_prompt, response_model, system_prompt
         )
+        self._check_truncation(finish_2)
         validated_retry, err_retry = self._validate_model(raw_retry, response_model)
 
         total_in = in_tokens + in_tokens_2

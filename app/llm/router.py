@@ -48,8 +48,18 @@ def resolve_task_routing(task: str) -> tuple[str, str]:
     if not model or not model.strip():
         if provider == "gemini":
             model = settings.gemini_model
+            if not model or not model.strip():
+                raise LLMConfigError(
+                    f"No model configured for Gemini on task '{clean_task}'. "
+                    f"Set GEMINI_MODEL or LLM_MODEL_{clean_task.upper()} in your environment."
+                )
         elif provider == "openai":
             model = settings.openai_model
+            if not model or not model.strip():
+                raise LLMConfigError(
+                    f"No model configured for OpenAI on task '{clean_task}'. "
+                    f"Set OPENAI_MODEL or LLM_MODEL_{clean_task.upper()} in your environment."
+                )
         elif provider == "mock":
             model = "mock-model"
         else:
@@ -90,8 +100,13 @@ def create_llm_instance(provider: str, model: str | None = None) -> BaseLLM:
         )
 
     if clean_provider == "gemini":
+        resolved_model = model or settings.gemini_model
+        if not resolved_model or not resolved_model.strip():
+            raise LLMConfigError(
+                "Missing Gemini model configuration. Set GEMINI_MODEL in your environment."
+            )
         return GeminiLLM(
-            model=model or settings.gemini_model,
+            model=resolved_model.strip(),
             api_key=settings.gemini_api_key,
             thinking_level=settings.gemini_thinking_level,
             timeout_seconds=settings.llm_timeout_seconds,
@@ -100,8 +115,13 @@ def create_llm_instance(provider: str, model: str | None = None) -> BaseLLM:
         )
 
     if clean_provider == "openai":
+        resolved_model = model or settings.openai_model
+        if not resolved_model or not resolved_model.strip():
+            raise LLMConfigError(
+                "Missing OpenAI model configuration. Set OPENAI_MODEL in your environment."
+            )
         return OpenAILLM(
-            model=model or settings.openai_model,
+            model=resolved_model.strip(),
             api_key=settings.openai_api_key,
             reasoning_effort=settings.openai_reasoning_effort,
             timeout_seconds=settings.llm_timeout_seconds,

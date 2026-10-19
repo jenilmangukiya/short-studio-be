@@ -19,3 +19,8 @@ class LLMTimeoutError(LLMError):
 
 class LLMProviderError(LLMError):
     """Raised when an LLM provider fails (e.g. server error, validation failure after retry)."""
+
+
+class LLMTruncatedError(LLMProviderError):
+    """Raised when model generation is cut off due to reaching the maximum token limit."""
+

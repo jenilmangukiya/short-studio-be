@@ -16,12 +16,12 @@ class Settings(BaseSettings):
 
     # Gemini settings
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_thinking_level: str = "minimal"  # minimal | low | medium | high
+    gemini_model: str | None = None
+    gemini_thinking_level: str = "low"  # low | medium | high
 
     # OpenAI settings
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str | None = None
     openai_reasoning_effort: str | None = None  # low | medium | high (if model supports it)
 
     # Optional per-task overrides (task: script, storyboard, metadata, factcheck)

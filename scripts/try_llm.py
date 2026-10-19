@@ -14,6 +14,7 @@ from app.llm import (
     ALLOWED_TASKS,
     LLMConfigError,
     LLMError,
+    LLMTruncatedError,
     create_llm_instance,
     get_llm,
     get_routing_table,
@@ -105,6 +106,16 @@ def main():
         action="store_true",
         help="Test structured output using a sample Pydantic model.",
     )
+    parser.add_argument(
+        "--raw-usage",
+        action="store_true",
+        help="Print raw SDK response usage metadata and thinking level sent.",
+    )
+    parser.add_argument(
+        "--thinking-level",
+        choices=["low", "medium", "high"],
+        help="Override thinking level for Gemini directly.",
+    )
 
     args = parser.parse_args()
 
@@ -130,6 +141,18 @@ def main():
             llm = create_llm_instance(provider=args.provider, model=args.model)
             task_name = None
 
+        if args.thinking_level and hasattr(llm, "thinking_level"):
+            llm.thinking_level = args.thinking_level
+
+        captured = {}
+        if args.raw_usage and hasattr(llm, "_call_with_retry"):
+            orig_call = llm._call_with_retry
+            def intercept(action_desc, func):
+                resp = orig_call(action_desc, func)
+                captured["raw_response"] = resp
+                return resp
+            llm._call_with_retry = intercept
+
         if args.structured:
             result = llm.generate_structured(
                 prompt=args.prompt,
@@ -146,8 +169,28 @@ def main():
 
         print_result(result)
 
+        if args.raw_usage:
+            print("=" * 60)
+            print("Raw Usage Metadata & Thinking Config")
+            print("=" * 60)
+            sent_level = getattr(llm, "thinking_level", "N/A")
+            print(f"Thinking Level Sent: {sent_level}")
+            raw_resp = captured.get("raw_response")
+            if raw_resp and hasattr(raw_resp, "usage_metadata") and raw_resp.usage_metadata:
+                um = raw_resp.usage_metadata
+                fields = getattr(type(um), "model_fields", {}).keys()
+                for field in fields:
+                    val = getattr(um, field, None)
+                    print(f"  {field}: {val}")
+            else:
+                print("  usage_metadata: None or not available")
+            print("=" * 60 + "\n")
+
     except LLMConfigError as exc:
         print(f"\n[Configuration Error] {exc}\n", file=sys.stderr)
+        sys.exit(1)
+    except LLMTruncatedError as exc:
+        print(f"\n[Truncation Error] {exc}\n", file=sys.stderr)
         sys.exit(1)
     except LLMError as exc:
         print(f"\n[LLM Error] {exc}\n", file=sys.stderr)
