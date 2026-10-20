@@ -1,6 +1,6 @@
 """Mock LLM provider for local development and testing with zero AI cost."""
 
-from typing import Any, Type, TypeVar, get_args, get_origin
+from typing import Any, Literal, Type, TypeVar, get_args, get_origin
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
@@ -36,6 +36,8 @@ def _build_mock_instance(model_cls: Type[T]) -> T:
                 data[name] = [f"mock_{name}_item"]
         elif origin is dict:
             data[name] = {}
+        elif origin is Literal:
+            data[name] = args[0] if args else f"mock_{name}"
         elif hasattr(annotation, "model_fields"):
             data[name] = _build_mock_instance(annotation)
         elif annotation is int:

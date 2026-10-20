@@ -29,15 +29,12 @@ def _dir(video: Video) -> Path:
     return p
 
 
-# ---------- mock handlers ----------
+from .steps.script import generate_script_step
+
+
+# ---------- handlers ----------
 def h_script(video, prev, step):
-    note = f" | revision note: {step.user_prompt}" if step.user_prompt else ""
-    return {
-        "mock": True,
-        "title": video.topic[:90],
-        "hook": f"Did you know? {video.topic}",
-        "script": f"[MOCK SCRIPT] {video.topic}. {video.description or ''}{note}",
-    }
+    return generate_script_step(video, prev, step)
 
 
 def h_storyboard(video, prev, step):

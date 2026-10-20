@@ -215,15 +215,49 @@ python scripts/try_llm.py --provider mock --structured
 
 ### 4. Running Unit Tests
 
-Run the test suite (requires no network or API keys):
+Run the full test suite (requires no network or API keys):
 
 ```bash
-pytest tests/test_llm.py -v
+pytest tests/ -v
+```
+
+## Script Step
+
+The `script` step in Shorts Studio is powered by the LLM layer (`app/steps/script.py` called from `app/pipeline.py`).
+
+### How It Works
+
+1. **Context & Recent Angles**: When executing for a video, it looks up the video topic, description, channel niche, and queries the latest 8 completed angles from the channel's previous scripts to avoid repetition.
+2. **Writing Rules & Versioning**: Loads writing rules from [app/prompts/script.md](file:///Users/jenilmangukiya/projects/shorts-studio/app/prompts/script.md). It extracts the version tag (e.g., `script-v1`) and computes a short content hash (e.g. `script-v1:3e8c5809`) stored in execution metadata.
+3. **Structured Output**: Uses `get_llm(task="script")` with the `ScriptOutput` Pydantic model (`title`, `hook`, `narration`, `angle`, `claims_to_verify`, `hashtags`).
+4. **Code-Side Soft Checks & Retry**: Validates 110-150 words narration, <=15 words hook, hook-at-start, no markdown/brackets/emojis, 1-6 claims, 3-5 tags. In real provider modes, retries once with feedback if soft checks fail; warnings are attached to the output without blocking the pipeline.
+5. **Revision Mode**: When `step.user_prompt` is provided (e.g. via `POST /videos/{id}/steps/script/rerun`), it feeds the previous script from `step.output["script"]` and asks the model to modify only what was requested.
+
+### Editing Writing Rules
+
+To tune narration style, pacing, banned openers, or audience tone, edit [app/prompts/script.md](file:///Users/jenilmangukiya/projects/shorts-studio/app/prompts/script.md) directly. Changes take effect on the next script generation without restarting the app or touching Python code.
+
+### Testing Without Database: `try_script.py`
+
+Use `scripts/try_script.py` to test prompts and inspect outputs locally without touching the database:
+
+```bash
+# 1. Test script generation with mock provider
+python scripts/try_script.py --topic "Why airplane windows have tiny holes" --provider mock
+
+# 2. Test with active LLM provider (routed via .env or CLI override)
+python scripts/try_script.py --topic "Why airplane windows have tiny holes"
+
+# 3. Test revision mode
+python scripts/try_script.py --topic "Zipper teeth" --revise "Make the opening hook punchier" --prev-script path/to/script.json
+
+# 4. View raw JSON output
+python scripts/try_script.py --topic "How undersea cables work" --provider mock --json
 ```
 
 ## Roadmap
 
-- [ ] Make the `script` step real (LLM) with structured output
+- [x] Make the `script` step real (LLM) with structured output
 - [ ] Make the `storyboard` step real (scenes with timing and image prompts)
 - [ ] Mock/real switch per step plus a daily AI-call cap
 - [ ] Per-step approval (`awaiting_approval` status) and version history
@@ -232,3 +266,4 @@ pytest tests/test_llm.py -v
 - [ ] Background worker queue (RQ or Dramatiq) instead of in-process tasks
 - [ ] Frontend (Next.js or Streamlit)
 - [ ] Publishing to YouTube and Instagram
+
