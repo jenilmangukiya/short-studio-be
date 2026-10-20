@@ -25,7 +25,7 @@ class SampleStructuredOutput(BaseModel):
     """Demo Pydantic model for testing structured output."""
     title: str = Field(description="Short video title")
     hook: str = Field(description="Attention-grabbing opening hook")
-    talking_points: list[str] = Field(description="Key bullet points for the video")
+    hashtags: list[str] = Field(description="Two hashtags for the video")
 
 
 def print_routing_table():
@@ -173,8 +173,10 @@ def main():
             print("=" * 60)
             print("Raw Usage Metadata & Thinking Config")
             print("=" * 60)
-            sent_level = getattr(llm, "thinking_level", "N/A")
-            print(f"Thinking Level Sent: {sent_level}")
+            if hasattr(llm, "thinking_level"):
+                print(f"Thinking Level Sent: {llm.thinking_level}")
+            if hasattr(llm, "reasoning_effort"):
+                print(f"Reasoning Effort Sent: {llm.reasoning_effort or 'default'}")
             raw_resp = captured.get("raw_response")
             if raw_resp and hasattr(raw_resp, "usage_metadata") and raw_resp.usage_metadata:
                 um = raw_resp.usage_metadata
@@ -182,8 +184,21 @@ def main():
                 for field in fields:
                     val = getattr(um, field, None)
                     print(f"  {field}: {val}")
+            elif raw_resp and hasattr(raw_resp, "usage") and raw_resp.usage:
+                u = raw_resp.usage
+                print(f"  prompt_tokens: {u.prompt_tokens}")
+                print(f"  completion_tokens: {u.completion_tokens}")
+                print(f"  total_tokens: {u.total_tokens}")
+                details = getattr(u, "completion_tokens_details", None)
+                if details:
+                    print(f"  completion_tokens_details.reasoning_tokens: {getattr(details, 'reasoning_tokens', None)}")
+                    print(f"  completion_tokens_details.accepted_prediction_tokens: {getattr(details, 'accepted_prediction_tokens', None)}")
+                    print(f"  completion_tokens_details.rejected_prediction_tokens: {getattr(details, 'rejected_prediction_tokens', None)}")
+                prompt_details = getattr(u, "prompt_tokens_details", None)
+                if prompt_details:
+                    print(f"  prompt_tokens_details.cached_tokens: {getattr(prompt_details, 'cached_tokens', None)}")
             else:
-                print("  usage_metadata: None or not available")
+                print("  usage_metadata / usage: None or not available")
             print("=" * 60 + "\n")
 
     except LLMConfigError as exc:

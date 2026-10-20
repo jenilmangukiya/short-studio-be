@@ -154,6 +154,10 @@ In your `.env` file, choose a global provider and optional model:
 ```bash
 # Provider choices: mock | gemini | openai
 LLM_PROVIDER=mock
+LLM_TIMEOUT_SECONDS=30.0
+LLM_MAX_OUTPUT_TOKENS=4096
+# Note: LLM_TEMPERATURE affects Gemini only (OpenAI provider omits temperature)
+LLM_TEMPERATURE=0.7
 
 # Gemini settings
 GEMINI_API_KEY=your_gemini_api_key
@@ -162,8 +166,11 @@ GEMINI_THINKING_LEVEL=minimal  # minimal | low | medium | high
 
 # OpenAI settings
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o-mini
-# OPENAI_REASONING_EFFORT=low  # for reasoning models like o1 or o3-mini
+OPENAI_MODEL=gpt-6-luna
+# Reasoning effort for OpenAI reasoning models.
+# For gpt-6-luna, supported values are: none, low, medium, high, xhigh ("minimal" is rejected by the API).
+# Recommended starting value: low
+OPENAI_REASONING_EFFORT=low
 ```
 
 ### 2. Per-Task Overrides

@@ -58,18 +58,14 @@ class OpenAILLM(BaseLLM):
                 raise LLMConfigError(f"Failed to initialize OpenAI client: {exc}") from None
         return self._client
 
-    def _build_kwargs(self, is_reasoning_model: bool = False) -> dict[str, Any]:
+    def _build_kwargs(self) -> dict[str, Any]:
         """Construct common arguments for OpenAI chat completions."""
         kwargs: dict[str, Any] = {
             "max_completion_tokens": self.max_output_tokens,
         }
 
-        # Reasoning models (like o1, o3-mini) do not accept temperature, but support reasoning_effort
-        if self.reasoning_effort or is_reasoning_model:
-            if self.reasoning_effort:
-                kwargs["reasoning_effort"] = self.reasoning_effort
-        else:
-            kwargs["temperature"] = self.temperature
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
 
         return kwargs
 
@@ -140,8 +136,7 @@ class OpenAILLM(BaseLLM):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        is_o_model = self.model.startswith("o1") or self.model.startswith("o3")
-        kwargs = self._build_kwargs(is_reasoning_model=is_o_model)
+        kwargs = self._build_kwargs()
 
         completion = self._call_with_retry(
             "generate text",
@@ -166,8 +161,7 @@ class OpenAILLM(BaseLLM):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        is_o_model = self.model.startswith("o1") or self.model.startswith("o3")
-        kwargs = self._build_kwargs(is_reasoning_model=is_o_model)
+        kwargs = self._build_kwargs()
 
         completion = self._call_with_retry(
             f"generate structured {response_model.__name__}",

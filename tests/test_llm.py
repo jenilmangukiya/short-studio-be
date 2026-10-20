@@ -243,3 +243,52 @@ def test_mock_works_with_no_model_set(monkeypatch):
     instantiated_llm = MockLLM()
     assert instantiated_llm.model == "mock-model"
 
+
+def test_openai_kwargs_construction():
+    """Test network-free request parameter construction for OpenAI models:
+    - temperature is never present across any model
+    - max_completion_tokens is always present
+    - reasoning_effort appears only when configured
+    """
+    # 1. gpt-6-luna
+    luna = OpenAILLM(model="gpt-6-luna", api_key="dummy-key", max_output_tokens=2048, temperature=0.7)
+    kwargs_luna = luna._build_kwargs()
+    assert kwargs_luna["max_completion_tokens"] == 2048
+    assert "temperature" not in kwargs_luna
+    assert "reasoning_effort" not in kwargs_luna
+
+    # 1b. gpt-6-luna with reasoning_effort configured
+    luna_with_effort = OpenAILLM(model="gpt-6-luna", api_key="dummy-key", reasoning_effort="low")
+    kwargs_luna_effort = luna_with_effort._build_kwargs()
+    assert kwargs_luna_effort["max_completion_tokens"] == 4096
+    assert kwargs_luna_effort["reasoning_effort"] == "low"
+    assert "temperature" not in kwargs_luna_effort
+
+    # 2. gpt-5.6-terra without reasoning_effort
+    terra = OpenAILLM(model="gpt-5.6-terra", api_key="dummy-key", max_output_tokens=4096, temperature=0.7)
+    kwargs_terra = terra._build_kwargs()
+    assert kwargs_terra["max_completion_tokens"] == 4096
+    assert "temperature" not in kwargs_terra
+    assert "reasoning_effort" not in kwargs_terra
+
+    # 2b. gpt-5.6-terra with reasoning_effort configured
+    terra_with_effort = OpenAILLM(model="gpt-5.6-terra", api_key="dummy-key", reasoning_effort="medium")
+    kwargs_terra_effort = terra_with_effort._build_kwargs()
+    assert kwargs_terra_effort["max_completion_tokens"] == 4096
+    assert kwargs_terra_effort["reasoning_effort"] == "medium"
+    assert "temperature" not in kwargs_terra_effort
+
+    # 3. gpt-4.1-mini (non-reasoning name)
+    mini = OpenAILLM(model="gpt-4.1-mini", api_key="dummy-key", temperature=0.5, max_output_tokens=1000)
+    kwargs_mini = mini._build_kwargs()
+    assert kwargs_mini["max_completion_tokens"] == 1000
+    assert "temperature" not in kwargs_mini
+    assert "reasoning_effort" not in kwargs_mini
+
+    # 3b. gpt-4.1-mini with reasoning_effort configured
+    mini_with_effort = OpenAILLM(model="gpt-4.1-mini", api_key="dummy-key", reasoning_effort="high")
+    kwargs_mini_effort = mini_with_effort._build_kwargs()
+    assert kwargs_mini_effort["max_completion_tokens"] == 4096
+    assert kwargs_mini_effort["reasoning_effort"] == "high"
+    assert "temperature" not in kwargs_mini_effort
+
