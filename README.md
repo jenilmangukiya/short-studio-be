@@ -257,17 +257,29 @@ python scripts/try_script.py --topic "How undersea cables work" --provider mock 
 
 ## Storyboard Step
 
-The `storyboard` step in Shorts Studio converts the generated script into 8–12 consecutive visual scenes with framing instructions, estimated speech timing, and subject-focused image prompts (`app/steps/storyboard.py` called from `app/pipeline.py`).
+The `storyboard` step in Shorts Studio converts the generated script into 8–12 consecutive visual scenes with framing instructions, estimated speech timing, a recurring subject anchor, and code-assembled final image prompts (`app/steps/storyboard.py` called from `app/pipeline.py`).
 
 ### How It Works
 
 1. **Input Script & Preconditions**: Reads the script output from `prev["script"]["script"]`. If the script step is not completed, it raises a clean `PipelineError`.
-2. **Visual Style Resolution**: Checks the channel's `settings["visual_style"]`. If set to a non-empty string, it uses that style and tags `style_source: "channel"`. Otherwise, it falls back to `app/prompts/default_visual_style.txt` and tags `style_source: "default"`. The visual style is never written by the model; it is attached by the code.
-3. **Structured Scene Splitting**: Uses `get_llm(task="storyboard")` with `StoryboardLLMOutput`. Each scene contains `narration`, `image_prompt` (subject and action only, no style or text), and `shot_type` (from `close-up`, `macro`, `wide`, `top-down`, `cutaway`, `cross-section`, `in-context`).
-4. **Code-Side Calculations**: The code computes 1-based scene `index`, `est_seconds` (`words / 2.5`), and total video duration `total_seconds`.
-5. **Code-Side Soft Checks & Retry**: Validates that joined scene narrations reproduce the script narration verbatim (reporting exact divergence points on mismatch), enforces 8–12 scenes, 2–7s scene durations, max 300 character prompts with whole-word checks against forbidden words (`text`, `logo`, `caption`, etc.), and ensures no consecutive identical shot types. Retries once with feedback on non-mock providers.
-6. **Deterministic Mock Mode**: When `LLM_PROVIDER_STORYBOARD=mock` (or default `mock`), it uses a deterministic local splitter that divides the script along sentence/clause boundaries with rotating shot types and clean placeholder prompts, ensuring zero AI cost and valid tests.
-7. **Revision Mode**: When `step.user_prompt` is provided (e.g., via `POST /videos/{id}/steps/storyboard/rerun`), it feeds the previous storyboard JSON from `step.output["storyboard"]` into the prompt, instructing the model to revise only what was requested while preserving verbatim narration.
+2. **Visual Style Resolution**: Checks the channel's `settings["visual_style"]`. If set to a non-empty string, it uses that style and tags `style_source: "channel"`. Otherwise, it falls back to `app/prompts/default_visual_style.txt` and tags `style_source: "default"`. Note: visual style owns only the look and aesthetic (e.g. materials, lighting, depth of field); framing and aspect ratio are owned strictly by code.
+3. **Structured Scene Splitting & Subject Anchor**: Uses `get_llm(task="storyboard")` with `StoryboardLLMOutput`:
+   - `subject_anchor`: 1–2 plain sentences describing the video's main recurring hero object(s) concretely (shape, colors, materials, size cues; no style words, text, logos, or real people).
+   - Per-scene `uses_anchor`: boolean flag marked `true` only if that scene's image depicts the anchor object. In scenes where `uses_anchor` is `true`, the model's `image_prompt` describes only the action, state, angle, and surroundings to avoid contradictions with the anchor.
+   - Each scene also contains `narration`, `image_prompt`, and `shot_type` (from `close-up`, `macro`, `wide`, `top-down`, `cutaway`, `cross-section`, `in-context`).
+4. **Code-Side Final Prompt Assembly (`app/steps/prompt_compose.py`)**:
+   - The code defines a single prompt composition function `compose_final_prompt(scene, subject_anchor, visual_style)`.
+   - Assembly order:
+     1. Scene `image_prompt`
+     2. `subject_anchor` (only included if `uses_anchor` is `true` and anchor is non-empty)
+     3. Resolved `visual_style`
+     4. Fixed `COMPOSITION_RULES`: `"Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."`
+   - Joins cleanly with single spaces and no duplicate punctuation. The code writes `final_prompt`; the model never does.
+   - **Convenience Snapshot vs Image Generation**: The `final_prompt` written into storyboard storage is a convenience snapshot. The downstream `images` step must call `compose_final_prompt` (or `recompute_final_prompts`) itself at generation time rather than blindly trusting the stored value.
+5. **Code-Side Calculations**: The code computes 1-based scene `index`, `est_seconds` (`words / 2.5`), total video duration `total_seconds`, and assembles `final_prompt` for each scene.
+6. **Code-Side Soft Checks & Retry**: Validates that joined scene narrations reproduce the script narration verbatim, enforces 8–12 scenes, 2–7s scene durations, max 300 character `image_prompt`s with whole-word checks against forbidden words (`text`, `logo`, `caption`, etc.), subject anchor validity (<=250 chars, <=2 sentences, forbidden words check), at least one scene with `uses_anchor=True`, and each `final_prompt` non-empty and within `MAX_FINAL_PROMPT_LENGTH` (1000 chars in `app/steps/prompt_compose.py`). Retries once with feedback on non-mock providers.
+7. **Deterministic Mock Mode**: When `LLM_PROVIDER_STORYBOARD=mock` (or default `mock`), it uses a deterministic local splitter that divides the script along sentence/clause boundaries with rotating shot types, clean placeholder prompts, a deterministic placeholder anchor (`"A small glossy blue cube with rounded edges."`), and sets `uses_anchor` false for scenes 2 and 5 (true for all others).
+8. **Revision Mode**: When `step.user_prompt` is provided (e.g., via `POST /videos/{id}/steps/storyboard/rerun`), it feeds the previous storyboard JSON into the prompt, instructing the model to keep `subject_anchor` and `uses_anchor` flags unchanged unless explicitly instructed to change them, while code recomputes all `final_prompt` values and validates verbatim narration.
 
 ### Setting Channel Visual Style
 

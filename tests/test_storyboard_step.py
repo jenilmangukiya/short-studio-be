@@ -6,8 +6,15 @@ import pytest
 
 from app.config import settings
 from app.pipeline import h_images, h_voiceover
+from app.steps.prompt_compose import (
+    COMPOSITION_RULES,
+    MAX_FINAL_PROMPT_LENGTH,
+    compose_final_prompt,
+    recompute_final_prompts,
+)
 from app.steps.storyboard import (
     ALLOWED_SHOT_TYPES,
+    DEFAULT_MOCK_SUBJECT_ANCHOR,
     FORBIDDEN_PROMPT_WORDS,
     FORBIDDEN_WORDS_REGEX,
     PipelineError,
@@ -72,6 +79,7 @@ def _make_valid_scenes(script_narration: str, count: int = 8) -> list[SceneInput
                 narration=" ".join(chunk_words),
                 image_prompt=f"A mechanical component for scene {i+1} illustrating operation",
                 shot_type=shot_type,
+                uses_anchor=(i + 1) not in (2, 5),
             )
         )
     return scenes
@@ -84,7 +92,12 @@ def _make_valid_scenes(script_narration: str, count: int = 8) -> list[SceneInput
 def test_validator_passes_on_compliant_storyboard():
     script = _make_sample_script_dict()
     scenes = _make_valid_scenes(script["narration"], count=9)
-    warnings = validate_storyboard_soft_checks(scenes, script["narration"])
+    warnings = validate_storyboard_soft_checks(
+        scenes,
+        script["narration"],
+        subject_anchor="A small glossy blue cube with rounded edges.",
+        visual_style="Clean 3D render, soft studio lighting",
+    )
     assert warnings == []
 
 
@@ -160,11 +173,13 @@ def test_validator_normalizes_quotes_and_whitespace_for_narration_match():
             narration="Don’t ignore the window—",
             image_prompt="A passenger window",
             shot_type="close-up",
+            uses_anchor=True,
         ),
         SceneInput(
             narration="it balances cabin pressure.",
             image_prompt="Pressure bleed hole",
             shot_type="macro",
+            uses_anchor=False,
         ),
     ]
     warnings = validate_storyboard_soft_checks(scenes, narration_straight)
@@ -179,6 +194,7 @@ def test_validator_reports_first_difference_on_narration_mismatch():
             narration="The outer pane carries the primary pressure load.",
             image_prompt="Acrylic window pane",
             shot_type="close-up",
+            uses_anchor=True,
         )
     ]
     warnings = validate_storyboard_soft_checks(scenes, script_narration)
@@ -192,10 +208,6 @@ def test_validator_reports_first_difference_on_narration_mismatch():
 # ==============================================================================
 
 def test_est_seconds_computation():
-    # WORDS_PER_SECOND = 2.5
-    # 5 words -> 5 / 2.5 = 2.0s
-    # 10 words -> 10 / 2.5 = 4.0s
-    # 11 words -> 11 / 2.5 = 4.4s
     words_5 = "One two three four five."
     assert round(len(words_5.split()) / WORDS_PER_SECOND, 1) == 2.0
 
@@ -204,7 +216,7 @@ def test_est_seconds_computation():
 
 
 # ==============================================================================
-# 3. Visual Style Fallback and Source Tests
+# 3. Visual Style Fallback, Source, and Framing Independence Tests
 # ==============================================================================
 
 def test_visual_style_channel_setting(monkeypatch):
@@ -238,7 +250,7 @@ def test_visual_style_default_fallback(monkeypatch):
     class DummyVideo:
         id = uuid.uuid4()
         topic = "Airplane windows"
-        channel = None  # No channel settings
+        channel = None
 
     class DummyStep:
         name = "storyboard"
@@ -251,6 +263,13 @@ def test_visual_style_default_fallback(monkeypatch):
     default_style = load_default_visual_style()
     assert result["storyboard"]["visual_style"] == default_style
     assert result["storyboard"]["style_source"] == "default"
+
+
+def test_default_visual_style_does_not_contain_framing_or_aspect_ratio():
+    """Verify that default_visual_style owns only the aesthetic and no 9:16 or hero object framing."""
+    style_text = load_default_visual_style()
+    assert "9:16" not in style_text
+    assert "single hero object" not in style_text
 
 
 # ==============================================================================
@@ -277,7 +296,15 @@ def test_build_storyboard_prompt_revision_mode():
     script = _make_sample_script_dict()
     prev_sb = {
         "visual_style": "Clean 3D render",
-        "scenes": [{"index": 1, "image_prompt": "Old prompt", "narration": "Some narration"}],
+        "subject_anchor": "A titanium window frame.",
+        "scenes": [
+            {
+                "index": 1,
+                "image_prompt": "Old prompt",
+                "narration": "Some narration",
+                "uses_anchor": True,
+            }
+        ],
     }
     instruction = "Change scene 1 framing to top-down"
 
@@ -292,6 +319,7 @@ def test_build_storyboard_prompt_revision_mode():
     assert "## REVISION MODE" in prompt
     assert instruction in prompt
     assert "Never alter the narration text" in prompt
+    assert "Keep subject_anchor and every uses_anchor flag unchanged" in prompt
     assert "Old prompt" in prompt
 
 
@@ -301,34 +329,53 @@ def test_build_storyboard_prompt_revision_mode():
 
 def test_mock_splitter_standard_script():
     script = _make_sample_script_dict()
-    scenes = split_script_for_mock(script["narration"])
+    scenes, anchor = split_script_for_mock(script["narration"])
 
     # 1. 8 to 12 scenes produced
     assert 8 <= len(scenes) <= 12
 
-    # 2. Re-joining scenes reproduces script narration exactly
+    # 2. Anchor is deterministic placeholder
+    assert anchor == DEFAULT_MOCK_SUBJECT_ANCHOR
+
+    # 3. uses_anchor by scene index membership (false for 2 and 5, true for others)
+    assert scenes[0].uses_anchor is True   # index 1
+    assert scenes[1].uses_anchor is False  # index 2
+    assert scenes[2].uses_anchor is True   # index 3
+    assert scenes[3].uses_anchor is True   # index 4
+    assert scenes[4].uses_anchor is False  # index 5
+    if len(scenes) > 5:
+        assert scenes[5].uses_anchor is True
+
+    # 4. Re-joining scenes reproduces script narration exactly
     joined = " ".join(s.narration for s in scenes)
     assert normalize_for_comparison(joined) == normalize_for_comparison(script["narration"])
 
-    # 3. Rotating shot types (no neighbouring duplicates)
+    # 5. Rotating shot types (no neighbouring duplicates)
     for i in range(1, len(scenes)):
         assert scenes[i].shot_type != scenes[i - 1].shot_type
 
-    # 4. Image prompts are non-empty and have no forbidden whole words
+    # 6. Image prompts are non-empty and have no forbidden whole words
     for s in scenes:
         assert s.image_prompt
         assert not FORBIDDEN_WORDS_REGEX.findall(s.image_prompt)
 
 
 def test_mock_splitter_short_script_does_not_crash():
-    # Very short script (~10 words)
+    # Very short script (~10 words) yielding 2 scenes
     short_text = "Airplane windows have a hole. It balances cabin pressure."
-    scenes = split_script_for_mock(short_text)
+    scenes, anchor = split_script_for_mock(short_text)
 
-    # Must produce as many scenes as it can without crashing
     assert len(scenes) == 2
+    assert anchor == DEFAULT_MOCK_SUBJECT_ANCHOR
+    assert scenes[0].uses_anchor is True   # index 1
+    assert scenes[1].uses_anchor is False  # index 2
     joined = " ".join(s.narration for s in scenes)
     assert normalize_for_comparison(joined) == normalize_for_comparison(short_text)
+
+
+def test_mock_splitter_empty_input():
+    assert split_script_for_mock("") == ([], "")
+    assert split_script_for_mock("   \n\t  ") == ([], "")
 
 
 # ==============================================================================
@@ -362,19 +409,30 @@ def test_full_storyboard_step_mock(monkeypatch):
     assert "scenes" in sb
     assert "total_seconds" in sb
     assert sb["style_source"] == "default"
+    assert sb["subject_anchor"] == DEFAULT_MOCK_SUBJECT_ANCHOR
     assert len(sb["scenes"]) >= 8
 
-    # Each scene has index and est_seconds
+    # Each scene has index, est_seconds, uses_anchor, and final_prompt
     for idx, s in enumerate(sb["scenes"], start=1):
         assert s["index"] == idx
         assert s["est_seconds"] > 0
         assert s["shot_type"] in ALLOWED_SHOT_TYPES
+        assert "uses_anchor" in s
+        assert "final_prompt" in s
+        assert s["final_prompt"].startswith(s["image_prompt"])
+        assert COMPOSITION_RULES in s["final_prompt"]
+
+        # Check anchor presence aligns with uses_anchor flag
+        if s["uses_anchor"]:
+            assert DEFAULT_MOCK_SUBJECT_ANCHOR in s["final_prompt"]
+        else:
+            assert DEFAULT_MOCK_SUBJECT_ANCHOR not in s["final_prompt"]
 
     meta = result["meta"]
     assert meta["provider"] == "mock"
     assert meta["task"] == "storyboard"
     assert meta["revision"] is False
-    assert "storyboard-v1:" in meta["prompt_version"]
+    assert "storyboard-v2:" in meta["prompt_version"]
 
 
 def test_full_storyboard_step_revision_mode(monkeypatch):
@@ -392,12 +450,15 @@ def test_full_storyboard_step_revision_mode(monkeypatch):
         output = {
             "storyboard": {
                 "visual_style": "Clean 3D render",
+                "subject_anchor": "A custom titanium frame.",
                 "scenes": [
                     {
                         "index": 1,
                         "narration": "Have a look at airplane windows.",
                         "image_prompt": "Airplane window",
                         "shot_type": "close-up",
+                        "uses_anchor": True,
+                        "final_prompt": "Old final prompt",
                         "est_seconds": 2.4,
                     }
                 ],
@@ -410,6 +471,9 @@ def test_full_storyboard_step_revision_mode(monkeypatch):
 
     result = generate_storyboard_step(DummyVideo(), prev, DummyStep())
     assert result["meta"]["revision"] is True
+    # Final prompts recomputed cleanly
+    for s in result["storyboard"]["scenes"]:
+        assert COMPOSITION_RULES in s["final_prompt"]
 
 
 def test_missing_script_error():
@@ -423,15 +487,12 @@ def test_missing_script_error():
         user_prompt = None
         output = None
 
-    # Missing "script" key
     with pytest.raises(PipelineError, match="Script step must be completed"):
         generate_storyboard_step(DummyVideo(), {}, DummyStep())
 
-    # "script" key exists but empty
     with pytest.raises(PipelineError, match="Script step must be completed"):
         generate_storyboard_step(DummyVideo(), {"script": {}}, DummyStep())
 
-    # "script" has empty dict
     with pytest.raises(PipelineError, match="Script step must be completed"):
         generate_storyboard_step(DummyVideo(), {"script": {"script": {}}}, DummyStep())
 
@@ -452,12 +513,15 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
             "storyboard": {
                 "visual_style": "Clean 3D render",
                 "style_source": "default",
+                "subject_anchor": "A small glossy blue cube.",
                 "scenes": [
                     {
                         "index": 1,
                         "narration": "First scene narration.",
                         "image_prompt": "First scene prompt",
                         "shot_type": "close-up",
+                        "uses_anchor": True,
+                        "final_prompt": "First scene final prompt",
                         "est_seconds": 2.0,
                     },
                     {
@@ -465,6 +529,8 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
                         "narration": "Second scene narration.",
                         "image_prompt": "Second scene prompt",
                         "shot_type": "macro",
+                        "uses_anchor": False,
+                        "final_prompt": "Second scene final prompt",
                         "est_seconds": 3.0,
                     },
                 ],
@@ -473,20 +539,224 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
         }
     }
 
-    # h_images should extract scenes and write placeholder files
+    # h_images extracts scenes and uses final_prompt
     img_result = h_images(DummyVideo(), prev, None)
     assert img_result["mock"] is True
     assert len(img_result["images"]) == 2
     assert img_result["images"][0]["scene"] == 1
 
-    # h_voiceover should extract total_seconds and write voice.txt
+    # Check written file contents
+    img_file = tmp_path / str(DummyVideo.id) / "images" / "scene_1.txt"
+    assert "First scene final prompt" in img_file.read_text()
+
+    # h_voiceover extracts total_seconds and writes voice.txt
     vo_result = h_voiceover(DummyVideo(), prev, None)
     assert vo_result["mock"] is True
     assert vo_result["duration_seconds"] == 5.0
 
 
+def test_backward_compatibility_old_shape_storyboard(tmp_path, monkeypatch):
+    """Ensure older storyboards without subject_anchor, uses_anchor, or final_prompt don't crash downstream."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    class DummyVideo:
+        id = uuid.uuid4()
+        topic = "Legacy video"
+
+    old_sb_output = {
+        "storyboard": {
+            "visual_style": "Clean 3D render",
+            "style_source": "default",
+            # No subject_anchor
+            "scenes": [
+                {
+                    "index": 1,
+                    "narration": "Legacy scene narration.",
+                    "image_prompt": "Legacy image prompt",
+                    "shot_type": "close-up",
+                    "est_seconds": 2.0,
+                    # No uses_anchor, no final_prompt
+                }
+            ],
+            "total_seconds": 2.0,
+        }
+    }
+
+    # Downstream images mock should fall back to image_prompt without crashing
+    img_result = h_images(DummyVideo(), prev={"storyboard": old_sb_output}, step=None)
+    assert img_result["mock"] is True
+    img_file = tmp_path / str(DummyVideo.id) / "images" / "scene_1.txt"
+    assert "Legacy image prompt" in img_file.read_text()
+
+    # Recomputing final prompts on legacy storyboard works gracefully
+    updated = recompute_final_prompts(old_sb_output)
+    scene_1 = updated["storyboard"]["scenes"][0]
+    assert "final_prompt" in scene_1
+    assert "Legacy image prompt" in scene_1["final_prompt"]
+    assert COMPOSITION_RULES in scene_1["final_prompt"]
+
+
 # ==============================================================================
-# 8. Edge Cases and Retry Flow Tests
+# 8. Prompt Composition Unit Tests
+# ==============================================================================
+
+def test_compose_final_prompt_with_and_without_anchor():
+    anchor = "A sleek titanium window frame with three panes."
+    style = "Clean 3D render, soft studio lighting"
+
+    # 1. uses_anchor is True
+    scene_with = {
+        "image_prompt": "Close-up of airplane passenger window bleed hole",
+        "uses_anchor": True,
+    }
+    p_with = compose_final_prompt(scene_with, subject_anchor=anchor, visual_style=style)
+    assert "Close-up of airplane passenger window bleed hole." in p_with
+    assert anchor in p_with
+    assert style in p_with
+    assert COMPOSITION_RULES in p_with
+
+    # 2. uses_anchor is False
+    scene_without = {
+        "image_prompt": "High altitude clouds floating in the sky",
+        "uses_anchor": False,
+    }
+    p_without = compose_final_prompt(scene_without, subject_anchor=anchor, visual_style=style)
+    assert "High altitude clouds floating in the sky." in p_without
+    assert anchor not in p_without
+    assert style in p_without
+    assert COMPOSITION_RULES in p_without
+
+
+def test_compose_final_prompt_clean_punctuation_joining():
+    # Prompt with messy punctuation: trailing dots, trailing comma in style
+    scene = {
+        "image_prompt": "A macro shot of acrylic pane..",
+        "uses_anchor": True,
+    }
+    anchor = "A small blue cube. "
+    style = "Matte 3D materials, studio light, "
+
+    prompt = compose_final_prompt(scene, subject_anchor=anchor, visual_style=style)
+    # No duplicate periods
+    assert ".." not in prompt
+    assert ",." not in prompt
+    assert "  " not in prompt
+    assert prompt.endswith(".")
+
+
+def test_recompute_final_prompts_updates_in_place():
+    sb = {
+        "visual_style": "Minimalist clay",
+        "subject_anchor": "A blue rubber ball.",
+        "scenes": [
+            {
+                "index": 1,
+                "image_prompt": "Ball bouncing on wooden floor",
+                "uses_anchor": True,
+                "final_prompt": "Stale prompt",
+            },
+            {
+                "index": 2,
+                "image_prompt": "Empty wooden room",
+                "uses_anchor": False,
+                "final_prompt": "Stale prompt",
+            },
+        ],
+    }
+
+    recompute_final_prompts(sb)
+    assert "A blue rubber ball" in sb["scenes"][0]["final_prompt"]
+    assert "A blue rubber ball" not in sb["scenes"][1]["final_prompt"]
+    assert "Stale prompt" not in sb["scenes"][0]["final_prompt"]
+
+
+# ==============================================================================
+# 9. New Soft Check Validation Tests (Subject Anchor, Uses Anchor, Final Prompt)
+# ==============================================================================
+
+def test_validator_detects_empty_subject_anchor():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor="")
+    assert any("subject anchor is empty" in w.lower() for w in warnings)
+
+
+def test_validator_detects_subject_anchor_too_long():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    long_anchor = "A" * 255
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor=long_anchor)
+    assert any("subject anchor length is 255 chars" in w.lower() for w in warnings)
+
+
+def test_validator_lenient_sentence_count():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+
+    # 1. Decimals (2.5) and abbreviations (approx.) should NOT count as extra sentences
+    lenient_anchor = "A 2.5cm cube with approx. 3.0mm rounded corners. It has a glossy blue tint."
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor=lenient_anchor)
+    assert not any("sentences (target: at most 2 sentences)" in w.lower() for w in warnings)
+
+    # 2. Three real sentences SHOULD trigger a warning
+    three_sentences = "This is sentence one. This is sentence two. This is sentence three."
+    warnings_3 = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor=three_sentences)
+    assert any("has 3 sentences (target: at most 2 sentences)" in w.lower() for w in warnings_3)
+
+
+def test_validator_detects_subject_anchor_forbidden_words():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    anchor_with_logo = "A small metallic cube with a company logo embossed on top."
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor=anchor_with_logo)
+    assert any("subject anchor contains forbidden whole words" in w.lower() and "logo" in w.lower() for w in warnings)
+
+
+def test_validator_detects_no_scene_uses_anchor():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    for s in scenes:
+        s.uses_anchor = False
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor="A small blue cube.")
+    assert any("no scenes have uses_anchor set to true" in w.lower() for w in warnings)
+
+
+def test_validator_composed_prompt_with_rules_does_not_trigger_forbidden_words():
+    """Ensure that composition rules ('no text, no letters, no logos') do NOT trigger forbidden-word warning on final_prompt."""
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    anchor = "A small glossy blue cube with rounded edges."
+    style = "Clean 3D render, soft studio lighting"
+
+    warnings = validate_storyboard_soft_checks(
+        scenes,
+        script["narration"],
+        subject_anchor=anchor,
+        visual_style=style,
+    )
+    # Must NOT warn about forbidden words from COMPOSITION_RULES
+    assert not any("forbidden whole words" in w.lower() for w in warnings)
+
+
+def test_validator_detects_final_prompt_too_long():
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+    # Construct a scene whose composed final_prompt exceeds MAX_FINAL_PROMPT_LENGTH (1000)
+    scenes[0].image_prompt = "A" * 600
+    long_anchor = "B" * 240
+    long_style = "C" * 200
+
+    warnings = validate_storyboard_soft_checks(
+        scenes,
+        script["narration"],
+        subject_anchor=long_anchor,
+        visual_style=long_style,
+    )
+    assert any("final prompt length is" in w.lower() and "target: at most 1000 chars" in w.lower() for w in warnings)
+
+
+# ==============================================================================
+# 10. Edge Cases and Retry Flow Tests
 # ==============================================================================
 
 def test_validator_detects_zero_scenes():
@@ -495,24 +765,16 @@ def test_validator_detects_zero_scenes():
 
 
 def test_find_first_difference_edge_branches():
-    # Exact match
     assert find_first_difference("same text", "same text") == "No difference detected."
-    # Str1 shorter (ends early)
     early = find_first_difference("abc", "abcdefgh")
     assert "ends early" in early
-    # Str1 longer (extra text)
     extra = find_first_difference("abcdefgh", "abc")
     assert "extra text" in extra
 
 
-def test_mock_splitter_empty_input():
-    assert split_script_for_mock("") == []
-    assert split_script_for_mock("   \n\t  ") == []
-
-
 def test_storyboard_step_retry_on_warning(monkeypatch):
     """Test that a non-mock LLM triggers retry once when checks fail, updating attempts to 2."""
-    from app.llm.base import BaseLLM, LLMResult
+    from app.llm.base import BaseLLM
 
     call_count = 0
 
@@ -535,7 +797,16 @@ def test_storyboard_step_retry_on_warning(monkeypatch):
                 # Attempt 2: 8 scenes (compliant)
                 scenes = _make_valid_scenes(script["narration"], count=8)
 
-            return StoryboardLLMOutput(scenes=scenes), 100, 100, 10, "stop"
+            return (
+                StoryboardLLMOutput(
+                    subject_anchor="A small glossy blue cube with rounded edges.",
+                    scenes=scenes,
+                ),
+                100,
+                100,
+                10,
+                "stop",
+            )
 
     import app.steps.storyboard as sb_module
     monkeypatch.setattr(sb_module, "get_llm", lambda task: FakeLLM(model="fake-model"))
@@ -587,7 +858,16 @@ def test_revision_mode_runs_narration_checks_and_retries(monkeypatch):
                 # Attempt 2: fixed to match original narration
                 scenes = _make_valid_scenes(script["narration"], count=8)
 
-            return StoryboardLLMOutput(scenes=scenes), 100, 100, None, "stop"
+            return (
+                StoryboardLLMOutput(
+                    subject_anchor="A small glossy blue cube with rounded edges.",
+                    scenes=scenes,
+                ),
+                100,
+                100,
+                None,
+                "stop",
+            )
 
     import app.steps.storyboard as sb_module
     monkeypatch.setattr(sb_module, "get_llm", lambda task: FakeLLM(model="fake-model"))
@@ -603,6 +883,7 @@ def test_revision_mode_runs_narration_checks_and_retries(monkeypatch):
         output = {
             "storyboard": {
                 "visual_style": "Clean 3D render",
+                "subject_anchor": "A small glossy blue cube.",
                 "scenes": [],
                 "total_seconds": 10.0,
             }
@@ -617,4 +898,3 @@ def test_revision_mode_runs_narration_checks_and_retries(monkeypatch):
     assert result["meta"]["attempts"] == 2
     assert result["meta"]["revision"] is True
     assert result["warnings"] == []
-

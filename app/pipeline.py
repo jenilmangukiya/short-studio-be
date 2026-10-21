@@ -49,7 +49,8 @@ def h_images(video, prev, step):
     sb = prev["storyboard"].get("storyboard", prev["storyboard"])
     for s in sb["scenes"]:
         f = d / f"scene_{s['index']}.txt"
-        f.write_text(f"placeholder image for: {s['image_prompt']}")
+        prompt_text = s.get("final_prompt") or s.get("image_prompt", "")
+        f.write_text(f"placeholder image for: {prompt_text}")
         out.append({"scene": s["index"], "path": str(f)})
     return {"mock": True, "images": out}
 

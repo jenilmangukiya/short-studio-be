@@ -182,12 +182,15 @@ def main():
         print("STORYBOARD GENERATION RESULT")
         print("=" * 60)
         print(f"Visual Style ({sb.get('style_source', 'default')}): {sb.get('visual_style')}")
+        print(f"Subject Anchor: {sb.get('subject_anchor', '')}")
         print(f"Total Scenes: {len(scenes)} | Total Duration: {sb.get('total_seconds')}s\n")
 
         print("SCENES:")
         for s in scenes:
-            print(f"  [{s['index']}] ({s['est_seconds']}s | {s['shot_type']})")
+            uses_anchor_str = f"uses_anchor: {s.get('uses_anchor', False)}"
+            print(f"  [{s['index']}] ({s['est_seconds']}s | {s['shot_type']} | {uses_anchor_str})")
             print(f"      Image Prompt: {s['image_prompt']}")
+            print(f"      Final Prompt: {s.get('final_prompt', '')}")
             print(f"      Narration:    {s['narration']}")
             print()
 

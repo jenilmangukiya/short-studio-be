@@ -2,7 +2,7 @@
 
 Divides a structured video script into consecutive visual scenes using task-routed LLMs
 (Mock, Gemini, OpenAI). Validates scene counts, timing, verbatim narration coverage,
-forbidden prompt words, and shot type diversity.
+forbidden prompt words, shot type diversity, subject anchors, and code-composed final prompts.
 """
 
 from __future__ import annotations
@@ -18,6 +18,12 @@ from sqlalchemy.orm import Session, object_session
 
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
+from app.steps.prompt_compose import (
+    COMPOSITION_RULES,
+    MAX_FINAL_PROMPT_LENGTH,
+    compose_final_prompt,
+    recompute_final_prompts,
+)
 
 # Single source of truth for allowed shot framing types
 ALLOWED_SHOT_TYPES: tuple[str, ...] = (
@@ -64,6 +70,9 @@ FORBIDDEN_WORDS_REGEX = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Default deterministic subject anchor for mock LLM runs
+DEFAULT_MOCK_SUBJECT_ANCHOR: str = "A small glossy blue cube with rounded edges."
+
 PROMPT_FILE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "storyboard.md"
 DEFAULT_STYLE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "default_visual_style.txt"
 
@@ -84,11 +93,22 @@ class SceneInput(BaseModel):
     shot_type: ShotType = Field(
         description="The camera framing / shot type chosen for this scene from the allowed list"
     )
+    uses_anchor: bool = Field(
+        default=False,
+        description="True only when that scene's image shows the anchor object",
+    )
 
 
 class StoryboardLLMOutput(BaseModel):
     """Structured storyboard output returned by the LLM."""
 
+    subject_anchor: str = Field(
+        default="",
+        description=(
+            "One or two plain sentences describing the main recurring object(s) of the video: "
+            "shape, colors, materials, size cues. No style words, no text, letters, numbers, logos, brands or people."
+        ),
+    )
     scenes: list[SceneInput] = Field(
         description="List of 8 to 12 consecutive scenes covering the entire narration"
     )
@@ -125,8 +145,7 @@ def load_default_visual_style(path: Path = DEFAULT_STYLE_PATH) -> str:
             return text
     return (
         "Clean 3D render, soft studio lighting, smooth matte materials, "
-        "simple pastel gradient background, shallow depth of field, "
-        "single hero object, vertical 9:16 composition"
+        "simple pastel gradient background, shallow depth of field"
     )
 
 
@@ -162,7 +181,10 @@ def find_first_difference(str1: str, str2: str) -> str:
 
 
 def validate_storyboard_soft_checks(
-    scenes: list[SceneInput | dict[str, Any]], script_narration: str
+    scenes: list[SceneInput | dict[str, Any]],
+    script_narration: str,
+    subject_anchor: str = "",
+    visual_style: str = "",
 ) -> list[str]:
     """Execute code-side soft checks on the generated storyboard scenes.
 
@@ -174,18 +196,18 @@ def validate_storyboard_soft_checks(
         warnings.append("Storyboard contains zero scenes.")
         return warnings
 
+    # Helper to extract scene fields uniformly
+    def get_field(scene: SceneInput | dict[str, Any], field: str) -> Any:
+        if isinstance(scene, dict):
+            return scene.get(field, "")
+        return getattr(scene, field, "")
+
     # 1. Scene count check (target: 8 - 12 scenes)
     scene_count = len(scenes)
     if scene_count < 8 or scene_count > 12:
         warnings.append(
             f"Scene count is {scene_count} (target: 8-12 scenes)."
         )
-
-    # Helper to extract scene fields uniformly
-    def get_field(scene: SceneInput | dict[str, Any], field: str) -> Any:
-        if isinstance(scene, dict):
-            return scene.get(field, "")
-        return getattr(scene, field, "")
 
     # 2. Narration equality check: joined scene narrations must equal script narration
     scene_narrations = [get_field(s, "narration") for s in scenes]
@@ -199,12 +221,46 @@ def validate_storyboard_soft_checks(
             f"Scene narrations joined do not reproduce the script narration exactly. {diff_info}"
         )
 
-    # 3. Per-scene duration and content checks
+    # 3. Subject anchor checks
+    if not subject_anchor or not subject_anchor.strip():
+        warnings.append("Subject anchor is empty.")
+    else:
+        anchor_str = subject_anchor.strip()
+        if len(anchor_str) > 250:
+            warnings.append(
+                f"Subject anchor length is {len(anchor_str)} chars (target: at most 250 chars)."
+            )
+
+        # Lenient sentence count (split on terminal punctuation followed by space + capital letter)
+        anchor_sentences = [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+(?=[A-Z])", anchor_str)
+            if s.strip()
+        ]
+        if len(anchor_sentences) > 2:
+            warnings.append(
+                f"Subject anchor has {len(anchor_sentences)} sentences (target: at most 2 sentences)."
+            )
+
+        # Forbidden words in subject_anchor (whole words only)
+        forbidden_anchor = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(anchor_str)}))
+        if forbidden_anchor:
+            warnings.append(
+                f"Subject anchor contains forbidden whole words: {forbidden_anchor}."
+            )
+
+    # 4. Check that at least one scene uses the subject anchor
+    has_anchor = any(bool(get_field(s, "uses_anchor")) for s in scenes)
+    if not has_anchor:
+        warnings.append("No scenes have uses_anchor set to true (target: at least one scene).")
+
+    # 5. Per-scene duration, image_prompt, shot_type, and final_prompt checks
     prev_shot_type: str | None = None
     for idx, s in enumerate(scenes, start=1):
         narr = get_field(s, "narration")
         img_prompt = get_field(s, "image_prompt")
         shot_type = get_field(s, "shot_type")
+        final_prompt = get_field(s, "final_prompt")
 
         # Duration check (2.0 - 7.0 seconds)
         word_count = len(narr.split())
@@ -215,7 +271,7 @@ def validate_storyboard_soft_checks(
             )
 
         # Image prompt checks: non-empty, max 300 chars, no forbidden words
-        if not img_prompt or not img_prompt.strip():
+        if not img_prompt or not str(img_prompt).strip():
             warnings.append(f"Scene {idx} image prompt is empty.")
         else:
             if len(img_prompt) > 300:
@@ -236,19 +292,39 @@ def validate_storyboard_soft_checks(
             )
         prev_shot_type = shot_type
 
+        # Final prompt check: non-empty and sensible length limit (compose if missing)
+        resolved_final_prompt = final_prompt
+        if not resolved_final_prompt:
+            resolved_final_prompt = compose_final_prompt(
+                scene=s,
+                subject_anchor=subject_anchor,
+                visual_style=visual_style,
+            )
+
+        if not resolved_final_prompt or not str(resolved_final_prompt).strip():
+            warnings.append(f"Scene {idx} final prompt is empty.")
+        elif len(str(resolved_final_prompt)) > MAX_FINAL_PROMPT_LENGTH:
+            warnings.append(
+                f"Scene {idx} final prompt length is {len(str(resolved_final_prompt))} chars (target: at most {MAX_FINAL_PROMPT_LENGTH} chars)."
+            )
+
     return warnings
 
 
-def split_script_for_mock(narration: str) -> list[SceneInput]:
+def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
     """Deterministically split script narration into scenes along sentence/clause boundaries.
 
     Aims for 8-12 scenes. If fewer than 8 sentences, splits long sentences at commas.
     If the text is too short (<8), produces as many valid scenes as possible without crashing.
-    Assigns rotating shot types and clean placeholder image prompts.
+    Assigns rotating shot types, clean placeholder image prompts, and sets uses_anchor by scene index
+    membership (false for scenes 2 and 5, true for all others).
+
+    Returns:
+        tuple of (scenes, subject_anchor)
     """
     raw_text = narration.strip()
     if not raw_text:
-        return []
+        return [], ""
 
     # Step 1: Split into initial sentences along sentence-ending punctuation
     sentence_matches = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw_text) if s.strip()]
@@ -295,14 +371,23 @@ def split_script_for_mock(narration: str) -> list[SceneInput]:
         merged = f"{chunks[best_idx]} {chunks[best_idx + 1]}"
         chunks = chunks[:best_idx] + [merged] + chunks[best_idx + 2:]
 
-    # Step 4: Construct scenes with rotating shot types and clean placeholder prompts
+    # Step 4: Construct scenes with rotating shot types, uses_anchor flags, and placeholder prompts
     scenes: list[SceneInput] = []
     for i, chunk in enumerate(chunks):
+        scene_idx = i + 1
         shot_type = ALLOWED_SHOT_TYPES[i % len(ALLOWED_SHOT_TYPES)]
-        image_prompt = f"Object or mechanical element for scene {i + 1} illustrating concept"
-        scenes.append(SceneInput(narration=chunk, image_prompt=image_prompt, shot_type=shot_type))
+        uses_anchor = scene_idx not in (2, 5)
+        image_prompt = f"Object or mechanical element for scene {scene_idx} illustrating concept"
+        scenes.append(
+            SceneInput(
+                narration=chunk,
+                image_prompt=image_prompt,
+                shot_type=shot_type,
+                uses_anchor=uses_anchor,
+            )
+        )
 
-    return scenes
+    return scenes, DEFAULT_MOCK_SUBJECT_ANCHOR
 
 
 def build_storyboard_prompt(
@@ -350,8 +435,9 @@ def build_storyboard_prompt(
         sections.append("\n## REVISION MODE")
         sections.append(
             "A previous draft of the storyboard exists. Modify ONLY what the revision instruction requests. "
-            "Never alter the narration text or scene wording. Preserve scene continuity, timing, and shot types "
-            "unless the revision explicitly requests a change."
+            "Never alter the narration text or scene wording. Keep subject_anchor and every uses_anchor flag "
+            "unchanged unless the revision instruction explicitly asks to change them. Preserve scene continuity, "
+            "timing, and shot types unless the revision explicitly requests a change."
         )
         sections.append(f"- **Revision Instruction**: {revision_instruction}")
         sections.append(f"- **Previous Storyboard**: {json.dumps(previous_storyboard, indent=2)}")
@@ -441,14 +527,20 @@ def generate_storyboard_step(
     total_latency = 0.0
     attempts = 1
     raw_scenes: list[SceneInput]
+    subject_anchor: str = ""
 
     if llm.provider_name == "mock":
         # Deterministic local splitter for mock provider with zero AI cost
-        raw_scenes = split_script_for_mock(script_narration)
+        raw_scenes, subject_anchor = split_script_for_mock(script_narration)
         total_in_tokens = max(1, len(prompt.split()))
         total_out_tokens = max(25, 20 * len(raw_scenes))
         total_latency = 0.001
-        warnings = validate_storyboard_soft_checks(raw_scenes, script_narration)
+        warnings = validate_storyboard_soft_checks(
+            raw_scenes,
+            script_narration,
+            subject_anchor=subject_anchor,
+            visual_style=visual_style,
+        )
     else:
         try:
             result = llm.generate_structured(
@@ -461,6 +553,7 @@ def generate_storyboard_step(
 
         output_obj: StoryboardLLMOutput = result.output
         raw_scenes = output_obj.scenes
+        subject_anchor = output_obj.subject_anchor or ""
         total_in_tokens += result.input_tokens or 0
         total_out_tokens += result.output_tokens or 0
         if result.thinking_tokens is not None:
@@ -468,7 +561,12 @@ def generate_storyboard_step(
         total_latency += result.latency_seconds
 
         # Soft checks on Attempt 1
-        warnings = validate_storyboard_soft_checks(raw_scenes, script_narration)
+        warnings = validate_storyboard_soft_checks(
+            raw_scenes,
+            script_narration,
+            subject_anchor=subject_anchor,
+            visual_style=visual_style,
+        )
 
         # Retry once if soft checks fail
         if warnings:
@@ -487,13 +585,19 @@ def generate_storyboard_step(
                 )
                 output_obj = retry_result.output
                 raw_scenes = output_obj.scenes
+                subject_anchor = output_obj.subject_anchor or subject_anchor
                 total_in_tokens += retry_result.input_tokens or 0
                 total_out_tokens += retry_result.output_tokens or 0
                 if retry_result.thinking_tokens is not None:
                     total_think_tokens = (total_think_tokens or 0) + retry_result.thinking_tokens
                 total_latency += retry_result.latency_seconds
                 # Re-evaluate warnings for Attempt 2
-                warnings = validate_storyboard_soft_checks(raw_scenes, script_narration)
+                warnings = validate_storyboard_soft_checks(
+                    raw_scenes,
+                    script_narration,
+                    subject_anchor=subject_anchor,
+                    visual_style=visual_style,
+                )
             except Exception:
                 # If retry fails, retain original output and warnings
                 pass
@@ -501,19 +605,28 @@ def generate_storyboard_step(
     if not raw_scenes:
         raise PipelineError("Storyboard generation produced no scenes")
 
-    # 8. Compute scene indices and estimated duration
+    # 8. Compute scene indices, estimated duration, and code-composed final prompts
     final_scenes: list[dict[str, Any]] = []
     accumulated_seconds = 0.0
     for idx, s in enumerate(raw_scenes, start=1):
         words = s.narration.split()
         est_sec = round(len(words) / WORDS_PER_SECOND, 1)
         accumulated_seconds += est_sec
+
+        final_prompt = compose_final_prompt(
+            scene=s,
+            subject_anchor=subject_anchor,
+            visual_style=visual_style,
+        )
+
         final_scenes.append(
             {
                 "index": idx,
                 "narration": s.narration,
                 "image_prompt": s.image_prompt,
                 "shot_type": s.shot_type,
+                "uses_anchor": bool(s.uses_anchor),
+                "final_prompt": final_prompt,
                 "est_seconds": est_sec,
             }
         )
@@ -524,6 +637,7 @@ def generate_storyboard_step(
         "storyboard": {
             "visual_style": visual_style,
             "style_source": style_source,
+            "subject_anchor": subject_anchor,
             "scenes": final_scenes,
             "total_seconds": total_seconds,
         },
