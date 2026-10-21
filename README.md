@@ -255,10 +255,65 @@ python scripts/try_script.py --topic "Zipper teeth" --revise "Make the opening h
 python scripts/try_script.py --topic "How undersea cables work" --provider mock --json
 ```
 
+## Storyboard Step
+
+The `storyboard` step in Shorts Studio converts the generated script into 8–12 consecutive visual scenes with framing instructions, estimated speech timing, and subject-focused image prompts (`app/steps/storyboard.py` called from `app/pipeline.py`).
+
+### How It Works
+
+1. **Input Script & Preconditions**: Reads the script output from `prev["script"]["script"]`. If the script step is not completed, it raises a clean `PipelineError`.
+2. **Visual Style Resolution**: Checks the channel's `settings["visual_style"]`. If set to a non-empty string, it uses that style and tags `style_source: "channel"`. Otherwise, it falls back to `app/prompts/default_visual_style.txt` and tags `style_source: "default"`. The visual style is never written by the model; it is attached by the code.
+3. **Structured Scene Splitting**: Uses `get_llm(task="storyboard")` with `StoryboardLLMOutput`. Each scene contains `narration`, `image_prompt` (subject and action only, no style or text), and `shot_type` (from `close-up`, `macro`, `wide`, `top-down`, `cutaway`, `cross-section`, `in-context`).
+4. **Code-Side Calculations**: The code computes 1-based scene `index`, `est_seconds` (`words / 2.5`), and total video duration `total_seconds`.
+5. **Code-Side Soft Checks & Retry**: Validates that joined scene narrations reproduce the script narration verbatim (reporting exact divergence points on mismatch), enforces 8–12 scenes, 2–7s scene durations, max 300 character prompts with whole-word checks against forbidden words (`text`, `logo`, `caption`, etc.), and ensures no consecutive identical shot types. Retries once with feedback on non-mock providers.
+6. **Deterministic Mock Mode**: When `LLM_PROVIDER_STORYBOARD=mock` (or default `mock`), it uses a deterministic local splitter that divides the script along sentence/clause boundaries with rotating shot types and clean placeholder prompts, ensuring zero AI cost and valid tests.
+7. **Revision Mode**: When `step.user_prompt` is provided (e.g., via `POST /videos/{id}/steps/storyboard/rerun`), it feeds the previous storyboard JSON from `step.output["storyboard"]` into the prompt, instructing the model to revise only what was requested while preserving verbatim narration.
+
+### Setting Channel Visual Style
+
+You can configure a custom visual style per channel via the API:
+
+```bash
+PATCH /channels/{id}
+Content-Type: application/json
+
+{
+  "settings": {
+    "visual_style": "Vintage claymation, warm tungsten lighting, tactile plasticine surfaces, vertical 9:16 framing"
+  }
+}
+```
+
+### Editing Storyboard Rules
+
+To adjust scene splitting rules, framing guidance, or composition constraints, edit [app/prompts/storyboard.md](file:///Users/jenilmangukiya/projects/Short-studio/shorts-studio-backend/app/prompts/storyboard.md) or edit the default fallback style in [app/prompts/default_visual_style.txt](file:///Users/jenilmangukiya/projects/Short-studio/shorts-studio-backend/app/prompts/default_visual_style.txt). Changes take effect on the next run with a new content hash automatically recorded in `meta["prompt_version"]`.
+
+### Testing Without Database: `try_storyboard.py`
+
+Use `scripts/try_storyboard.py` to test prompts and inspect scenes locally:
+
+```bash
+# 1. Test storyboard generation with mock provider
+python scripts/try_storyboard.py --provider mock
+
+# 2. Test with custom script text or file
+python scripts/try_storyboard.py --script "Airplane windows have a hole. It balances pressure." --provider mock
+python scripts/try_storyboard.py --script-file path/to/script.json --provider mock
+
+# 3. Test with visual style override
+python scripts/try_storyboard.py --provider mock --visual-style "Cyberpunk isometric 3D"
+
+# 4. Test revision mode
+python scripts/try_storyboard.py --provider mock --revise "Change scene 1 framing to top-down" --prev-storyboard path/to/storyboard.json
+
+# 5. Output raw JSON
+python scripts/try_storyboard.py --provider mock --json
+```
+
 ## Roadmap
 
 - [x] Make the `script` step real (LLM) with structured output
-- [ ] Make the `storyboard` step real (scenes with timing and image prompts)
+- [x] Make the `storyboard` step real (scenes with timing and image prompts)
 - [ ] Mock/real switch per step plus a daily AI-call cap
 - [ ] Per-step approval (`awaiting_approval` status) and version history
 - [ ] Real images, voiceover, captions, music, and FFmpeg render
@@ -266,4 +321,5 @@ python scripts/try_script.py --topic "How undersea cables work" --provider mock 
 - [ ] Background worker queue (RQ or Dramatiq) instead of in-process tasks
 - [ ] Frontend (Next.js or Streamlit)
 - [ ] Publishing to YouTube and Instagram
+
 

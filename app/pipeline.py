@@ -30,6 +30,7 @@ def _dir(video: Video) -> Path:
 
 
 from .steps.script import generate_script_step
+from .steps.storyboard import generate_storyboard_step
 
 
 # ---------- handlers ----------
@@ -38,19 +39,15 @@ def h_script(video, prev, step):
 
 
 def h_storyboard(video, prev, step):
-    scenes = [
-        {"index": i, "seconds": 5, "narration": f"Scene {i} narration about {video.topic}",
-         "image_prompt": f"{video.topic}, scene {i}, cinematic"}
-        for i in range(1, 9)
-    ]
-    return {"mock": True, "scenes": scenes, "total_seconds": sum(s["seconds"] for s in scenes)}
+    return generate_storyboard_step(video, prev, step)
 
 
 def h_images(video, prev, step):
     d = _dir(video) / "images"
     d.mkdir(exist_ok=True)
     out = []
-    for s in prev["storyboard"]["scenes"]:
+    sb = prev["storyboard"].get("storyboard", prev["storyboard"])
+    for s in sb["scenes"]:
         f = d / f"scene_{s['index']}.txt"
         f.write_text(f"placeholder image for: {s['image_prompt']}")
         out.append({"scene": s["index"], "path": str(f)})
@@ -60,7 +57,8 @@ def h_images(video, prev, step):
 def h_voiceover(video, prev, step):
     f = _dir(video) / "voice.txt"
     f.write_text("placeholder voiceover audio")
-    return {"mock": True, "audio_path": str(f), "duration_seconds": prev["storyboard"]["total_seconds"]}
+    sb = prev["storyboard"].get("storyboard", prev["storyboard"])
+    return {"mock": True, "audio_path": str(f), "duration_seconds": sb["total_seconds"]}
 
 
 def h_render(video, prev, step):
