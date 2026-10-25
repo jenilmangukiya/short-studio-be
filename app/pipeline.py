@@ -32,6 +32,7 @@ def _dir(video: Video) -> Path:
 from .steps.script import generate_script_step
 from .steps.storyboard import generate_storyboard_step
 from .steps.images import generate_images_step
+from .steps.voiceover import generate_voiceover_step
 
 
 # ---------- handlers ----------
@@ -48,10 +49,7 @@ def h_images(video, prev, step):
 
 
 def h_voiceover(video, prev, step):
-    f = _dir(video) / "voice.txt"
-    f.write_text("placeholder voiceover audio")
-    sb = prev["storyboard"].get("storyboard", prev["storyboard"])
-    return {"mock": True, "audio_path": str(f), "duration_seconds": sb["total_seconds"]}
+    return generate_voiceover_step(video, prev, step)
 
 
 def h_render(video, prev, step):

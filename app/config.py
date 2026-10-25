@@ -44,5 +44,13 @@ class Settings(BaseSettings):
     image_max_per_video: int = 12
     image_timeout_seconds: float = 120.0
 
+    # Voiceover generation settings
+    voiceover_provider: str = "mock"  # mock | kokoro
+    kokoro_model_path: str = "./storage/models/kokoro/kokoro-v1.0.onnx"
+    kokoro_voices_path: str = "./storage/models/kokoro/voices-v1.0.bin"
+    voiceover_default_voice: str = "af_heart"
+    voiceover_default_speed: float = 1.0
+    voiceover_timeout_seconds: float = 60.0
+
 
 settings = Settings()
