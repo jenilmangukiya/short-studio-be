@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -6,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import pipeline
+from ..config import settings
 from ..db import get_db
 from ..deps import get_owned_channel, get_owned_video
 from ..models import Channel, Video
@@ -87,3 +89,37 @@ def download(video: Video = Depends(get_owned_video)):
     if not video.output_path or not os.path.exists(video.output_path):
         raise HTTPException(404, "Final output not available yet")
     return FileResponse(video.output_path)
+
+
+@router.get("/videos/{video_id}/images/{index}")
+def get_scene_image(index: int, video: Video = Depends(get_owned_video)):
+    """Serve a scene image by integer index if it has status 'ok', regardless of overall step status."""
+    step = next((s for s in video.steps if s.name == "images"), None)
+    if not step or not step.output or not isinstance(step.output, dict):
+        raise HTTPException(404, f"No images found for video {video.id}")
+
+    items = step.output.get("images", {}).get("items", [])
+    target = next((it for it in items if it.get("index") == index and it.get("status") == "ok"), None)
+    if not target or not target.get("file"):
+        raise HTTPException(404, f"No generated image available for scene {index}")
+
+    storage_root = Path(settings.storage_dir).resolve()
+    file_rel = target["file"]
+    abs_path = (storage_root / file_rel).resolve()
+
+    # Security check: Ensure the resolved path resides strictly within the storage directory
+    try:
+        abs_path.relative_to(storage_root)
+    except ValueError:
+        raise HTTPException(403, "Access to requested file path is forbidden")
+
+    if not abs_path.is_file():
+        raise HTTPException(404, f"Image file for scene {index} does not exist on disk")
+
+    prompt_hash = target.get("prompt_hash", "")
+    headers = {
+        "ETag": f'"{prompt_hash}"',
+        "Cache-Control": "private, no-cache",
+    }
+    return FileResponse(path=str(abs_path), media_type="image/png", headers=headers)
+

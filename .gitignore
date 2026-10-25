@@ -11,6 +11,7 @@ __pycache__/
 
 # Generated video files
 storage/
+tmp_images/
 
 # Editors and OS
 .idea/

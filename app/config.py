@@ -34,5 +34,15 @@ class Settings(BaseSettings):
     llm_provider_factcheck: str | None = None
     llm_model_factcheck: str | None = None
 
+    # Image generation settings
+    image_provider: str = "mock"  # mock | openai
+    openai_image_api_key: str | None = None
+    openai_image_model: str | None = None
+    openai_image_size: str = "1024x1536"
+    openai_image_quality: str = "low"
+    openai_image_est_cost_usd: float | None = None
+    image_max_per_video: int = 12
+    image_timeout_seconds: float = 120.0
+
 
 settings = Settings()

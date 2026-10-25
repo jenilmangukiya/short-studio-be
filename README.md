@@ -322,16 +322,98 @@ python scripts/try_storyboard.py --provider mock --revise "Change scene 1 framin
 python scripts/try_storyboard.py --provider mock --json
 ```
 
+## Images Step
+
+The `images` step in Shorts Studio generates vertical images for each scene in the storyboard sequentially, utilizing code-side prompt composition, content-addressable caching/reuse, partial progress persistence, and granular error handling (`app/steps/images.py` called from `app/pipeline.py`).
+
+### How It Works
+
+1. **Preconditions & Guards**:
+   - Reads scenes from `prev["storyboard"]["storyboard"]` (or legacy `prev["storyboard"]`).
+   - If the storyboard step is missing or contains 0 scenes, fails with a readable `PipelineError`.
+   - If scene count exceeds `IMAGE_MAX_PER_VIDEO` (default: 12), fails **before** any generation to prevent runaway costs.
+2. **Code-Side Prompt Composition**:
+   - For each scene, invokes `compose_final_prompt(scene, subject_anchor, visual_style)` at generation time rather than blindly trusting stored storyboard snapshots.
+3. **Execution Time**:
+   - In real generation with OpenAI, generating 8–12 images sequentially takes several minutes. The step runs sequentially in order so you can monitor progress.
+4. **Content-Addressable Reuse (Never Pay Twice)**:
+   - For every scene, computes a full 64-character SHA256 `prompt_hash` over `prompt|model|size|quality`.
+   - The first 8 characters form the file suffix: `scene_<NN>_<hash8>.png`.
+   - If previous step output (`step.output`) has an item for the same scene with a matching `prompt_hash`, the file still exists on disk, and `status == "ok"`, generation is skipped (`reused=True`) with zero API calls.
+   - Rerunning a failed or partially completed step only generates missing or modified scenes.
+   - **Disk Files**: Outdated image files with older hashes remain safely on disk until a future cleanup routine.
+5. **Partial Progress Persistence**:
+   - After each image is generated or reused, partial progress is saved to `step.output` (`complete=False`) and committed to the database. `step.status` remains untouched while running.
+   - If a later image fails or the server restarts, previously paid and generated images are preserved in the step output.
+6. **Error Handling**:
+   - **Configuration / Auth / Organization Verification**: Missing API keys, missing models, 401 unauthorized, or 403 organization-not-verified abort the pipeline immediately with a readable error.
+   - **Rate Limits (429)**: Retries up to 2 times with exponential backoff (1s, 2s). If exhausted, aborts the run immediately, preserves partial progress in `step.output`, and raises an error instructing to rerun later to resume.
+   - **Content-Policy Blocks**: Flagged prompts mark only that individual scene as failed (`status="failed"`, storing the error reason), and the run continues generating the remaining scenes. If any scenes failed, a `PipelineError` listing the failed scene numbers is raised at the end.
+7. **Serving Route**:
+   - `GET /videos/{video_id}/images/{index}` serves the generated image directly.
+   - Requires login and video ownership.
+   - Serves the file for any scene with `status == "ok"` regardless of whether the overall step is running, failed, or done.
+   - Validates that the file path resolves strictly within `STORAGE_DIR` to prevent path traversal.
+   - Includes `ETag: "<prompt_hash>"` and `Cache-Control: private, no-cache` to ensure regenerated images are never served stale.
+8. **Instructions Warning**:
+   - Step instructions (`step.user_prompt`) are ignored for this step; if provided, a warning is added: `"Instructions are not used by the images step. Edit the storyboard prompt instead."`
+
+### Configuration Settings
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `IMAGE_PROVIDER` | string | `mock` | Active provider: `mock` or `openai`. |
+| `OPENAI_IMAGE_API_KEY` | string | `None` | OpenAI API key for image generation. Isolated from and **never** falls back to `OPENAI_API_KEY`. |
+| `OPENAI_IMAGE_MODEL` | string | `None` | Model name copied directly from your OpenAI dashboard project's model list (e.g. `gpt-image-2`). No default is hardcoded in code. |
+| `OPENAI_IMAGE_SIZE` | string | `1024x1536` | Preset portrait dimensions (2:3). For custom 9:16 resolutions, width & height must be divisible by 16 (e.g. `864x1536`). |
+| `OPENAI_IMAGE_QUALITY` | string | `low` | Generation quality (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `OPENAI_IMAGE_EST_COST_USD` | float | `None` | Optional per-image cost estimate in USD. Prices are never hard-coded in code. |
+| `IMAGE_MAX_PER_VIDEO` | int | `12` | Maximum scenes allowed per video. |
+| `IMAGE_TIMEOUT_SECONDS` | float | `120.0` | Timeout per image generation call in seconds. |
+
+### Storage Layout
+
+Generated images are saved under `STORAGE_DIR`:
+```
+storage/
+└── <video_id>/
+    └── images/
+        ├── scene_01_a1b2c3d4.png
+        ├── scene_02_e5f6g7h8.png
+        └── ...
+```
+All stored file references in the database are stored relative to `STORAGE_DIR` (e.g. `<video_id>/images/scene_01_a1b2c3d4.png`).
+
+### Testing Without Database: `try_image.py`
+
+Use `scripts/try_image.py` to test image generation locally with zero database dependencies:
+
+```bash
+# 1. Generate single image with mock provider (solid color PNG, no AI cost)
+python scripts/try_image.py --prompt "Airplane window with condensation"
+
+# 2. Extract and compose a scene from an exported storyboard JSON file
+python scripts/try_image.py --storyboard-file path/to/storyboard.json --scene 1
+
+# 3. Test with custom size and quality
+python scripts/try_image.py --prompt "Macro close up of airplane rivets" --size 864x1536 --quality low
+
+# 4. Generate with OpenAI (makes exactly ONE real API call and warns before starting)
+python scripts/try_image.py --prompt "Airplane window at sunset" --provider openai
+```
+
 ## Roadmap
 
 - [x] Make the `script` step real (LLM) with structured output
 - [x] Make the `storyboard` step real (scenes with timing and image prompts)
+- [x] Make the `images` step real (provider layer, reuse caching, OpenAI + mock)
 - [ ] Mock/real switch per step plus a daily AI-call cap
 - [ ] Per-step approval (`awaiting_approval` status) and version history
-- [ ] Real images, voiceover, captions, music, and FFmpeg render
+- [ ] Real voiceover, captions, music, and FFmpeg render
 - [ ] Alembic migrations
 - [ ] Background worker queue (RQ or Dramatiq) instead of in-process tasks
 - [ ] Frontend (Next.js or Streamlit)
 - [ ] Publishing to YouTube and Instagram
+
 
 

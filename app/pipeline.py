@@ -31,6 +31,7 @@ def _dir(video: Video) -> Path:
 
 from .steps.script import generate_script_step
 from .steps.storyboard import generate_storyboard_step
+from .steps.images import generate_images_step
 
 
 # ---------- handlers ----------
@@ -43,16 +44,7 @@ def h_storyboard(video, prev, step):
 
 
 def h_images(video, prev, step):
-    d = _dir(video) / "images"
-    d.mkdir(exist_ok=True)
-    out = []
-    sb = prev["storyboard"].get("storyboard", prev["storyboard"])
-    for s in sb["scenes"]:
-        f = d / f"scene_{s['index']}.txt"
-        prompt_text = s.get("final_prompt") or s.get("image_prompt", "")
-        f.write_text(f"placeholder image for: {prompt_text}")
-        out.append({"scene": s["index"], "path": str(f)})
-    return {"mock": True, "images": out}
+    return generate_images_step(video, prev, step)
 
 
 def h_voiceover(video, prev, step):
@@ -64,7 +56,14 @@ def h_voiceover(video, prev, step):
 
 def h_render(video, prev, step):
     f = _dir(video) / "final_placeholder.txt"
-    f.write_text(f"Placeholder for final video.\nTopic: {video.topic}\nScenes: {len(prev['images']['images'])}")
+    img_data = prev.get("images", {})
+    if isinstance(img_data.get("images"), dict) and "items" in img_data["images"]:
+        scene_count = len(img_data["images"]["items"])
+    elif isinstance(img_data.get("images"), list):
+        scene_count = len(img_data["images"])
+    else:
+        scene_count = 0
+    f.write_text(f"Placeholder for final video.\nTopic: {video.topic}\nScenes: {scene_count}")
     video.output_path = str(f)
     return {"mock": True, "video_path": str(f)}
 

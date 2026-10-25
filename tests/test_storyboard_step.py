@@ -542,12 +542,14 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
     # h_images extracts scenes and uses final_prompt
     img_result = h_images(DummyVideo(), prev, None)
     assert img_result["mock"] is True
-    assert len(img_result["images"]) == 2
-    assert img_result["images"][0]["scene"] == 1
+    assert len(img_result["images"]["items"]) == 2
+    assert img_result["images"]["items"][0]["index"] == 1
 
     # Check written file contents
-    img_file = tmp_path / str(DummyVideo.id) / "images" / "scene_1.txt"
-    assert "First scene final prompt" in img_file.read_text()
+    img_file = tmp_path / img_result["images"]["items"][0]["file"]
+    assert img_file.is_file()
+    assert img_file.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert "First scene prompt" in img_result["images"]["items"][0]["prompt"]
 
     # h_voiceover extracts total_seconds and writes voice.txt
     vo_result = h_voiceover(DummyVideo(), prev, None)
@@ -582,11 +584,14 @@ def test_backward_compatibility_old_shape_storyboard(tmp_path, monkeypatch):
         }
     }
 
-    # Downstream images mock should fall back to image_prompt without crashing
+    # Downstream images handler should fall back to image_prompt without crashing
     img_result = h_images(DummyVideo(), prev={"storyboard": old_sb_output}, step=None)
     assert img_result["mock"] is True
-    img_file = tmp_path / str(DummyVideo.id) / "images" / "scene_1.txt"
-    assert "Legacy image prompt" in img_file.read_text()
+    assert len(img_result["images"]["items"]) == 1
+    img_file = tmp_path / img_result["images"]["items"][0]["file"]
+    assert img_file.is_file()
+    assert img_file.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert "Legacy image prompt" in img_result["images"]["items"][0]["prompt"]
 
     # Recomputing final prompts on legacy storyboard works gracefully
     updated = recompute_final_prompts(old_sb_output)
