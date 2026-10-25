@@ -33,6 +33,7 @@ from .steps.script import generate_script_step
 from .steps.storyboard import generate_storyboard_step
 from .steps.images import generate_images_step
 from .steps.voiceover import generate_voiceover_step
+from .steps.render import generate_render_step
 
 
 # ---------- handlers ----------
@@ -53,17 +54,7 @@ def h_voiceover(video, prev, step):
 
 
 def h_render(video, prev, step):
-    f = _dir(video) / "final_placeholder.txt"
-    img_data = prev.get("images", {})
-    if isinstance(img_data.get("images"), dict) and "items" in img_data["images"]:
-        scene_count = len(img_data["images"]["items"])
-    elif isinstance(img_data.get("images"), list):
-        scene_count = len(img_data["images"])
-    else:
-        scene_count = 0
-    f.write_text(f"Placeholder for final video.\nTopic: {video.topic}\nScenes: {scene_count}")
-    video.output_path = str(f)
-    return {"mock": True, "video_path": str(f)}
+    return generate_render_step(video, prev, step)
 
 
 HANDLERS = {

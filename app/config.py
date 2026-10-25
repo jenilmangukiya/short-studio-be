@@ -52,5 +52,11 @@ class Settings(BaseSettings):
     voiceover_default_speed: float = 1.0
     voiceover_timeout_seconds: float = 60.0
 
+    # Render generation settings
+    render_fps: int = 30
+    render_width: int = 1080
+    render_height: int = 1920
+    render_timeout_seconds: float = 300.0
+
 
 settings = Settings()
