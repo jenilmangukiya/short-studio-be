@@ -48,6 +48,40 @@ EMOJI_PATTERN = re.compile(
     flags=re.UNICODE,
 )
 
+# Generic meta-clichés in opening hooks that describe the topic passively instead of revealing it
+CLICHE_HOOK_PATTERNS: tuple[str, ...] = (
+    r"more than you think",
+    r"(?:aren't|are not|isn't|is not|not)\s+just for decoration",
+    r"hidden purpose",
+    r"(?:an?\s+)?interesting reason",
+    r"secret reason",
+    r"(?:isn't|is not|not)\s+what you think",
+    r"actually serves?\s+(?:a|an|the)",
+)
+
+# Generic question formulas and preamble windups that should be asked directly
+GENERIC_OPENER_PATTERNS: tuple[str, ...] = (
+    r"do you know\b",
+    r"did you know\b",
+    r"have you ever\b",
+    r"ever wondered\b",
+    r"imagine\b",
+    r"here's why\b",
+    r"here is why\b",
+    r"here's a fact\b",
+    r"here is a fact\b",
+)
+
+CLICHE_HOOK_REGEX = re.compile(
+    r"\b(?:" + "|".join(CLICHE_HOOK_PATTERNS) + r")\b",
+    flags=re.IGNORECASE,
+)
+
+GENERIC_OPENER_REGEX = re.compile(
+    r"^\s*(?:" + "|".join(GENERIC_OPENER_PATTERNS) + r")",
+    flags=re.IGNORECASE,
+)
+
 
 class ScriptOutput(BaseModel):
     """Structured narration script output for a short-form video."""
@@ -56,7 +90,10 @@ class ScriptOutput(BaseModel):
         description="Short video title, up to about 60 characters, no ALL CAPS, no misleading claims"
     )
     hook: str = Field(
-        description="Attention-grabbing opening hook, exactly ONE sentence, up to about 15 words"
+        description=(
+            "Attention-grabbing opening hook, exactly ONE sentence, ideally 4-10 words (up to 15 words max), "
+            "opening a specific curiosity gap—often a direct question or surprising fact without filler or meta-clichés"
+        )
     )
     narration: str = Field(
         description="The full spoken narration text, 110-150 words, plain spoken text only, must begin with the hook sentence"
@@ -123,11 +160,28 @@ def validate_script_soft_checks(script: ScriptOutput) -> list[str]:
             f"Narration word count is {word_count} words (target: 110-150 words)."
         )
 
-    # 2. Hook length (<= 15 words) and narration start
+    # 2. Hook length (target: 4-10 words, soft warning > 10, limit <= 15) and narration start
     hook_words = script.hook.split()
     if len(hook_words) > 15:
         warnings.append(
             f"Hook length is {len(hook_words)} words (target: at most 15 words)."
+        )
+    elif len(hook_words) > 10:
+        warnings.append(
+            f"Hook length is {len(hook_words)} words (target: ideally 4-10 words for short-form retention, max 15)."
+        )
+
+    # 3. Hook cliché and generic opener detection
+    cliche_match = CLICHE_HOOK_REGEX.search(script.hook)
+    if cliche_match:
+        warnings.append(
+            f"Hook contains generic meta-cliché: '{cliche_match.group(0)}'. Make the hook more specific, surprising, or direct."
+        )
+
+    opener_match = GENERIC_OPENER_REGEX.search(script.hook)
+    if opener_match:
+        warnings.append(
+            f"Hook starts with generic formula: '{opener_match.group(0).strip()}'. Ask the question directly (e.g. 'Why do...' instead of 'Do you know why...')."
         )
 
     norm_hook = normalize_for_comparison(script.hook).rstrip(".!? ")

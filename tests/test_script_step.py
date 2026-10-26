@@ -94,6 +94,87 @@ def test_validator_detects_hook_too_long():
     script = _make_sample_script(hook=long_hook, narration=narr)
     warnings = validate_script_soft_checks(script)
     assert any("hook length" in w.lower() for w in warnings)
+    assert any("at most 15 words" in w.lower() for w in warnings)
+
+
+def test_validator_flags_hook_exceeding_ten_words_soft_warning():
+    hook_12_words = "Commercial airplane windows feature a tiny hole to balance immense cabin pressure."
+    assert len(hook_12_words.split()) == 12
+    narr = f"{hook_12_words} " + "word " * 115
+    script = _make_sample_script(hook=hook_12_words, narration=narr)
+    warnings = validate_script_soft_checks(script)
+    assert any("target: ideally 4-10 words" in w.lower() for w in warnings)
+    assert not any("at most 15 words" in w.lower() for w in warnings)
+
+
+def test_validator_passes_on_concise_hook():
+    hook_6_words = "These tiny rivets saved miners' pants."
+    assert len(hook_6_words.split()) == 6
+    narr = f"{hook_6_words} " + "word " * 115
+    script = _make_sample_script(hook=hook_6_words, narration=narr)
+    warnings = validate_script_soft_checks(script)
+    assert not any("hook length" in w.lower() for w in warnings)
+    assert not any("cliché" in w.lower() or "cliche" in w.lower() for w in warnings)
+    assert not any("generic formula" in w for w in warnings)
+
+
+def test_validator_detects_cliche_hooks():
+    cliche_hooks = [
+        "That tiny hole in an airplane window is doing more than you think.",
+        "Those tiny metal rivets on jeans aren't just for decoration.",
+        "Those tiny metal buttons are not just for decoration.",
+        "Jeans rivets have a hidden purpose.",
+        "There is an interesting reason for this hole.",
+        "This opening is not what you think.",
+        "That small metal piece actually serves a crucial role.",
+    ]
+    for hook in cliche_hooks:
+        narr = f"{hook} " + "word " * 115
+        script = _make_sample_script(hook=hook, narration=narr)
+        warnings = validate_script_soft_checks(script)
+        assert any("generic meta-cliché" in w for w in warnings), f"Failed to detect cliché in: {hook}"
+
+
+def test_validator_detects_generic_openers():
+    openers = [
+        "Do you know why airplane windows have tiny holes?",
+        "Have you ever wondered why jeans have tiny rivets?",
+        "Ever wondered why your pockets have rivets?",
+        "Did you know that windows have a tiny hole?",
+        "Imagine if your airplane window had a hole.",
+        "Here's why airplane windows have tiny holes.",
+        "Here is why airplane windows have tiny holes.",
+        "Here's a fact about airplane windows.",
+        "Here is a fact about airplane windows.",
+    ]
+    for hook in openers:
+        narr = f"{hook} " + "word " * 115
+        script = _make_sample_script(hook=hook, narration=narr)
+        warnings = validate_script_soft_checks(script)
+        assert any("generic formula" in w for w in warnings), f"Failed to detect opener in: {hook}"
+
+
+def test_validator_passes_on_curiosity_questions_and_statements():
+    clean_hooks = [
+        "Why do airplane windows need a tiny hole?",
+        "Why is there a tiny hole in airplane windows?",
+        "What happens if this tiny hole is blocked?",
+        "Why do jeans have tiny metal rivets?",
+        "What stops your jeans pockets from ripping?",
+        "Why did miners need metal studs on their jeans?",
+        "What does that tiny hole in airplane windows actually do?",
+        "Airplane windows have tiny bleed holes to stop cracks.",
+        "Without these tiny rivets, heavy pockets tore completely off.",
+        "In 1872, a tailor added copper rivets to denim.",
+        "Those copper studs on jeans were never meant for fashion.",
+        "Thirty thousand feet creates five tons of pressure on windows.",
+    ]
+    for hook in clean_hooks:
+        narr = f"{hook} " + "word " * 115
+        script = _make_sample_script(hook=hook, narration=narr)
+        warnings = validate_script_soft_checks(script)
+        assert not any("generic" in w for w in warnings), f"False positive on: {hook}"
+        assert not any("cliché" in w.lower() or "cliche" in w.lower() for w in warnings), f"False positive on: {hook}"
 
 
 def test_validator_detects_narration_not_starting_with_hook():
@@ -378,3 +459,127 @@ def test_full_script_step_revision_mode(monkeypatch):
     )
 
     assert result["meta"]["revision"] is True
+
+
+def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
+    """Verify that an initial cliché warning triggers a retry attempt with corrective feedback."""
+    from unittest.mock import MagicMock
+    from app.llm.types import LLMResult
+    from app.steps.script import ScriptOutput, generate_script_step
+
+    cliche_script = _make_sample_script(
+        hook="That tiny hole is doing more than you think.",
+        narration="That tiny hole is doing more than you think. " + "word " * 115,
+    )
+    clean_script = _make_sample_script(
+        hook="Airplane windows have tiny holes to prevent cracks.",
+        narration="Airplane windows have tiny holes to prevent cracks. " + "word " * 115,
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.provider_name = "openai"
+    mock_llm.model = "gpt-mock"
+
+    res1 = LLMResult(
+        output=cliche_script,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=100,
+        output_tokens=50,
+        latency_seconds=1.0,
+    )
+    res2 = LLMResult(
+        output=clean_script,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=120,
+        output_tokens=50,
+        latency_seconds=1.2,
+    )
+    mock_llm.generate_structured.side_effect = [res1, res2]
+
+    monkeypatch.setattr("app.steps.script.get_llm", lambda task: mock_llm)
+
+    class DummyVideo:
+        id = uuid.uuid4()
+        topic = "Airplane windows"
+        description = None
+        channel = None
+        channel_id = None
+
+    class DummyStep:
+        name = "script"
+        user_prompt = None
+        output = None
+
+    result = generate_script_step(DummyVideo(), {}, DummyStep())
+
+    assert mock_llm.generate_structured.call_count == 2
+    retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
+    assert "generic meta-cliché" in retry_prompt
+    assert result["meta"]["attempts"] == 2
+    assert result["script"]["hook"] == "Airplane windows have tiny holes to prevent cracks."
+    assert result["warnings"] == []
+
+
+def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
+    """Verify that a generic question formula (e.g. 'Do you know why...') triggers a retry."""
+    from unittest.mock import MagicMock
+    from app.llm.types import LLMResult
+    from app.steps.script import ScriptOutput, generate_script_step
+
+    formula_script = _make_sample_script(
+        hook="Do you know why airplane windows have tiny holes?",
+        narration="Do you know why airplane windows have tiny holes? " + "word " * 115,
+    )
+    direct_script = _make_sample_script(
+        hook="Why do airplane windows need a tiny hole?",
+        narration="Why do airplane windows need a tiny hole? " + "word " * 115,
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.provider_name = "openai"
+    mock_llm.model = "gpt-mock"
+
+    res1 = LLMResult(
+        output=formula_script,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=100,
+        output_tokens=50,
+        latency_seconds=1.0,
+    )
+    res2 = LLMResult(
+        output=direct_script,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=120,
+        output_tokens=50,
+        latency_seconds=1.1,
+    )
+    mock_llm.generate_structured.side_effect = [res1, res2]
+
+    monkeypatch.setattr("app.steps.script.get_llm", lambda task: mock_llm)
+
+    class DummyVideo:
+        id = uuid.uuid4()
+        topic = "Airplane windows"
+        description = None
+        channel = None
+        channel_id = None
+
+    class DummyStep:
+        name = "script"
+        user_prompt = None
+        output = None
+
+    result = generate_script_step(DummyVideo(), {}, DummyStep())
+
+    assert mock_llm.generate_structured.call_count == 2
+    retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
+    assert "generic formula" in retry_prompt
+    assert result["meta"]["attempts"] == 2
+    assert result["script"]["hook"] == "Why do airplane windows need a tiny hole?"
+    assert result["warnings"] == []
+
+

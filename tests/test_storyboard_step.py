@@ -286,6 +286,8 @@ def test_build_storyboard_prompt_fresh():
         visual_style="Clean 3D render",
     )
     assert "## Video Script to Storyboard" in prompt
+    assert f"- **Opening Hook**: {script['hook']}" in prompt
+    assert "Opening Visual Hook" in prompt
     assert script["narration"] in prompt
     assert "Target Visual Style" in prompt
     assert "REVISION MODE" not in prompt
@@ -503,6 +505,7 @@ def test_missing_script_error():
 
 def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "voiceover_provider", "mock")
 
     class DummyVideo:
         id = uuid.uuid4()
@@ -560,6 +563,7 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
 def test_backward_compatibility_old_shape_storyboard(tmp_path, monkeypatch):
     """Ensure older storyboards without subject_anchor, uses_anchor, or final_prompt don't crash downstream."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "voiceover_provider", "mock")
 
     class DummyVideo:
         id = uuid.uuid4()
