@@ -1,4 +1,7 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -6,7 +9,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://studio:studio@localhost:5432/studio"
     secret_key: str = "dev-only-change-me"
     access_token_minutes: int = 60 * 24
-    storage_dir: str = "./storage"
+    storage_dir: str = str(_BACKEND_DIR / "storage")
 
     # LLM global settings
     llm_provider: str = "mock"
@@ -46,8 +49,8 @@ class Settings(BaseSettings):
 
     # Voiceover generation settings
     voiceover_provider: str = "mock"  # mock | kokoro
-    kokoro_model_path: str = "./storage/models/kokoro/kokoro-v1.0.onnx"
-    kokoro_voices_path: str = "./storage/models/kokoro/voices-v1.0.bin"
+    kokoro_model_path: str = str(_BACKEND_DIR / "storage/models/kokoro/kokoro-v1.0.onnx")
+    kokoro_voices_path: str = str(_BACKEND_DIR / "storage/models/kokoro/voices-v1.0.bin")
     voiceover_default_voice: str = "af_heart"
     voiceover_default_speed: float = 1.0
     voiceover_timeout_seconds: float = 60.0
@@ -57,6 +60,16 @@ class Settings(BaseSettings):
     render_width: int = 1080
     render_height: int = 1920
     render_timeout_seconds: float = 300.0
+
+    # Subtitles generation settings
+    subtitles_provider: str = "acoustic"  # acoustic | mock
+
+    @property
+    def resolved_storage_dir(self) -> Path:
+        p = Path(self.storage_dir)
+        if not p.is_absolute():
+            return (_BACKEND_DIR / p).resolve()
+        return p.resolve()
 
 
 settings = Settings()

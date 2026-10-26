@@ -1,3 +1,4 @@
+import re
 import os
 from pathlib import Path
 
@@ -85,10 +86,55 @@ def rerun(step_name: str, body: RerunBody, video: Video = Depends(get_owned_vide
 
 
 @router.get("/videos/{video_id}/download")
-def download(video: Video = Depends(get_owned_video)):
-    if not video.output_path or not os.path.exists(video.output_path):
-        raise HTTPException(404, "Final output not available yet")
-    return FileResponse(video.output_path)
+def download(
+    video: Video = Depends(get_owned_video),
+    captioned: bool = True,
+):
+    storage_root = getattr(settings, "resolved_storage_dir", Path(settings.storage_dir).resolve())
+    video_dir = storage_root / str(video.id)
+    captioned_file = video_dir / "final_video_captioned.mp4"
+    original_file = Path(video.output_path) if video.output_path else (video_dir / "final_video.mp4")
+
+    # Clean topic slug for friendly filename in download header
+    topic_slug = re.sub(r"[^a-zA-Z0-9]+", "-", (video.topic or "video").lower()).strip("-") or "video"
+
+    if captioned:
+        if captioned_file.is_file() and captioned_file.stat().st_size > 0:
+            headers = {
+                "Content-Disposition": f'attachment; filename="{topic_slug}-captioned.mp4"'
+            }
+            return FileResponse(
+                path=str(captioned_file),
+                media_type="video/mp4",
+                filename=f"{topic_slug}-captioned.mp4",
+                headers=headers,
+            )
+
+        # Fallback to original if captioned is not yet generated
+        if original_file.is_file() and original_file.stat().st_size > 0:
+            headers = {
+                "Content-Disposition": f'attachment; filename="{topic_slug}.mp4"'
+            }
+            return FileResponse(
+                path=str(original_file),
+                media_type="video/mp4",
+                filename=f"{topic_slug}.mp4",
+                headers=headers,
+            )
+
+        raise HTTPException(404, "Final video output not available yet")
+    else:
+        if original_file.is_file() and original_file.stat().st_size > 0:
+            headers = {
+                "Content-Disposition": f'attachment; filename="{topic_slug}-original.mp4"'
+            }
+            return FileResponse(
+                path=str(original_file),
+                media_type="video/mp4",
+                filename=f"{topic_slug}-original.mp4",
+                headers=headers,
+            )
+        raise HTTPException(404, "Original uncaptioned video not available yet")
 
 
 @router.get("/videos/{video_id}/images/{index}")
@@ -155,4 +201,19 @@ def get_scene_audio(index: int, video: Video = Depends(get_owned_video)):
         "Cache-Control": "private, no-cache",
     }
     return FileResponse(path=str(abs_path), media_type="audio/wav", headers=headers)
+
+
+@router.get("/videos/{video_id}/subtitles")
+def get_video_subtitles(video: Video = Depends(get_owned_video)):
+    """Retrieve the synchronized subtitle data and word-level timestamps for a video."""
+    step = next((s for s in video.steps if s.name in ("subtitles", "subtitle")), None)
+    if not step or not step.output or not isinstance(step.output, dict):
+        raise HTTPException(404, f"No subtitles found for video {video.id}")
+
+    subtitles_data = step.output.get("subtitles")
+    if not subtitles_data:
+        raise HTTPException(404, f"Subtitles data is not ready for video {video.id}")
+
+    return subtitles_data
+
 

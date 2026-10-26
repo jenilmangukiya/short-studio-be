@@ -12,7 +12,7 @@ from .config import settings
 from .db import SessionLocal
 from .models import Video, VideoStep
 
-STEPS = ["script", "storyboard", "images", "voiceover", "render"]
+STEPS = ["script", "storyboard", "images", "voiceover", "render", "subtitles"]
 
 
 class PipelineError(Exception):
@@ -34,6 +34,7 @@ from .steps.storyboard import generate_storyboard_step
 from .steps.images import generate_images_step
 from .steps.voiceover import generate_voiceover_step
 from .steps.render import generate_render_step
+from .steps.subtitles import generate_subtitles_step
 
 
 # ---------- handlers ----------
@@ -57,9 +58,14 @@ def h_render(video, prev, step):
     return generate_render_step(video, prev, step)
 
 
+def h_subtitles(video, prev, step):
+    return generate_subtitles_step(video, prev, step)
+
+
 HANDLERS = {
     "script": h_script, "storyboard": h_storyboard, "images": h_images,
-    "voiceover": h_voiceover, "render": h_render,
+    "voiceover": h_voiceover, "render": h_render, "subtitles": h_subtitles,
+    "subtitle": h_subtitles,
 }
 
 
@@ -132,5 +138,6 @@ def rerun_step(db: Session, video: Video, step_name: str, prompt: str | None):
         elif s.position > target.position and s.status == "done":
             s.status = "stale"
     video.status = "in_progress"
-    video.output_path = None
+    if target.name not in ("subtitles", "subtitle"):
+        video.output_path = None
     db.commit()
