@@ -29,25 +29,48 @@ from app.steps.prompt_compose import (
 ALLOWED_SHOT_TYPES: tuple[str, ...] = (
     "close-up",
     "macro",
+    "extreme-close-up",
     "wide",
+    "medium",
+    "aerial",
+    "interior",
+    "exterior",
     "top-down",
     "cutaway",
     "cross-section",
+    "diagram",
     "in-context",
 )
 
 ShotType = Literal[
     "close-up",
     "macro",
+    "extreme-close-up",
     "wide",
+    "medium",
+    "aerial",
+    "interior",
+    "exterior",
     "top-down",
     "cutaway",
     "cross-section",
+    "diagram",
     "in-context",
 ]
 
 # Words per second speech constant for calculating estimated scene duration
 WORDS_PER_SECOND: float = 2.5
+
+# Words excluded when evaluating consecutive scene semantic keyword repetition
+DIVERSITY_STOPWORDS: frozenset[str] = frozenset({
+    "this", "that", "with", "from", "into", "onto", "over", "under", "about",
+    "scene", "view", "shows", "showing", "look", "looking", "light", "lighting",
+    "soft", "clean", "upper", "lower", "frame", "middle", "background", "foreground",
+    "through", "across", "along", "against", "around", "behind", "between", "while",
+    "where", "small", "large", "their", "other", "another", "mechanical", "component",
+    "element", "illustrating", "operation", "concept", "object", "placeholder", "details",
+    "shot", "angle", "high", "deep", "dramatic", "subtle", "distinct", "style", "render",
+})
 
 # Single source of truth for words forbidden in scene image prompts (matched as whole words)
 FORBIDDEN_PROMPT_WORDS: tuple[str, ...] = (
@@ -87,15 +110,31 @@ class SceneInput(BaseModel):
     narration: str = Field(
         description="The exact words spoken in this scene, reproducing a slice of the script verbatim"
     )
-    image_prompt: str = Field(
-        description="What the image shows; subject and action only, plain description, no style words, no text or logos"
+    visual_purpose: str = Field(
+        default="",
+        description="The visual story beat or viewer takeaway (e.g. establish subject, direct attention, reveal detail, interior perspective, structural cutaway, mechanism diagram, proof, closure)",
     )
     shot_type: ShotType = Field(
         description="The camera framing / shot type chosen for this scene from the allowed list"
     )
+    camera_angle: str = Field(
+        default="eye-level",
+        description="Camera angle or perspective (e.g. wide aerial, passenger-perspective, extreme macro, 45-degree isometric, side cross-section)",
+    )
+    focal_point: str = Field(
+        default="",
+        description="The primary focal point of the image (e.g. passenger jet in clouds, highlighted window, tiny bleed hole, exploded 3-pane assembly)",
+    )
+    visual_technique: str = Field(
+        default="cinematic-photo",
+        description="Visual technique (e.g. cinematic-photo, macro-photo, passenger-pov, technical-illustration, cutaway-diagram, schematic)",
+    )
+    image_prompt: str = Field(
+        description="Rich scene-specific visual description specifying subject, environment, lighting, composition, and focal point. No text, logos, or watermarks."
+    )
     uses_anchor: bool = Field(
         default=False,
-        description="True only when that scene's image shows the anchor object",
+        description="True ONLY if the recurring anchor object is the central physical subject of this specific shot. Set to false for establishing shots, interior POV, diagrams, cutaways, etc.",
     )
 
 
@@ -254,13 +293,28 @@ def validate_storyboard_soft_checks(
     if not has_anchor:
         warnings.append("No scenes have uses_anchor set to true (target: at least one scene).")
 
-    # 5. Per-scene duration, image_prompt, shot_type, and final_prompt checks
+    # 5. Overall storyboard shot diversity check
+    if len(scenes) >= 8:
+        unique_shots = {get_field(s, "shot_type") for s in scenes}
+        if len(unique_shots) < 4:
+            warnings.append(
+                f"Storyboard uses only {len(unique_shots)} distinct shot types across {len(scenes)} scenes "
+                f"(target: at least 4 distinct shot types for visual diversity)."
+            )
+
+    # 6. Per-scene duration, image_prompt, shot_type, diversity, and final_prompt checks
     prev_shot_type: str | None = None
+    prev_scene: SceneInput | dict[str, Any] | None = None
+
     for idx, s in enumerate(scenes, start=1):
         narr = get_field(s, "narration")
         img_prompt = get_field(s, "image_prompt")
         shot_type = get_field(s, "shot_type")
         final_prompt = get_field(s, "final_prompt")
+        camera_angle = get_field(s, "camera_angle")
+        focal_point = get_field(s, "focal_point")
+        visual_technique = get_field(s, "visual_technique")
+        uses_anchor_flag = bool(get_field(s, "uses_anchor"))
 
         # Duration check (2.0 - 7.0 seconds)
         word_count = len(narr.split())
@@ -292,6 +346,44 @@ def validate_storyboard_soft_checks(
             )
         prev_shot_type = shot_type
 
+        # Visual diversity check: neighbouring scenes must not be suspiciously repetitive
+        if prev_scene is not None:
+            prev_prompt = str(get_field(prev_scene, "image_prompt") or "")
+            curr_prompt = str(img_prompt or "")
+
+            prev_words = {
+                w.lower()
+                for w in re.findall(r"\b[A-Za-z]{4,}\b", prev_prompt)
+                if w.lower() not in DIVERSITY_STOPWORDS
+            }
+            curr_words = {
+                w.lower()
+                for w in re.findall(r"\b[A-Za-z]{4,}\b", curr_prompt)
+                if w.lower() not in DIVERSITY_STOPWORDS
+            }
+
+            if prev_words and curr_words:
+                common_words = prev_words & curr_words
+                union_words = prev_words | curr_words
+                jaccard = len(common_words) / len(union_words) if union_words else 0.0
+
+                if len(common_words) >= 4 and jaccard >= 0.5:
+                    sorted_common = sorted(list(common_words))
+                    warnings.append(
+                        f"Scenes {idx-1} and {idx} have suspiciously repetitive visual subjects "
+                        f"({', '.join(sorted_common[:6])}). Vary the visual subject, perspective, or technique."
+                    )
+
+            prev_fp = str(get_field(prev_scene, "focal_point") or "").strip().lower()
+            curr_fp = str(focal_point or "").strip().lower()
+            if prev_fp and curr_fp and prev_fp == curr_fp:
+                warnings.append(
+                    f"Scenes {idx-1} and {idx} have identical visual focal point '{curr_fp}'. "
+                    f"Advance the visual beat to a new subject or detail."
+                )
+
+        prev_scene = s
+
         # Final prompt check: non-empty and sensible length limit (compose if missing)
         resolved_final_prompt = final_prompt
         if not resolved_final_prompt:
@@ -309,6 +401,83 @@ def validate_storyboard_soft_checks(
             )
 
     return warnings
+
+
+# Narrative visual beats used for deterministic mock storyboard generation
+MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
+    {
+        "purpose": "Establish subject and scale",
+        "shot_type": "aerial",
+        "camera_angle": "high-angle aerial",
+        "technique": "cinematic-photo",
+        "focal_point": "subject soaring above cloudscape",
+        "prompt": "Wide aerial establishing shot capturing the primary subject high above rolling sunset clouds",
+        "uses_anchor": False,
+    },
+    {
+        "purpose": "Direct attention to specific focus",
+        "shot_type": "medium",
+        "camera_angle": "exterior 45-degree angle",
+        "technique": "cinematic-photo",
+        "focal_point": "highlighted passenger window array",
+        "prompt": "Exterior medium framing directing viewer focus towards the key component with focused illumination",
+        "uses_anchor": True,
+    },
+    {
+        "purpose": "Reveal tiny detail and texture",
+        "shot_type": "macro",
+        "camera_angle": "extreme close-up 90-degree",
+        "technique": "macro-photo",
+        "focal_point": "miniature bleed opening and texture",
+        "prompt": "Macro extreme close-up revealing fine physical detail and miniature circular opening in clear material",
+        "uses_anchor": True,
+    },
+    {
+        "purpose": "Interior passenger perspective",
+        "shot_type": "interior",
+        "camera_angle": "passenger-perspective eye-level",
+        "technique": "passenger-pov",
+        "focal_point": "cabin frame looking outward",
+        "prompt": "First-person passenger perspective from inside cabin looking past contoured bezel to distant sky",
+        "uses_anchor": False,
+    },
+    {
+        "purpose": "Explain construction and layers",
+        "shot_type": "cutaway",
+        "camera_angle": "isometric technical cutaway",
+        "technique": "technical-illustration",
+        "focal_point": "three distinct separated layer assembly",
+        "prompt": "Exploded technical cutaway diagram illustrating the three distinct structural layers in separation",
+        "uses_anchor": False,
+    },
+    {
+        "purpose": "Schematic diagram of functional forces",
+        "shot_type": "diagram",
+        "camera_angle": "side cross-section schematic",
+        "technique": "schematic",
+        "focal_point": "directional flow arrows balancing pressure",
+        "prompt": "Cross-section schematic diagram illustrating dynamic pressure balance with directional flow arrows",
+        "uses_anchor": False,
+    },
+    {
+        "purpose": "Proof of real-world operation",
+        "shot_type": "close-up",
+        "camera_angle": "low-angle close-up",
+        "technique": "cinematic-photo",
+        "focal_point": "crystal clear surface resisting frost",
+        "prompt": "Detailed close-up demonstrating clear unblemished surface remaining free of frost in subzero air",
+        "uses_anchor": True,
+    },
+    {
+        "purpose": "Visual closure and resolution",
+        "shot_type": "wide",
+        "camera_angle": "wide cinematic horizon",
+        "technique": "cinematic-photo",
+        "focal_point": "peaceful horizon in twilight sunset",
+        "prompt": "Cinematic wide composition with warm twilight rim lighting bringing elegant visual closure",
+        "uses_anchor": False,
+    },
+)
 
 
 def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
@@ -371,18 +540,21 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         merged = f"{chunks[best_idx]} {chunks[best_idx + 1]}"
         chunks = chunks[:best_idx] + [merged] + chunks[best_idx + 2:]
 
-    # Step 4: Construct scenes with rotating shot types, uses_anchor flags, and placeholder prompts
+    # Step 4: Construct scenes with rotating story beats, shot types, and distinct visual purposes
     scenes: list[SceneInput] = []
     for i, chunk in enumerate(chunks):
         scene_idx = i + 1
-        shot_type = ALLOWED_SHOT_TYPES[i % len(ALLOWED_SHOT_TYPES)]
+        beat = MOCK_VISUAL_BEATS[i % len(MOCK_VISUAL_BEATS)]
         uses_anchor = scene_idx not in (2, 5)
-        image_prompt = f"Object or mechanical element for scene {scene_idx} illustrating concept"
         scenes.append(
             SceneInput(
                 narration=chunk,
-                image_prompt=image_prompt,
-                shot_type=shot_type,
+                visual_purpose=beat["purpose"],
+                shot_type=beat["shot_type"],
+                camera_angle=beat["camera_angle"],
+                focal_point=beat["focal_point"],
+                visual_technique=beat["technique"],
+                image_prompt=beat["prompt"],
                 uses_anchor=uses_anchor,
             )
         )
@@ -623,8 +795,12 @@ def generate_storyboard_step(
             {
                 "index": idx,
                 "narration": s.narration,
-                "image_prompt": s.image_prompt,
+                "visual_purpose": getattr(s, "visual_purpose", "") or "",
                 "shot_type": s.shot_type,
+                "camera_angle": getattr(s, "camera_angle", "eye-level") or "eye-level",
+                "focal_point": getattr(s, "focal_point", "") or "",
+                "visual_technique": getattr(s, "visual_technique", "cinematic-photo") or "cinematic-photo",
+                "image_prompt": s.image_prompt,
                 "uses_anchor": bool(s.uses_anchor),
                 "final_prompt": final_prompt,
                 "est_seconds": est_sec,

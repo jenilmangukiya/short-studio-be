@@ -505,6 +505,7 @@ def test_missing_script_error():
 
 def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "image_provider", "mock")
     monkeypatch.setattr(settings, "voiceover_provider", "mock")
 
     class DummyVideo:
@@ -563,6 +564,7 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
 def test_backward_compatibility_old_shape_storyboard(tmp_path, monkeypatch):
     """Ensure older storyboards without subject_anchor, uses_anchor, or final_prompt don't crash downstream."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "image_provider", "mock")
     monkeypatch.setattr(settings, "voiceover_provider", "mock")
 
     class DummyVideo:
@@ -907,3 +909,249 @@ def test_revision_mode_runs_narration_checks_and_retries(monkeypatch):
     assert result["meta"]["attempts"] == 2
     assert result["meta"]["revision"] is True
     assert result["warnings"] == []
+
+
+# ==============================================================================
+# 11. Visual Diversity and Story Progression Tests
+# ==============================================================================
+
+def test_validator_detects_consecutive_repetitive_prompts():
+    """Verify that validator catches suspiciously repetitive consecutive image prompts."""
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+
+    # Make scene 1 and scene 2 describe the exact same physical subject with high keyword overlap
+    scenes[0].image_prompt = "A sleek titanium airplane window with clear acrylic glass panes in daylight"
+    scenes[1].image_prompt = "A sleek titanium airplane window with clear acrylic glass panes in shadows"
+
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor="A small blue cube.")
+    assert any(
+        "suspiciously repetitive visual subjects" in w.lower()
+        and "scenes 1 and 2" in w.lower()
+        for w in warnings
+    )
+
+
+def test_validator_detects_consecutive_identical_focal_points():
+    """Verify that validator detects consecutive scenes sharing identical focal points."""
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+
+    scenes[1].focal_point = "commercial airplane window"
+    scenes[2].focal_point = "commercial airplane window"
+
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor="A small blue cube.")
+    assert any(
+        "identical visual focal point" in w.lower()
+        and "commercial airplane window" in w.lower()
+        for w in warnings
+    )
+
+
+def test_validator_detects_insufficient_shot_diversity():
+    """Verify that validator flags storyboards that alternate between fewer than 4 shot types."""
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+
+    # Force only 2 shot types across all 8 scenes
+    for i, s in enumerate(scenes):
+        s.shot_type = "close-up" if i % 2 == 0 else "medium"
+
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"], subject_anchor="A small blue cube.")
+    assert any(
+        "distinct shot types across 8 scenes" in w.lower()
+        and "target: at most 4 distinct" not in w.lower()
+        for w in warnings
+    )
+
+
+def test_mock_storyboard_produces_diverse_scenes(monkeypatch):
+    """Verify that mock storyboard generation produces story-driven, diverse scenes with zero warnings."""
+    monkeypatch.setattr(settings, "llm_provider", "mock")
+    monkeypatch.setattr(settings, "llm_provider_storyboard", "mock")
+
+    class DummyVideo:
+        id = uuid.uuid4()
+        topic = "Why is there a tiny hole in an airplane window?"
+        channel = None
+
+    class DummyStep:
+        name = "storyboard"
+        user_prompt = None
+        output = None
+
+    script_data = _make_sample_script_dict()
+    prev = {"script": {"script": script_data}}
+
+    result = generate_storyboard_step(DummyVideo(), prev, DummyStep())
+
+    assert "storyboard" in result
+    assert "warnings" in result
+    assert not any("suspiciously repetitive" in w.lower() for w in result["warnings"])
+    assert not any("identical shot type" in w.lower() for w in result["warnings"])
+    assert not any("distinct shot types across" in w.lower() for w in result["warnings"])
+    scenes = result["storyboard"]["scenes"]
+    assert len(scenes) >= 8
+
+    # Verify visual storytelling fields are present and populated
+    shot_types = set()
+    visual_purposes = set()
+    focal_points = set()
+
+    for s in scenes:
+        assert s["visual_purpose"], f"Scene {s['index']} missing visual_purpose"
+        assert s["shot_type"] in ALLOWED_SHOT_TYPES
+        assert s["camera_angle"], f"Scene {s['index']} missing camera_angle"
+        assert s["focal_point"], f"Scene {s['index']} missing focal_point"
+        assert s["visual_technique"], f"Scene {s['index']} missing visual_technique"
+        shot_types.add(s["shot_type"])
+        visual_purposes.add(s["visual_purpose"])
+        focal_points.add(s["focal_point"])
+
+    # Across the storyboard, at least 4 distinct shot types must be used
+    assert len(shot_types) >= 4, f"Expected >= 4 shot types, got {shot_types}"
+    assert len(visual_purposes) >= 4, f"Expected varied visual purposes, got {visual_purposes}"
+
+
+def test_airplane_window_story_progression():
+    """Demonstrate the airplane-window visual storytelling progression and validate it passes soft checks."""
+    script_data = _make_sample_script_dict()
+    narration_words = script_data["narration"].split()
+
+    # Split narration into 8 slices
+    chunk_size = len(narration_words) // 8
+    chunks = []
+    for i in range(8):
+        start = i * chunk_size
+        end = (i + 1) * chunk_size if i < 7 else len(narration_words)
+        chunks.append(" ".join(narration_words[start:end]))
+
+    # Construct the story-driven storyboard requested for the airplane window topic
+    airplane_scenes = [
+        SceneInput(
+            narration=chunks[0],
+            visual_purpose="Establish the subject with wide scale",
+            shot_type="aerial",
+            camera_angle="high-angle aerial",
+            focal_point="commercial airliner soaring above clouds",
+            visual_technique="cinematic-photo",
+            image_prompt="Wide exterior aerial shot of a commercial passenger airplane soaring smoothly above a sea of clouds under bright daylight",
+            uses_anchor=False,
+        ),
+        SceneInput(
+            narration=chunks[1],
+            visual_purpose="Direct attention to the passenger window",
+            shot_type="medium",
+            camera_angle="exterior 45-degree angle",
+            focal_point="highlighted passenger fuselage window",
+            visual_technique="cinematic-photo",
+            image_prompt="Close-up of the airplane exterior fuselage with several passenger windows visible, one specific window subtly emphasized",
+            uses_anchor=True,
+        ),
+        SceneInput(
+            narration=chunks[2],
+            visual_purpose="Reveal the tiny bleed hole detail",
+            shot_type="macro",
+            camera_angle="extreme close-up 90-degree",
+            focal_point="miniature bleed hole near bottom of acrylic pane",
+            visual_technique="macro-photo",
+            image_prompt="Extreme macro close-up of the actual small circular bleed hole near the bottom of the passenger window acrylic pane",
+            uses_anchor=True,
+        ),
+        SceneInput(
+            narration=chunks[3],
+            visual_purpose="Show the perspective from inside cabin",
+            shot_type="interior",
+            camera_angle="passenger-perspective eye-level",
+            focal_point="cabin window frame and outside sky",
+            visual_technique="passenger-pov",
+            image_prompt="Interior passenger perspective looking toward the airplane window frame, showing cabin seating bezel and outside blue sky",
+            uses_anchor=False,
+        ),
+        SceneInput(
+            narration=chunks[4],
+            visual_purpose="Explain window construction and 3-pane assembly",
+            shot_type="cutaway",
+            camera_angle="isometric technical cutaway",
+            focal_point="three separate acrylic window panes in exploded view",
+            visual_technique="technical-illustration",
+            image_prompt="Exploded technical cutaway diagram of a passenger window assembly showing outer pane, middle pane with bleed hole, and inner pane",
+            uses_anchor=False,
+        ),
+        SceneInput(
+            narration=chunks[5],
+            visual_purpose="Explain airflow and pressure equalization mechanism",
+            shot_type="diagram",
+            camera_angle="side cross-section schematic",
+            focal_point="airflow pressure balance arrows through bleed hole",
+            visual_technique="schematic",
+            image_prompt="Simplified cross-section diagram showing pressure equalization between pressurized cabin and outside atmosphere through the hole",
+            uses_anchor=False,
+        ),
+        SceneInput(
+            narration=chunks[6],
+            visual_purpose="Demonstrate moisture and frost prevention proof",
+            shot_type="close-up",
+            camera_angle="low-angle close-up",
+            focal_point="crystal-clear frost-free window pane",
+            visual_technique="cinematic-photo",
+            image_prompt="Close-up of the crystal-clear acrylic window pane free of fog or frost despite freezing high-altitude conditions outside",
+            uses_anchor=True,
+        ),
+        SceneInput(
+            narration=chunks[7],
+            visual_purpose="Finish with a memorable visual conclusion",
+            shot_type="wide",
+            camera_angle="wide cinematic horizon",
+            focal_point="passenger aircraft flying into golden sunset",
+            visual_technique="cinematic-photo",
+            image_prompt="Cinematic wide shot of the passenger airplane cruising gracefully above clouds during a dramatic golden sunset",
+            uses_anchor=False,
+        ),
+    ]
+
+    subject_anchor = "A commercial passenger airliner window with rounded frame and triple-pane acrylic glass."
+    visual_style = "Clean cinematic lighting, crisp details, photorealistic aviation photography"
+
+    warnings = validate_storyboard_soft_checks(
+        airplane_scenes,
+        script_data["narration"],
+        subject_anchor=subject_anchor,
+        visual_style=visual_style,
+    )
+
+    # 1. Zero soft-check or diversity warnings
+    assert warnings == []
+
+    # 2. Check shot variety: 7 distinct shot types across 8 scenes
+    shot_types = {s.shot_type for s in airplane_scenes}
+    assert len(shot_types) >= 6
+    assert "aerial" in shot_types
+    assert "macro" in shot_types
+    assert "cutaway" in shot_types
+    assert "interior" in shot_types
+    assert "diagram" in shot_types
+
+    # 3. Check final prompt composition for distinct beats
+    final_prompts = [
+        compose_final_prompt(s, subject_anchor=subject_anchor, visual_style=visual_style)
+        for s in airplane_scenes
+    ]
+
+    # Scene 1: Aerial exterior shot does NOT force subject anchor
+    assert "Wide exterior aerial shot" in final_prompts[0]
+    assert subject_anchor not in final_prompts[0]
+
+    # Scene 3: Macro shot focuses on the tiny bleed hole and includes anchor
+    assert "Extreme macro close-up" in final_prompts[2]
+    assert subject_anchor in final_prompts[2]
+
+    # Scene 5: Technical cutaway diagram explains 3-layer assembly without forcing anchor
+    assert "Exploded technical cutaway diagram" in final_prompts[4]
+    assert subject_anchor not in final_prompts[4]
+
+    # All final prompts satisfy COMPOSITION_RULES and length bounds
+    for p in final_prompts:
+        assert COMPOSITION_RULES in p
+        assert len(p) <= MAX_FINAL_PROMPT_LENGTH
+
