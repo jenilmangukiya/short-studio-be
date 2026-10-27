@@ -137,6 +137,20 @@ def generate_render_step(
         segment_paths: list[Path] = []
         expected_total_duration = 0.0
 
+        # Extract storyboard scene metadata if available to guide camera motion
+        sb_outer = prev.get("storyboard") or {}
+        sb_inner = (
+            sb_outer.get("storyboard")
+            if isinstance(sb_outer, dict) and isinstance(sb_outer.get("storyboard"), dict)
+            else (sb_outer if isinstance(sb_outer, dict) else {})
+        )
+        sb_scenes = sb_inner.get("scenes") if isinstance(sb_inner.get("scenes"), list) else []
+        scenes_by_idx = {
+            s["index"]: s
+            for s in sb_scenes
+            if isinstance(s, dict) and s.get("index")
+        }
+
         for idx in all_indices:
             img_rel = valid_images[idx]["file"]
             vo_rel = valid_audio[idx]["file"]
@@ -150,27 +164,61 @@ def generate_render_step(
                 raise PipelineError(f"Audio file for scene {idx} does not exist: {vo_abs}")
 
             scene_dur = float(valid_audio[idx].get("duration_seconds", 0.0))
+            if scene_dur <= 0.0:
+                try:
+                    import soundfile as sf
+                    scene_dur = float(sf.info(str(vo_abs)).duration)
+                except Exception:
+                    scene_dur = 2.5
             expected_total_duration += scene_dur
 
             seg_path = temp_dir / f"scene_{idx:02d}.mp4"
 
-            # FFmpeg command to render image + audio into a standard 1080x1920 30fps segment
-            scale_crop_filter = (
-                f"scale={target_width}:{target_height}:force_original_aspect_ratio=increase,"
-                f"crop={target_width}:{target_height},setsar=1"
+            # Determine motion direction based on scene composition / shot type
+            sc_meta = scenes_by_idx.get(idx, {})
+            shot_type = str(sc_meta.get("shot_type") or "medium").lower()
+
+            # Restrained 4.5% - 5.5% zoom delta to keep subjects visible and avoid edge crop
+            zoom_delta = 0.05
+            total_frames = max(1, int(round(scene_dur * target_fps)))
+
+            if shot_type in ("extreme-close-up", "close-up", "macro"):
+                # Close/macro shots: gentle pull-out so tight details are never cropped
+                z_expr = f"({1.0 + zoom_delta:.3f}-{zoom_delta:.3f}*(on/{total_frames}))"
+            elif shot_type in ("diagram", "cutaway") and idx % 2 == 0:
+                # Alternating diagram/cutaway shots: gentle pull-out for variety
+                z_expr = f"({1.0 + zoom_delta:.3f}-{zoom_delta:.3f}*(on/{total_frames}))"
+            else:
+                # Wide, medium, in-context, establishing shots: gentle slow push-in
+                z_expr = f"(1.0+{zoom_delta:.3f}*(on/{total_frames}))"
+
+            # Anchor motion around subject in upper-middle of 9:16 frame (y ~ 42% height)
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "(ih*0.42)-((ih/zoom)*0.42)"
+
+            # Pre-scale & crop to exact 9:16 at 1.5x resolution to eliminate sub-pixel jitter
+            intermediate_w = int(target_width * 1.5)
+            intermediate_h = int(target_height * 1.5)
+
+            filter_chain = (
+                f"scale={intermediate_w}:{intermediate_h}:force_original_aspect_ratio=increase,"
+                f"crop={intermediate_w}:{intermediate_h},"
+                f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
+                f"d={total_frames + 2}:s={target_width}x{target_height}:fps={target_fps}"
             )
 
             seg_cmd = [
                 "ffmpeg",
                 "-y",
-                "-loop", "1",
-                "-framerate", str(target_fps),
                 "-i", str(img_abs),
                 "-i", str(vo_abs),
+                "-filter_complex", f"[0:v]{filter_chain}[v]",
+                "-map", "[v]",
+                "-map", "1:a",
                 "-c:v", "libx264",
-                "-tune", "stillimage",
+                "-preset", "fast",
+                "-crf", "19",
                 "-pix_fmt", "yuv420p",
-                "-vf", scale_crop_filter,
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "44100",

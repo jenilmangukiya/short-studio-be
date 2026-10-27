@@ -199,3 +199,94 @@ def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
     # Verify zero temporary directories remain
     tmp_dirs = list(video_dir.glob("tmp_render_*"))
     assert len(tmp_dirs) == 0
+
+
+def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
+    """Verify Ken Burns camera motion is applied with frame-to-frame pixel differences."""
+    from PIL import Image, ImageDraw
+    import numpy as np
+
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "render_fps", 30)
+
+    video = DummyVideo()
+    video_dir = tmp_path / str(video.id)
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create synthetic pattern PNG with distinct details to detect zoom motion
+    img1 = Image.new("RGB", (1024, 1536), color=(20, 30, 40))
+    draw1 = ImageDraw.Draw(img1)
+    draw1.rectangle([300, 400, 700, 800], fill=(220, 180, 50))
+    img1_rel = f"{video.id}/scene_01.png"
+    img1.save(tmp_path / img1_rel)
+
+    img2 = Image.new("RGB", (1024, 1536), color=(40, 20, 50))
+    draw2 = ImageDraw.Draw(img2)
+    draw2.ellipse([350, 450, 650, 750], fill=(50, 200, 220))
+    img2_rel = f"{video.id}/scene_02.png"
+    img2.save(tmp_path / img2_rel)
+
+    wav1_rel = f"{video.id}/scene_01.wav"
+    (tmp_path / wav1_rel).write_bytes(create_mock_wav(0.6, 24000))
+    wav2_rel = f"{video.id}/scene_02.wav"
+    (tmp_path / wav2_rel).write_bytes(create_mock_wav(0.6, 24000))
+
+    prev = {
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {"index": 1, "shot_type": "wide"},
+                    {"index": 2, "shot_type": "close-up"},
+                ]
+            }
+        },
+        "images": {
+            "images": {
+                "items": [
+                    {"index": 1, "status": "ok", "file": img1_rel},
+                    {"index": 2, "status": "ok", "file": img2_rel},
+                ]
+            }
+        },
+        "voiceover": {
+            "voiceover": {
+                "items": [
+                    {"index": 1, "status": "ok", "file": wav1_rel, "duration_seconds": 0.6},
+                    {"index": 2, "status": "ok", "file": wav2_rel, "duration_seconds": 0.6},
+                ]
+            }
+        },
+    }
+
+    res = h_render(video, prev, None)
+    final_video = Path(res["video_path"])
+    assert final_video.is_file()
+    assert res["render"]["scenes_rendered"] == 2
+    assert abs(res["duration_seconds"] - 1.2) < 0.15
+
+    # Extract two frames from scene 1 at different timestamps (t=0.1s and t=0.45s)
+    f1_path = tmp_path / "f1.png"
+    f2_path = tmp_path / "f2.png"
+    subprocess.run(
+        ["ffmpeg", "-y", "-ss", "0.1", "-i", str(final_video), "-frames:v", "1", str(f1_path)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-ss", "0.45", "-i", str(final_video), "-frames:v", "1", str(f2_path)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    im1 = np.array(Image.open(f1_path))
+    im2 = np.array(Image.open(f2_path))
+
+    assert im1.shape == (1920, 1080, 3)
+    assert im2.shape == (1920, 1080, 3)
+
+    # In a static video, im1 and im2 would have difference == 0.
+    # With Ken Burns motion, the frame content has changed due to zoom:
+    pixel_diff = float(np.mean(np.abs(im1.astype(float) - im2.astype(float))))
+    assert pixel_diff > 0.2, f"Expected Ken Burns motion between frames, got diff {pixel_diff}"

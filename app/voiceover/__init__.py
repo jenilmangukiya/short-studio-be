@@ -11,6 +11,7 @@ from .exceptions import (
 from .factory import get_voiceover_provider
 from .kokoro import KokoroVoiceoverProvider
 from .mock import MockVoiceoverProvider, create_mock_wav
+from .silence import trim_silence_samples, trim_silence_wav
 from .types import VoiceoverResult
 
 __all__ = [
@@ -25,4 +26,6 @@ __all__ = [
     "VoiceoverTimeoutError",
     "create_mock_wav",
     "get_voiceover_provider",
+    "trim_silence_samples",
+    "trim_silence_wav",
 ]

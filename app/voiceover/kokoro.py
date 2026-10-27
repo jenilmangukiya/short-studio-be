@@ -2,10 +2,12 @@
 
 import io
 from pathlib import Path
+import re
 from typing import Any
 
 from .base import BaseVoiceoverProvider
 from .exceptions import VoiceoverConfigError, VoiceoverProviderError
+from .silence import trim_silence_samples
 
 # Module-level cache for the loaded Kokoro model instance so it persists in memory
 _KOKORO_CACHE: dict[tuple[str, str], Any] = {}
@@ -116,6 +118,10 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
 
         if len(samples) == 0 or sample_rate <= 0:
             raise VoiceoverProviderError("Kokoro produced empty audio samples")
+
+        # Trim excessive silence while preserving natural breath headroom and phrase pauses
+        is_terminal = bool(re.search(r"[.!?]\s*$", text.strip()))
+        samples = trim_silence_samples(samples, sample_rate, is_terminal=is_terminal)
 
         actual_duration = round(len(samples) / float(sample_rate), 3)
 

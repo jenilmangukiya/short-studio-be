@@ -21,6 +21,8 @@ from app.voiceover import (
     VoiceoverResult,
     create_mock_wav,
     get_voiceover_provider,
+    trim_silence_samples,
+    trim_silence_wav,
 )
 
 
@@ -452,3 +454,125 @@ def test_h_voiceover_pipeline_handler(tmp_path, monkeypatch):
     assert res["duration_seconds"] == 5.0
     assert "voiceover" in res
     assert len(res["voiceover"]["items"]) == 2
+
+
+# ==============================================================================
+# Silence Trimming & Audio Prosody Tests
+# ==============================================================================
+
+def test_trim_silence_samples_terminal_and_non_terminal():
+    """Verify that excessive leading/trailing silence is cleanly trimmed with proper headroom."""
+    import numpy as np
+
+    sr = 24000
+    # 400ms lead silence + 1000ms 440Hz tone + 600ms trail silence = 2.0s
+    lead = np.zeros(int(0.4 * sr), dtype=np.float32)
+    tone = 0.5 * np.sin(2 * np.pi * 440.0 * np.linspace(0, 1.0, int(1.0 * sr), dtype=np.float32))
+    trail = np.zeros(int(0.6 * sr), dtype=np.float32)
+    full = np.concatenate([lead, tone, trail])
+
+    # 1. Terminal sentence trimming (. ! ?) keeps ~35ms lead + ~110ms trail = 1.145s
+    trimmed_term = trim_silence_samples(full, sample_rate=sr, is_terminal=True)
+    dur_term = len(trimmed_term) / sr
+    assert 1.13 <= dur_term <= 1.16, f"Expected ~1.145s terminal duration, got {dur_term:.3f}s"
+
+    # 2. Non-terminal clause trimming (, ; :) keeps ~35ms lead + ~80ms trail = 1.115s
+    trimmed_nonterm = trim_silence_samples(full, sample_rate=sr, is_terminal=False)
+    dur_nonterm = len(trimmed_nonterm) / sr
+    assert 1.10 <= dur_nonterm <= 1.13, f"Expected ~1.115s non-terminal duration, got {dur_nonterm:.3f}s"
+
+    # 3. Micro-fades prevent edge clicks: boundaries should smoothly taper towards 0
+    assert abs(trimmed_term[0]) < 0.05
+    assert abs(trimmed_term[-1]) < 0.05
+
+
+def test_trim_silence_samples_edge_cases():
+    """Verify edge cases: empty audio, pure silence, and ultra-short signals."""
+    import numpy as np
+
+    sr = 24000
+    # Empty audio
+    empty = np.array([], dtype=np.float32)
+    assert len(trim_silence_samples(empty, sr)) == 0
+
+    # Pure silence (no speech energy above threshold)
+    silence = np.zeros(sr, dtype=np.float32)
+    trimmed_silence = trim_silence_samples(silence, sr)
+    assert len(trimmed_silence) == len(silence)
+
+
+def test_trim_silence_wav_round_trip():
+    """Verify WAV byte stream silence trimming produces valid WAV format and accurate duration."""
+    import io
+    import soundfile as sf
+    import numpy as np
+
+    sr = 24000
+    lead = np.zeros(int(0.3 * sr), dtype=np.float32)
+    tone = 0.4 * np.sin(2 * np.pi * 440.0 * np.linspace(0, 0.8, int(0.8 * sr), dtype=np.float32))
+    trail = np.zeros(int(0.5 * sr), dtype=np.float32)
+    raw_audio = np.concatenate([lead, tone, trail])
+
+    buf = io.BytesIO()
+    sf.write(buf, raw_audio, sr, format="WAV", subtype="PCM_16")
+    wav_bytes = buf.getvalue()
+
+    trimmed_bytes, out_sr, dur = trim_silence_wav(wav_bytes, is_terminal=True)
+    assert out_sr == sr
+    # Expected duration: 0.035 lead + 0.8 tone + 0.110 trail = ~0.945s
+    assert 0.93 <= dur <= 0.96
+    assert len(trimmed_bytes) < len(wav_bytes)
+
+    # Verify output bytes can be parsed by soundfile
+    read_data, read_sr = sf.read(io.BytesIO(trimmed_bytes))
+    assert read_sr == sr
+    assert round(len(read_data) / float(read_sr), 3) == dur
+
+
+def test_silence_trimming_subtitle_synchronization(tmp_path):
+    """Verify that trimming silence from audio maintains exact acoustic subtitle synchronization."""
+    import io
+    import soundfile as sf
+    import numpy as np
+    from app.subtitles.acoustic import _align_scene_audio
+
+    sr = 24000
+    lead = np.zeros(int(0.35 * sr), dtype=np.float32)
+    # 3 tone pulses representing 3 words: "airplane", "window", "hole"
+    w1 = 0.5 * np.sin(2 * np.pi * 300.0 * np.linspace(0, 0.3, int(0.3 * sr), dtype=np.float32))
+    pause1 = np.zeros(int(0.08 * sr), dtype=np.float32)
+    w2 = 0.5 * np.sin(2 * np.pi * 400.0 * np.linspace(0, 0.25, int(0.25 * sr), dtype=np.float32))
+    pause2 = np.zeros(int(0.08 * sr), dtype=np.float32)
+    w3 = 0.5 * np.sin(2 * np.pi * 500.0 * np.linspace(0, 0.3, int(0.3 * sr), dtype=np.float32))
+    trail = np.zeros(int(0.55 * sr), dtype=np.float32)
+
+    raw_audio = np.concatenate([lead, w1, pause1, w2, pause2, w3, trail])
+    buf = io.BytesIO()
+    sf.write(buf, raw_audio, sr, format="WAV", subtype="PCM_16")
+
+    trimmed_bytes, out_sr, trimmed_dur = trim_silence_wav(buf.getvalue(), is_terminal=True)
+
+    wav_file = tmp_path / "scene_trimmed.wav"
+    wav_file.write_bytes(trimmed_bytes)
+
+    narration = "Airplane window hole."
+    actual_dur, word_ts = _align_scene_audio(
+        audio_path=wav_file,
+        narration=narration,
+        duration_fallback=trimmed_dur,
+        scene_offset=0.0,
+    )
+
+    # 1. Actual duration matches trimmed audio duration
+    assert round(actual_dur, 3) == round(trimmed_dur, 3)
+
+    # 2. Word timestamps are within trimmed duration bounds
+    assert len(word_ts) == 3
+    assert word_ts[0].text == "Airplane"
+    assert word_ts[1].text == "window"
+    assert word_ts[2].text == "hole"
+
+    # 3. First word starts near lead pad headroom (~0.035s)
+    assert 0.0 <= word_ts[0].start <= 0.08
+    # 4. Final word ends before total trimmed duration
+    assert word_ts[2].end <= actual_dur

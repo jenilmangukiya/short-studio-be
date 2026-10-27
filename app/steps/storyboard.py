@@ -93,6 +93,12 @@ FORBIDDEN_WORDS_REGEX = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Words that should not dangle at scene cut boundaries without terminal punctuation
+DANGLING_BOUNDARY_WORDS: frozenset[str] = frozenset({
+    "and", "or", "but", "so", "because", "of", "to", "in", "for",
+    "with", "from", "at", "by", "that", "which", "a", "an", "the",
+})
+
 # Default deterministic subject anchor for mock LLM runs
 DEFAULT_MOCK_SUBJECT_ANCHOR: str = "A small glossy blue cube with rounded edges."
 
@@ -324,6 +330,24 @@ def validate_storyboard_soft_checks(
                 f"Scene {idx} estimated duration is {est_sec}s ({word_count} words; target: 2.0-7.0s)."
             )
 
+        # Natural grammatical boundary checks
+        narr_str = str(narr).strip()
+        if narr_str:
+            if word_count < 3 and len(scenes) > 1:
+                warnings.append(
+                    f"Scene {idx} narration has only {word_count} words ({narr_str!r}), creating an awkward fragment. Keep clauses complete."
+                )
+
+            # Check for dangling words at the end of the scene (e.g. "and", "or", "of", "to")
+            if idx < len(scenes):
+                last_m = re.search(r"\b([a-zA-Z]+)[^\w\s]*$", narr_str)
+                if last_m:
+                    last_w = last_m.group(1).lower()
+                    if last_w in DANGLING_BOUNDARY_WORDS:
+                        warnings.append(
+                            f"Scene {idx} narration ends on dangling word '{last_w}'. Split narration at natural grammatical boundaries."
+                        )
+
         # Image prompt checks: non-empty, max 300 chars, no forbidden words
         if not img_prompt or not str(img_prompt).strip():
             warnings.append(f"Scene {idx} image prompt is empty.")
@@ -502,21 +526,48 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
 
     chunks = list(sentence_matches)
 
-    # Step 2: If fewer than 8 chunks, iteratively split chunks on commas or semicolons
+    # Step 2: If fewer than 8 chunks, iteratively split long chunks at natural grammatical boundaries
     while len(chunks) < 8:
         best_idx = -1
-        best_word_count = 0
+        best_score = -1.0
         best_split_parts: tuple[str, str] | None = None
 
         for idx, chunk in enumerate(chunks):
-            # Split on first comma or semicolon that has non-empty text on both sides
-            parts = re.split(r"(?<=[,;])\s+", chunk, maxsplit=1)
-            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-                wc = len(chunk.split())
-                if wc > best_word_count and wc >= 4:
-                    best_word_count = wc
+            words = chunk.split()
+            if len(words) < 8:
+                continue
+
+            candidates: list[tuple[float, str, str]] = []
+            for match in re.finditer(r"([,;:—–])\s+", chunk):
+                split_pos = match.end()
+                p1 = chunk[:split_pos].strip()
+                p2 = chunk[split_pos:].strip()
+                w1 = p1.split()
+                w2 = p2.split()
+                if len(w1) < 4 or len(w2) < 4:
+                    continue
+
+                last_m = re.search(r"\b([a-zA-Z]+)[^\w\s]*$", p1)
+                last_w = last_m.group(1).lower() if last_m else ""
+                if last_w in DANGLING_BOUNDARY_WORDS:
+                    continue
+
+                punct = match.group(1)
+                bonus = 10.0 if punct in (";", ":", "—", "–") else 0.0
+                if p2.lower().startswith(("and ", "but ", "while ", "because ", "so ", "though ")):
+                    bonus += 8.0
+
+                balance_penalty = abs(len(w1) - len(w2))
+                score = 50.0 + bonus - balance_penalty
+                candidates.append((score, p1, p2))
+
+            if candidates:
+                candidates.sort(key=lambda c: c[0], reverse=True)
+                top_score, top_p1, top_p2 = candidates[0]
+                if top_score > best_score:
+                    best_score = top_score
                     best_idx = idx
-                    best_split_parts = (parts[0].strip(), parts[1].strip())
+                    best_split_parts = (top_p1, top_p2)
 
         if best_idx != -1 and best_split_parts:
             chunks = (
@@ -525,7 +576,7 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
                 + chunks[best_idx + 1:]
             )
         else:
-            # Cannot split any further on punctuation
+            # Cannot find any more natural grammatical splits with >= 4 words on each side
             break
 
     # Step 3: If more than 12 chunks, merge adjacent shortest chunks

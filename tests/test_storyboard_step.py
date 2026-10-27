@@ -1,6 +1,7 @@
 """Unit tests for the real storyboard step (network-free)."""
 
 import json
+import re
 import uuid
 import pytest
 
@@ -66,13 +67,26 @@ def _make_sample_script_dict(
 def _make_valid_scenes(script_narration: str, count: int = 8) -> list[SceneInput]:
     """Helper to generate `count` valid scenes splitting the script narration."""
     words = script_narration.split()
-    chunk_size = len(words) // count
-    scenes: list[SceneInput] = []
+    n = len(words)
+    chunk_size = max(1, n // count)
+    boundaries = [0]
+    dangling = frozenset({
+        "and", "or", "but", "so", "because", "of", "to", "in", "for",
+        "with", "from", "at", "by", "that", "which", "a", "an", "the",
+    })
 
+    for i in range(1, count):
+        target = i * chunk_size
+        if target < n:
+            w = words[target - 1].strip(",.;:!?").lower()
+            if w in dangling and target + 1 < n:
+                target += 1
+        boundaries.append(target)
+    boundaries.append(n)
+
+    scenes: list[SceneInput] = []
     for i in range(count):
-        start = i * chunk_size
-        end = (i + 1) * chunk_size if i < count - 1 else len(words)
-        chunk_words = words[start:end]
+        chunk_words = words[boundaries[i]:boundaries[i + 1]]
         shot_type = ALLOWED_SHOT_TYPES[i % len(ALLOWED_SHOT_TYPES)]
         scenes.append(
             SceneInput(
@@ -378,6 +392,51 @@ def test_mock_splitter_short_script_does_not_crash():
 def test_mock_splitter_empty_input():
     assert split_script_for_mock("") == ([], "")
     assert split_script_for_mock("   \n\t  ") == ([], "")
+
+
+def test_mock_splitter_preserves_natural_boundaries_and_avoids_fragments():
+    """Verify that mock splitter avoids splitting short introductory phrases into awkward fragments."""
+    script_text = (
+        "In fact, airplane windows have tiny holes. "
+        "Air travelers often notice a small opening near the bottom of the acrylic pane. "
+        "This bleed hole balances the immense pressure difference between the cabin and the atmosphere, "
+        "while the outer structural pane holds the primary pressure load. "
+        "Without this simple engineering design, passenger windows could crack under extreme forces. "
+        "Commercial aircraft rely on this microscopic detail to keep every flight safe."
+    )
+    scenes, anchor = split_script_for_mock(script_text)
+
+    # 1. Produced multiple valid scenes reproducing narration verbatim
+    assert len(scenes) >= 6
+    joined = " ".join(s.narration for s in scenes)
+    assert normalize_for_comparison(joined) == normalize_for_comparison(script_text)
+
+    # 2. No scene is a tiny fragment (< 4 words)
+    for idx, s in enumerate(scenes, 1):
+        words = s.narration.split()
+        assert len(words) >= 4, f"Scene {idx} has only {len(words)} words: '{s.narration}'"
+
+    # 3. First scene keeps introductory clause intact
+    assert scenes[0].narration.startswith("In fact, airplane windows")
+
+
+def test_validator_detects_awkward_narration_fragments_and_dangling_words():
+    """Verify soft-check validator catches awkward 1-2 word fragments and dangling boundary words."""
+    script = _make_sample_script_dict()
+    scenes = _make_valid_scenes(script["narration"], count=8)
+
+    # Inject a 2-word fragment into scene 1
+    scenes[0].narration = "In fact,"
+    # Inject a dangling word into scene 2
+    scenes[1].narration = "Aircraft windows consist of"
+
+    warnings = validate_storyboard_soft_checks(scenes, script["narration"])
+
+    # 1. Detects awkward fragment
+    assert any("awkward fragment" in w.lower() or "only 2 words" in w.lower() for w in warnings)
+
+    # 2. Detects dangling boundary word
+    assert any("dangling word 'of'" in w.lower() for w in warnings)
 
 
 # ==============================================================================
@@ -1018,13 +1077,23 @@ def test_airplane_window_story_progression():
     script_data = _make_sample_script_dict()
     narration_words = script_data["narration"].split()
 
-    # Split narration into 8 slices
-    chunk_size = len(narration_words) // 8
-    chunks = []
-    for i in range(8):
-        start = i * chunk_size
-        end = (i + 1) * chunk_size if i < 7 else len(narration_words)
-        chunks.append(" ".join(narration_words[start:end]))
+    # Split narration into 8 slices respecting duration and natural boundaries
+    n = len(narration_words)
+    chunk_size = max(1, n // 8)
+    boundaries = [0]
+    dangling = frozenset({
+        "and", "or", "but", "so", "because", "of", "to", "in", "for",
+        "with", "from", "at", "by", "that", "which", "a", "an", "the",
+    })
+    for i in range(1, 8):
+        target = i * chunk_size
+        if target < n:
+            w = narration_words[target - 1].strip(",.;:!?").lower()
+            if w in dangling and target + 1 < n:
+                target += 1
+        boundaries.append(target)
+    boundaries.append(n)
+    chunks = [" ".join(narration_words[boundaries[i]:boundaries[i + 1]]) for i in range(8)]
 
     # Construct the story-driven storyboard requested for the airplane window topic
     airplane_scenes = [
