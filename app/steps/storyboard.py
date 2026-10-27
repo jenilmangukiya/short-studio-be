@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, object_session
 
+from app.animation import plan_scene_animation
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
 from app.steps.prompt_compose import (
@@ -110,6 +111,84 @@ class PipelineError(Exception):
     """Raised when pipeline preconditions or unrecoverable step errors occur."""
 
 
+class AnimationPlanInput(BaseModel):
+    """Camera animation metadata for a scene."""
+
+    animation_type: Literal[
+        "zoom-in",
+        "zoom-out",
+        "pan-left",
+        "pan-right",
+        "pan-up",
+        "pan-down",
+        "subtle-drift",
+        "static",
+    ] = Field(
+        default="zoom-in",
+        description="Type of camera movement: zoom-in, zoom-out, pan-left, pan-right, pan-up, pan-down, subtle-drift, static",
+    )
+    focal_point: str = Field(
+        default="",
+        description="Description of the focal point",
+    )
+    focal_x: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Normalized horizontal focal coordinate (0.0=left, 1.0=right)",
+    )
+    focal_y: float = Field(
+        default=0.42,
+        ge=0.0,
+        le=1.0,
+        description="Normalized vertical focal coordinate (0.0=top, 1.0=bottom)",
+    )
+    start_scale: float = Field(
+        default=1.00,
+        ge=1.0,
+        le=1.15,
+        description="Starting zoom scale factor (1.00 to 1.15)",
+    )
+    end_scale: float = Field(
+        default=1.05,
+        ge=1.0,
+        le=1.15,
+        description="Ending zoom scale factor (1.00 to 1.15)",
+    )
+    start_x: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Starting camera viewport center X (0.0 to 1.0)",
+    )
+    start_y: float = Field(
+        default=0.42,
+        ge=0.0,
+        le=1.0,
+        description="Starting camera viewport center Y (0.0 to 1.0)",
+    )
+    end_x: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Ending camera viewport center X (0.0 to 1.0)",
+    )
+    end_y: float = Field(
+        default=0.42,
+        ge=0.0,
+        le=1.0,
+        description="Ending camera viewport center Y (0.0 to 1.0)",
+    )
+    intensity: str = Field(
+        default="subtle",
+        description="Movement intensity: 'subtle', 'moderate', or 'restrained'",
+    )
+    reasoning: str = Field(
+        default="",
+        description="Brief explanation of why this camera motion suits the scene composition and narration",
+    )
+
+
 class SceneInput(BaseModel):
     """Raw scene produced by the LLM."""
 
@@ -141,6 +220,10 @@ class SceneInput(BaseModel):
     uses_anchor: bool = Field(
         default=False,
         description="True ONLY if the recurring anchor object is the central physical subject of this specific shot. Set to false for establishing shots, interior POV, diagrams, cutaways, etc.",
+    )
+    animation: AnimationPlanInput | None = Field(
+        default=None,
+        description="Structured camera animation instructions for this scene",
     )
 
 
@@ -437,6 +520,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "subject soaring above cloudscape",
         "prompt": "Wide aerial establishing shot capturing the primary subject high above rolling sunset clouds",
         "uses_anchor": False,
+        "animation": {
+            "animation_type": "zoom-in",
+            "focal_point": "subject soaring above cloudscape",
+            "focal_x": 0.50,
+            "focal_y": 0.40,
+            "start_scale": 1.00,
+            "end_scale": 1.05,
+            "start_x": 0.50,
+            "start_y": 0.40,
+            "end_x": 0.50,
+            "end_y": 0.40,
+            "intensity": "subtle",
+            "reasoning": "Slow push-in toward primary subject draws viewer attention naturally.",
+        },
     },
     {
         "purpose": "Direct attention to specific focus",
@@ -446,6 +543,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "highlighted passenger window array",
         "prompt": "Exterior medium framing directing viewer focus towards the key component with focused illumination",
         "uses_anchor": True,
+        "animation": {
+            "animation_type": "zoom-in",
+            "focal_point": "highlighted passenger window array",
+            "focal_x": 0.50,
+            "focal_y": 0.42,
+            "start_scale": 1.00,
+            "end_scale": 1.05,
+            "start_x": 0.50,
+            "start_y": 0.42,
+            "end_x": 0.50,
+            "end_y": 0.42,
+            "intensity": "subtle",
+            "reasoning": "Slow push-in toward passenger window directs viewer attention.",
+        },
     },
     {
         "purpose": "Reveal tiny detail and texture",
@@ -455,6 +566,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "miniature bleed opening and texture",
         "prompt": "Macro extreme close-up revealing fine physical detail and miniature circular opening in clear material",
         "uses_anchor": True,
+        "animation": {
+            "animation_type": "zoom-out",
+            "focal_point": "miniature bleed opening and texture",
+            "focal_x": 0.50,
+            "focal_y": 0.45,
+            "start_scale": 1.05,
+            "end_scale": 1.00,
+            "start_x": 0.50,
+            "start_y": 0.45,
+            "end_x": 0.50,
+            "end_y": 0.45,
+            "intensity": "moderate",
+            "reasoning": "Gentle pull-out from tiny bleed hole reveals acrylic frame without cropping edges.",
+        },
     },
     {
         "purpose": "Interior passenger perspective",
@@ -464,6 +589,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "cabin frame looking outward",
         "prompt": "First-person passenger perspective from inside cabin looking past contoured bezel to distant sky",
         "uses_anchor": False,
+        "animation": {
+            "animation_type": "zoom-in",
+            "focal_point": "cabin frame looking outward",
+            "focal_x": 0.50,
+            "focal_y": 0.42,
+            "start_scale": 1.00,
+            "end_scale": 1.05,
+            "start_x": 0.50,
+            "start_y": 0.42,
+            "end_x": 0.50,
+            "end_y": 0.42,
+            "intensity": "subtle",
+            "reasoning": "Slow push-in toward cabin window view conveys calm passenger perspective.",
+        },
     },
     {
         "purpose": "Explain construction and layers",
@@ -473,6 +612,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "three distinct separated layer assembly",
         "prompt": "Exploded technical cutaway diagram illustrating the three distinct structural layers in separation",
         "uses_anchor": False,
+        "animation": {
+            "animation_type": "static",
+            "focal_point": "three distinct separated layer assembly",
+            "focal_x": 0.50,
+            "focal_y": 0.42,
+            "start_scale": 1.00,
+            "end_scale": 1.00,
+            "start_x": 0.50,
+            "start_y": 0.42,
+            "end_x": 0.50,
+            "end_y": 0.42,
+            "intensity": "restrained",
+            "reasoning": "Static hold maintains crisp legibility of technical cutaway layers.",
+        },
     },
     {
         "purpose": "Schematic diagram of functional forces",
@@ -482,6 +635,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "directional flow arrows balancing pressure",
         "prompt": "Cross-section schematic diagram illustrating dynamic pressure balance with directional flow arrows",
         "uses_anchor": False,
+        "animation": {
+            "animation_type": "static",
+            "focal_point": "directional flow arrows balancing pressure",
+            "focal_x": 0.50,
+            "focal_y": 0.42,
+            "start_scale": 1.00,
+            "end_scale": 1.00,
+            "start_x": 0.50,
+            "start_y": 0.42,
+            "end_x": 0.50,
+            "end_y": 0.42,
+            "intensity": "restrained",
+            "reasoning": "Static hold ensures clear readability of schematic diagram labels and flow arrows.",
+        },
     },
     {
         "purpose": "Proof of real-world operation",
@@ -491,6 +658,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "crystal clear surface resisting frost",
         "prompt": "Detailed close-up demonstrating clear unblemished surface remaining free of frost in subzero air",
         "uses_anchor": True,
+        "animation": {
+            "animation_type": "zoom-in",
+            "focal_point": "crystal clear surface resisting frost",
+            "focal_x": 0.50,
+            "focal_y": 0.42,
+            "start_scale": 1.00,
+            "end_scale": 1.05,
+            "start_x": 0.50,
+            "start_y": 0.42,
+            "end_x": 0.50,
+            "end_y": 0.42,
+            "intensity": "subtle",
+            "reasoning": "Gentle zoom-in showcases crystal clarity of the window pane.",
+        },
     },
     {
         "purpose": "Visual closure and resolution",
@@ -500,6 +681,20 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "focal_point": "peaceful horizon in twilight sunset",
         "prompt": "Cinematic wide composition with warm twilight rim lighting bringing elegant visual closure",
         "uses_anchor": False,
+        "animation": {
+            "animation_type": "zoom-in",
+            "focal_point": "peaceful horizon in twilight sunset",
+            "focal_x": 0.50,
+            "focal_y": 0.40,
+            "start_scale": 1.00,
+            "end_scale": 1.05,
+            "start_x": 0.50,
+            "start_y": 0.40,
+            "end_x": 0.50,
+            "end_y": 0.40,
+            "intensity": "subtle",
+            "reasoning": "Gentle push-in toward twilight sunset brings warm, elegant closure.",
+        },
     },
 )
 
@@ -597,6 +792,8 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         scene_idx = i + 1
         beat = MOCK_VISUAL_BEATS[i % len(MOCK_VISUAL_BEATS)]
         uses_anchor = scene_idx not in (2, 5)
+        anim_data = beat.get("animation")
+        anim_obj = AnimationPlanInput(**anim_data) if anim_data else None
         scenes.append(
             SceneInput(
                 narration=chunk,
@@ -607,6 +804,7 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
                 visual_technique=beat["technique"],
                 image_prompt=beat["prompt"],
                 uses_anchor=uses_anchor,
+                animation=anim_obj,
             )
         )
 
@@ -842,6 +1040,28 @@ def generate_storyboard_step(
             visual_style=visual_style,
         )
 
+        # Extract or resolve animation plan for this scene
+        anim_data = getattr(s, "animation", None)
+        if anim_data is not None:
+            if hasattr(anim_data, "model_dump"):
+                anim_plan = anim_data.model_dump()
+            elif hasattr(anim_data, "dict"):
+                anim_plan = anim_data.dict()
+            else:
+                anim_plan = dict(anim_data)
+        else:
+            anim_plan = plan_scene_animation(
+                scene_data={
+                    "shot_type": s.shot_type,
+                    "focal_point": getattr(s, "focal_point", "") or "",
+                    "camera_angle": getattr(s, "camera_angle", "eye-level") or "eye-level",
+                    "visual_purpose": getattr(s, "visual_purpose", "") or "",
+                    "image_prompt": s.image_prompt,
+                    "narration": s.narration,
+                },
+                duration_seconds=est_sec,
+            ).to_dict()
+
         final_scenes.append(
             {
                 "index": idx,
@@ -855,6 +1075,7 @@ def generate_storyboard_step(
                 "uses_anchor": bool(s.uses_anchor),
                 "final_prompt": final_prompt,
                 "est_seconds": est_sec,
+                "animation": anim_plan,
             }
         )
     total_seconds = round(accumulated_seconds, 1)

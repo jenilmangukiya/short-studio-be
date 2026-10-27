@@ -17,6 +17,7 @@ import uuid
 
 from sqlalchemy.orm import object_session
 
+from app.animation import build_ffmpeg_zoompan_filter, plan_scene_animation
 from app.config import settings
 from app.models import Video, VideoStep
 
@@ -151,6 +152,9 @@ def generate_render_step(
             if isinstance(s, dict) and s.get("index")
         }
 
+        rendered_animations: list[dict[str, Any]] = []
+        prev_anim_type: str | None = None
+
         for idx in all_indices:
             img_rel = valid_images[idx]["file"]
             vo_rel = valid_audio[idx]["file"]
@@ -174,38 +178,28 @@ def generate_render_step(
 
             seg_path = temp_dir / f"scene_{idx:02d}.mp4"
 
-            # Determine motion direction based on scene composition / shot type
+            # Resolve AI-directed animation plan tailored to this scene's composition
             sc_meta = scenes_by_idx.get(idx, {})
             shot_type = str(sc_meta.get("shot_type") or "medium").lower()
 
-            # Restrained 4.5% - 5.5% zoom delta to keep subjects visible and avoid edge crop
-            zoom_delta = 0.05
-            total_frames = max(1, int(round(scene_dur * target_fps)))
-
-            if shot_type in ("extreme-close-up", "close-up", "macro"):
-                # Close/macro shots: gentle pull-out so tight details are never cropped
-                z_expr = f"({1.0 + zoom_delta:.3f}-{zoom_delta:.3f}*(on/{total_frames}))"
-            elif shot_type in ("diagram", "cutaway") and idx % 2 == 0:
-                # Alternating diagram/cutaway shots: gentle pull-out for variety
-                z_expr = f"({1.0 + zoom_delta:.3f}-{zoom_delta:.3f}*(on/{total_frames}))"
-            else:
-                # Wide, medium, in-context, establishing shots: gentle slow push-in
-                z_expr = f"(1.0+{zoom_delta:.3f}*(on/{total_frames}))"
-
-            # Anchor motion around subject in upper-middle of 9:16 frame (y ~ 42% height)
-            x_expr = "iw/2-(iw/zoom/2)"
-            y_expr = "(ih*0.42)-((ih/zoom)*0.42)"
-
-            # Pre-scale & crop to exact 9:16 at 1.5x resolution to eliminate sub-pixel jitter
-            intermediate_w = int(target_width * 1.5)
-            intermediate_h = int(target_height * 1.5)
-
-            filter_chain = (
-                f"scale={intermediate_w}:{intermediate_h}:force_original_aspect_ratio=increase,"
-                f"crop={intermediate_w}:{intermediate_h},"
-                f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
-                f"d={total_frames + 2}:s={target_width}x{target_height}:fps={target_fps}"
+            anim_plan = plan_scene_animation(
+                scene_data=sc_meta,
+                image_path=img_abs,
+                duration_seconds=scene_dur,
+                prev_anim_type=prev_anim_type,
             )
+
+            z_expr, x_expr, y_expr, filter_chain, resolved_anim = build_ffmpeg_zoompan_filter(
+                plan=anim_plan,
+                scene_dur=scene_dur,
+                target_fps=target_fps,
+                target_width=target_width,
+                target_height=target_height,
+                fallback_shot_type=shot_type,
+                fallback_scene_idx=idx,
+            )
+            prev_anim_type = resolved_anim.get("animation_type")
+            rendered_animations.append({"scene_index": idx, **resolved_anim})
 
             seg_cmd = [
                 "ffmpeg",
@@ -347,6 +341,7 @@ def generate_render_step(
                 "audio_codec": "aac",
                 "file_size_bytes": file_size_bytes,
                 "scenes_rendered": len(all_indices),
+                "animations": rendered_animations,
             },
             # Top-level video_path and duration_seconds for backward compatibility
             "video_path": str(final_mp4_path),

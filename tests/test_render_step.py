@@ -264,6 +264,16 @@ def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
     assert res["render"]["scenes_rendered"] == 2
     assert abs(res["duration_seconds"] - 1.2) < 0.15
 
+    # Verify per-scene AI-directed animation metadata is preserved in output
+    assert "animations" in res["render"]
+    assert len(res["render"]["animations"]) == 2
+    anim1 = res["render"]["animations"][0]
+    anim2 = res["render"]["animations"][1]
+    assert anim1["scene_index"] == 1
+    assert anim2["scene_index"] == 2
+    assert anim1["animation_type"] in ("pan-right", "pan-left", "zoom-in", "subtle-drift")
+    assert anim2["animation_type"] in ("zoom-out", "subtle-drift", "zoom-in")
+
     # Extract two frames from scene 1 at different timestamps (t=0.1s and t=0.45s)
     f1_path = tmp_path / "f1.png"
     f2_path = tmp_path / "f2.png"

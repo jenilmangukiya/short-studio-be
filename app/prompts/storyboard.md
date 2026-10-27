@@ -99,7 +99,21 @@ Each scene's narration is synthesized independently by the voiceover engine. Mid
 - **Scene 1 (Opening Visual Hook)**: Must immediately visually anchor and amplify the script's opening hook with high visual intrigue, physical tension, or dramatic scale.
 - **Final Scene**: Must provide clean visual resolution and closure.
 
-## 8. Structured Output
+## 8. AI-Directed Camera Animation Rules
+Each scene must feature its own tailored camera animation plan (`animation`) reflecting the scene's visual content, composition, and narration:
+- **Avoid Monotony**: Never apply the same animation pattern to every scene. Use diverse, dynamic motion across consecutive scenes.
+- **Motion Types**:
+  - `zoom-in`: Slow push-in toward the subject ($1.00 \to 1.05$). Ideal for medium shots, human POV, or focusing attention on a key object.
+  - `zoom-out`: Gentle pull-out ($1.06 \to 1.00$). Ideal for close-up and macro photography, revealing surrounding context without cropping edges.
+  - `pan-left` / `pan-right`: Smooth horizontal tracking across wide landscapes, horizons, and panoramic establishing shots.
+  - `pan-up` / `pan-down`: Vertical camera tracking tracing exploded assemblies, layered cross-sections, or airflow/pressure diagrams.
+  - `subtle-drift`: Gentle diagonal floating motion ($1.02 \to 1.05$). Ideal for atmospheric, diffuse, or abstract beats.
+  - `static`: Stationary camera ($1.00$). Ideal for complex schematics or multi-part diagrams where absolute stillness is needed for legibility.
+- **Focal Coordinates & Subtitle Safety**:
+  - `focal_x`, `focal_y`: Normalized coordinates [0.0, 1.0]. Keep focal Y in the upper-middle area (0.30 - 0.55), keeping the lower third (Y > 0.68) clear for subtitles.
+- **Restrained Scales**: Keep zoom scales between 1.00 and 1.08 to prevent digital pixelation and extreme cropping.
+
+## 9. Structured Output
 Return structured JSON matching the StoryboardLLMOutput schema:
 - `subject_anchor`: Core recurring object description.
 - `scenes`: Array of 8 to 12 scenes, each containing:
@@ -111,3 +125,16 @@ Return structured JSON matching the StoryboardLLMOutput schema:
   - `visual_technique`: Visual technique (e.g. cinematic-photo, macro-photo, passenger-pov, technical-illustration, cutaway-diagram, schematic).
   - `image_prompt`: Rich scene-specific description (max 300 chars).
   - `uses_anchor`: Boolean (true ONLY when the recurring anchor object is the primary focus of this shot).
+  - `animation`: Object containing:
+    - `animation_type`: One of ('zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'subtle-drift', 'static').
+    - `focal_point`: Description of focal point.
+    - `focal_x`: Float (0.0 to 1.0).
+    - `focal_y`: Float (0.0 to 1.0, avoiding lower-third >0.68).
+    - `start_scale`: Float (1.00 to 1.08).
+    - `end_scale`: Float (1.00 to 1.08).
+    - `start_x`: Float (0.0 to 1.0).
+    - `start_y`: Float (0.0 to 1.0).
+    - `end_x`: Float (0.0 to 1.0).
+    - `end_y`: Float (0.0 to 1.0).
+    - `intensity`: String ('subtle', 'moderate', or 'restrained').
+    - `reasoning`: Brief explanation of why this motion suits the scene.
