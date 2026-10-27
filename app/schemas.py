@@ -65,6 +65,26 @@ class StepOut(ORM):
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
+    revisions_count: int = 0
+
+
+class StepRevisionOut(ORM):
+    id: uuid.UUID
+    step_id: uuid.UUID
+    version: int
+    output: dict | None
+    user_prompt: str | None
+    change_summary: str | None
+    created_at: datetime
+
+
+class StepApproveBody(BaseModel):
+    auto_advance: bool = False
+
+
+class StepContentUpdate(BaseModel):
+    output: dict
+    change_summary: str | None = None
 
 
 class VideoSummary(ORM):
@@ -82,3 +102,4 @@ class VideoDetail(VideoSummary):
 
 class RerunBody(BaseModel):
     prompt: str | None = None  # "make the hook more dramatic", etc.
+

@@ -12,9 +12,18 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_owned_channel, get_owned_video
 from ..models import Channel, Video
-from ..schemas import RerunBody, VideoCreate, VideoDetail, VideoSummary
+from ..schemas import (
+    RerunBody,
+    StepApproveBody,
+    StepContentUpdate,
+    StepRevisionOut,
+    VideoCreate,
+    VideoDetail,
+    VideoSummary,
+)
 
 router = APIRouter(tags=["videos"])
+
 
 
 @router.post("/channels/{channel_id}/videos", response_model=VideoSummary, status_code=201)
@@ -83,6 +92,86 @@ def rerun(step_name: str, body: RerunBody, video: Video = Depends(get_owned_vide
     except pipeline.PipelineError as e:
         raise HTTPException(409, str(e))
     return video
+
+
+@router.post("/videos/{video_id}/steps/{step_name}/approve", response_model=VideoDetail)
+def approve_step(
+    step_name: str,
+    body: StepApproveBody = StepApproveBody(),
+    bg: BackgroundTasks = BackgroundTasks(),
+    video: Video = Depends(get_owned_video),
+    db: Session = Depends(get_db),
+):
+    """Approve a step currently awaiting approval and mark it done.
+    If auto_advance is True, claims and starts the next pipeline step immediately."""
+    if step_name not in pipeline.STEPS:
+        raise HTTPException(404, f"Unknown step. Valid: {pipeline.STEPS}")
+    try:
+        pipeline.approve_step(db, video, step_name)
+    except pipeline.PipelineError as e:
+        raise HTTPException(409, str(e))
+
+    if body.auto_advance:
+        try:
+            next_step = pipeline.claim_next_step(db, video.id)
+            bg.add_task(pipeline.execute, video.id, next_step.name, False)
+        except pipeline.PipelineError:
+            pass
+
+    db.refresh(video)
+    return video
+
+
+@router.patch("/videos/{video_id}/steps/{step_name}", response_model=VideoDetail)
+def update_step_content(
+    step_name: str,
+    body: StepContentUpdate,
+    video: Video = Depends(get_owned_video),
+    db: Session = Depends(get_db),
+):
+    """Inline editing of step output payload (e.g., narration, scene prompts).
+    Automatically saves previous version to history and marks downstream steps stale."""
+    if step_name not in pipeline.STEPS:
+        raise HTTPException(404, f"Unknown step. Valid: {pipeline.STEPS}")
+    try:
+        pipeline.update_step_content(db, video, step_name, body.output, body.change_summary)
+    except pipeline.PipelineError as e:
+        raise HTTPException(409, str(e))
+
+    db.refresh(video)
+    return video
+
+
+@router.get("/videos/{video_id}/steps/{step_name}/history", response_model=list[StepRevisionOut])
+def get_step_history(
+    step_name: str,
+    video: Video = Depends(get_owned_video),
+):
+    """Retrieve full version history and recorded snapshots for a step."""
+    step = next((s for s in video.steps if s.name == step_name), None)
+    if not step:
+        raise HTTPException(404, f"Step '{step_name}' not found")
+    return step.revisions or []
+
+
+@router.post("/videos/{video_id}/steps/{step_name}/rollback/{version}", response_model=VideoDetail)
+def rollback_step(
+    step_name: str,
+    version: int,
+    video: Video = Depends(get_owned_video),
+    db: Session = Depends(get_db),
+):
+    """Rollback a step's output to a previous revision version."""
+    if step_name not in pipeline.STEPS:
+        raise HTTPException(404, f"Unknown step. Valid: {pipeline.STEPS}")
+    try:
+        pipeline.rollback_step(db, video, step_name, version)
+    except pipeline.PipelineError as e:
+        raise HTTPException(409, str(e))
+
+    db.refresh(video)
+    return video
+
 
 
 @router.get("/videos/{video_id}/download")

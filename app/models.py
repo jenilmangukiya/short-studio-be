@@ -62,10 +62,32 @@ class VideoStep(TimestampMixin, Base):
     video_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(30))
     position: Mapped[int] = mapped_column(Integer)
-    # pending | running | done | failed | stale   (later: awaiting_approval)
+    # pending | running | awaiting_approval | done | failed | stale
     status: Mapped[str] = mapped_column(String(20), default="pending")
     output: Mapped[dict | None] = mapped_column(JSONType)
     user_prompt: Mapped[str | None] = mapped_column(Text)  # revision instructions for this step
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revisions: Mapped[list["VideoStepRevision"]] = relationship(
+        back_populates="step",
+        order_by="VideoStepRevision.version",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    @property
+    def revisions_count(self) -> int:
+        return len(self.revisions) if self.revisions else 0
+
+
+class VideoStepRevision(TimestampMixin, Base):
+    __tablename__ = "video_step_revisions"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    step_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_steps.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    output: Mapped[dict | None] = mapped_column(JSONType)
+    user_prompt: Mapped[str | None] = mapped_column(Text)
+    change_summary: Mapped[str | None] = mapped_column(String(255))
+    step: Mapped[VideoStep] = relationship(back_populates="revisions")
+
