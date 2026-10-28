@@ -62,6 +62,9 @@ pip install -r requirements.txt
 #    Mac/Linux:    cp .env.example .env
 #    Then edit .env and set SECRET_KEY to a long random value:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+# 6. Apply database migrations
+alembic upgrade head
 ```
 
 ## Daily startup

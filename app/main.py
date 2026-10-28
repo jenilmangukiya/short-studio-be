@@ -5,14 +5,12 @@ from fastapi import FastAPI
 
 from . import models  # noqa: F401  (register tables)
 from .config import settings
-from .db import Base, engine
 from .routers import auth, channels, videos
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(engine)  # swap for Alembic migrations before real data
     yield
 
 
