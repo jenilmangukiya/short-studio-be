@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import SessionLocal
-from .models import Video, VideoStep, VideoStepRevision
+from .models import PipelineJob, Video, VideoStep, VideoStepRevision
 
 STEPS = ["script", "storyboard", "images", "voiceover", "render", "subtitles"]
 
@@ -194,9 +194,23 @@ def approve_step(db: Session, video: Video, step_name: str) -> VideoStep:
 
 
 def rerun_step(db: Session, video: Video, step_name: str, prompt: str | None):
-    """Reset one step (with optional revision prompt) and mark downstream steps stale."""
+    """Reset one step (with optional revision prompt) and mark downstream steps stale.
+    Cancels any queued jobs and ensures no worker is actively executing."""
     if any(s.status == "running" for s in video.steps):
         raise PipelineError("A step is running; wait for it to finish")
+
+    # Check for active worker jobs
+    active_jobs = db.scalars(
+        select(PipelineJob).where(
+            PipelineJob.video_id == video.id,
+            PipelineJob.status.in_(["queued", "running"]),
+        )
+    ).all()
+    if any(j.status == "running" for j in active_jobs):
+        raise PipelineError("A step is actively executing; wait for worker to finish before rerunning")
+    for j in active_jobs:
+        j.status = "cancelled"
+
     target = next((s for s in video.steps if s.name == step_name), None)
     if not target:
         raise PipelineError("Video not started yet")
@@ -232,6 +246,16 @@ def update_step_content(
     Automatically saves revision history, updates output, and marks downstream steps stale."""
     if any(s.status == "running" for s in video.steps):
         raise PipelineError("A step is running; wait for it to finish")
+
+    active_jobs = db.scalars(
+        select(PipelineJob).where(
+            PipelineJob.video_id == video.id,
+            PipelineJob.status.in_(["queued", "running"]),
+        )
+    ).all()
+    if active_jobs:
+        raise PipelineError("Cannot modify step while background jobs are queued or executing")
+
     target = next((s for s in video.steps if s.name == step_name), None)
     if not target:
         raise PipelineError(f"Step '{step_name}' not found")
@@ -284,6 +308,16 @@ def rollback_step(db: Session, video: Video, step_name: str, target_version: int
     """Roll back a step's output to a previously recorded revision version."""
     if any(s.status == "running" for s in video.steps):
         raise PipelineError("A step is running; wait for it to finish")
+
+    active_jobs = db.scalars(
+        select(PipelineJob).where(
+            PipelineJob.video_id == video.id,
+            PipelineJob.status.in_(["queued", "running"]),
+        )
+    ).all()
+    if active_jobs:
+        raise PipelineError("Cannot roll back while background jobs are queued or executing")
+
     target = next((s for s in video.steps if s.name == step_name), None)
     if not target:
         raise PipelineError(f"Step '{step_name}' not found")
@@ -327,4 +361,5 @@ def rollback_step(db: Session, video: Video, step_name: str, target_version: int
     db.commit()
     db.refresh(target)
     return target
+
 

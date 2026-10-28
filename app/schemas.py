@@ -87,6 +87,22 @@ class StepContentUpdate(BaseModel):
     change_summary: str | None = None
 
 
+class JobOut(ORM):
+    id: uuid.UUID
+    video_id: uuid.UUID
+    step_name: str
+    status: str
+    run_all: bool
+    attempts: int
+    max_attempts: int
+    scheduled_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    worker_id: str | None
+    error: str | None
+
+
+
 class VideoSummary(ORM):
     id: uuid.UUID
     channel_id: uuid.UUID

@@ -2,7 +2,7 @@ import re
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,8 +11,10 @@ from .. import pipeline
 from ..config import settings
 from ..db import get_db
 from ..deps import get_owned_channel, get_owned_video
-from ..models import Channel, Video
+from ..models import Channel, PipelineJob, Video
+from ..queue.engine import JobConflictError, enqueue_step_job
 from ..schemas import (
+    JobOut,
     RerunBody,
     StepApproveBody,
     StepContentUpdate,
@@ -23,6 +25,7 @@ from ..schemas import (
 )
 
 router = APIRouter(tags=["videos"])
+
 
 
 
@@ -60,24 +63,37 @@ def start(video: Video = Depends(get_owned_video), db: Session = Depends(get_db)
 
 
 @router.post("/videos/{video_id}/next", response_model=VideoDetail, status_code=202)
-def next_step(bg: BackgroundTasks, video: Video = Depends(get_owned_video), db: Session = Depends(get_db)):
-    """Run exactly one step (the first one not done). Poll GET /videos/{id} for progress."""
+def next_step(video: Video = Depends(get_owned_video), db: Session = Depends(get_db)):
+    """Enqueue the first non-done step for background worker execution.
+    Poll GET /videos/{id} for progress."""
+    if not video.steps:
+        raise HTTPException(409, "Video not started yet")
+    step = next((s for s in video.steps if s.status != "done"), None)
+    if not step:
+        raise HTTPException(409, "All steps already completed")
     try:
-        step = pipeline.claim_next_step(db, video.id)
+        enqueue_step_job(db, video.id, step.name, run_all=False)
+    except JobConflictError as e:
+        raise HTTPException(409, str(e))
     except pipeline.PipelineError as e:
         raise HTTPException(409, str(e))
-    bg.add_task(pipeline.execute, video.id, step.name, False)
     db.refresh(video)
     return video
 
 
 @router.post("/videos/{video_id}/run-all", response_model=VideoDetail, status_code=202)
-def run_all(bg: BackgroundTasks, video: Video = Depends(get_owned_video), db: Session = Depends(get_db)):
+def run_all(video: Video = Depends(get_owned_video), db: Session = Depends(get_db)):
+    """Enqueue the next step with run_all=True for continuous worker execution.
+    Poll GET /videos/{id} for progress."""
+    if not video.steps:
+        raise HTTPException(409, "Video not started yet")
+    step = next((s for s in video.steps if s.status != "done"), None)
+    if not step:
+        raise HTTPException(409, "All steps already completed")
     try:
-        step = pipeline.claim_next_step(db, video.id)
-    except pipeline.PipelineError as e:
+        enqueue_step_job(db, video.id, step.name, run_all=True)
+    except (JobConflictError, pipeline.PipelineError) as e:
         raise HTTPException(409, str(e))
-    bg.add_task(pipeline.execute, video.id, step.name, True)
     db.refresh(video)
     return video
 
@@ -98,12 +114,11 @@ def rerun(step_name: str, body: RerunBody, video: Video = Depends(get_owned_vide
 def approve_step(
     step_name: str,
     body: StepApproveBody = StepApproveBody(),
-    bg: BackgroundTasks = BackgroundTasks(),
     video: Video = Depends(get_owned_video),
     db: Session = Depends(get_db),
 ):
     """Approve a step currently awaiting approval and mark it done.
-    If auto_advance is True, claims and starts the next pipeline step immediately."""
+    If auto_advance is True, enqueues the next pipeline step for background worker execution."""
     if step_name not in pipeline.STEPS:
         raise HTTPException(404, f"Unknown step. Valid: {pipeline.STEPS}")
     try:
@@ -112,14 +127,24 @@ def approve_step(
         raise HTTPException(409, str(e))
 
     if body.auto_advance:
-        try:
-            next_step = pipeline.claim_next_step(db, video.id)
-            bg.add_task(pipeline.execute, video.id, next_step.name, False)
-        except pipeline.PipelineError:
-            pass
+        next_step = next((s for s in video.steps if s.status != "done"), None)
+        if next_step:
+            try:
+                enqueue_step_job(db, video.id, next_step.name, run_all=False)
+            except (JobConflictError, pipeline.PipelineError):
+                pass
 
     db.refresh(video)
     return video
+
+
+@router.get("/videos/{video_id}/jobs", response_model=list[JobOut])
+def list_video_jobs(video: Video = Depends(get_owned_video), db: Session = Depends(get_db)):
+    """List all background queue jobs for this video."""
+    return db.scalars(
+        select(PipelineJob).where(PipelineJob.video_id == video.id).order_by(PipelineJob.scheduled_at.desc())
+    ).all()
+
 
 
 @router.patch("/videos/{video_id}/steps/{step_name}", response_model=VideoDetail)

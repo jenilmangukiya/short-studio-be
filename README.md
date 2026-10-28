@@ -402,18 +402,55 @@ python scripts/try_image.py --prompt "Macro close up of airplane rivets" --size 
 python scripts/try_image.py --prompt "Airplane window at sunset" --provider openai
 ```
 
+## Background Worker Architecture (Phase 5)
+
+Shorts Studio uses a durable, transactional PostgreSQL-backed job queue for asynchronous step execution (FFmpeg rendering, AI image generation, voiceover synthesis):
+
+- **Concurrency & Locking**: Uses `SELECT ... FOR UPDATE SKIP LOCKED` on PostgreSQL 16 to guarantee strictly disjoint claims with zero blocking or deadlocks between concurrent workers.
+- **Atomic Enqueueing**: Video step state mutations and background job records commit within the exact same database transaction.
+- **Idempotency & Duplicate Prevention**: Enforced via a PostgreSQL partial unique index (`uq_pipeline_jobs_active_step`) where `status IN ('queued', 'running')`, strictly preventing duplicate active executions for the same step.
+- **Safe Out-of-Transaction Execution**: Workers claim a job in a short transaction, release row locks, and execute long-running FFmpeg/AI tasks without holding any open database transactions or connection locks.
+- **Lease Heartbeats & Fencing Tokens**: An independent background daemon renews the worker lease during processing. Revoked or expired leases cannot overwrite fresher worker attempts.
+- **Automatic Crash Recovery & Dead-Letter**: Periodic reapers recover orphaned jobs from crashed workers; jobs exceeding retry limits transition to `dead_letter` status with diagnostic errors.
+- **Full Phase 4 Gatekeeping Compatibility**: Respects channel approval settings (`awaiting_approval`), manual approvals, inline editing, and rollback.
+
+### Worker Startup & Local Development
+
+Run the dedicated queue worker alongside your FastAPI server:
+
+```bash
+# 1. Start the worker in continuous polling mode
+python scripts/run_worker.py
+
+# Or via module execution
+python -m app.worker
+
+# 2. Worker CLI options
+python -m app.worker --poll-interval 1.0 --lease-duration 60 --reaper-interval 30
+
+# 3. Single-pass execution (executes one job if available, then exits)
+python -m app.worker --once
+
+# 4. Crash-recovery reaper pass only (recovers abandoned jobs from crashed workers, then exits)
+python -m app.worker --reap-only
+```
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | `postgresql+psycopg://studio:studio@localhost:5432/studio` | Connection URL. PostgreSQL is required for `SKIP LOCKED` concurrency guarantees. |
+
 ## Roadmap
 
 - [x] Make the `script` step real (LLM) with structured output
 - [x] Make the `storyboard` step real (scenes with timing and image prompts)
 - [x] Make the `images` step real (provider layer, reuse caching, OpenAI + mock)
-- [ ] Mock/real switch per step plus a daily AI-call cap
-- [ ] Per-step approval (`awaiting_approval` status) and version history
-- [ ] Real voiceover, captions, music, and FFmpeg render
-- [ ] Alembic migrations
-- [ ] Background worker queue (RQ or Dramatiq) instead of in-process tasks
-- [ ] Frontend (Next.js or Streamlit)
+- [x] Phase 1–3: AI-directed Ken Burns camera motion & natural audio pauses
+- [x] Phase 4: Production Gatekeeping, Inline Revision, and Version History
+- [x] Phase 5: PostgreSQL-backed Transactional Queue & Background Worker Architecture
 - [ ] Publishing to YouTube and Instagram
+
 
 
 

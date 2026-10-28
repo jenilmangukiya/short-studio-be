@@ -1,7 +1,20 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -90,4 +103,41 @@ class VideoStepRevision(TimestampMixin, Base):
     user_prompt: Mapped[str | None] = mapped_column(Text)
     change_summary: Mapped[str | None] = mapped_column(String(255))
     step: Mapped[VideoStep] = relationship(back_populates="revisions")
+
+
+class PipelineJob(TimestampMixin, Base):
+    __tablename__ = "pipeline_jobs"
+    __table_args__ = (
+        Index("ix_pipeline_jobs_claim", "status", "scheduled_at"),
+        Index("ix_pipeline_jobs_video_step", "video_id", "step_name"),
+        Index(
+            "uq_pipeline_jobs_active_step",
+            "video_id",
+            "step_name",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    video_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"), index=True)
+    step_name: Mapped[str] = mapped_column(String(30))
+    # queued | running | completed | failed | dead_letter | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    run_all: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(100))
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+
+    error: Mapped[str | None] = mapped_column(Text)
+
 
