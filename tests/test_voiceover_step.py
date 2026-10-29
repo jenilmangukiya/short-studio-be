@@ -178,7 +178,7 @@ def test_voiceover_step_multi_scene_success(tmp_path, monkeypatch):
     with wave.open(str(cont_abs), "rb") as wf:
         assert wf.getframerate() == 24000
 
-    # Verify all scene audio slices exist on disk
+    # Verify all scene timing items have no per-scene audio files
     for it in vo["items"]:
         assert it["status"] == "ok"
         assert it["reused"] is False
@@ -186,10 +186,12 @@ def test_voiceover_step_multi_scene_success(tmp_path, monkeypatch):
         assert it["timing_type"] == "estimated"
         assert it["start_time"] >= 0.0
         assert it["end_time"] > it["start_time"]
-        abs_path = tmp_path / it["file"]
-        assert abs_path.is_file()
-        with wave.open(str(abs_path), "rb") as wf:
-            assert wf.getframerate() == 24000
+        assert "file" not in it
+
+    # Only the single continuous WAV file should exist in the audio directory
+    audio_files = list((tmp_path / str(video.id) / "audio").glob("*.wav"))
+    assert len(audio_files) == 1
+    assert audio_files[0] == cont_abs
 
 
 def test_voiceover_step_failure_and_resume(tmp_path, monkeypatch):
@@ -318,7 +320,7 @@ def test_voiceover_step_regenerates_when_voice_changes(tmp_path, monkeypatch):
 
 
 def test_audio_serving_endpoint(tmp_path, monkeypatch):
-    """Verify GET /videos/{video_id}/audio/{index} endpoint authentication, headers, and security."""
+    """Verify GET /videos/{video_id}/audio endpoint authentication, headers, and security."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video_id = uuid.uuid4()
@@ -327,8 +329,8 @@ def test_audio_serving_endpoint(tmp_path, monkeypatch):
     video = Video(id=video_id, channel_id=channel_id, topic="Serving test")
     video.channel = channel
 
-    # Create dummy audio file on disk
-    rel_path = f"{video_id}/audio/scene_01_testhash.wav"
+    # Create dummy continuous audio file on disk
+    rel_path = f"{video_id}/audio/narration_testhash.wav"
     abs_path = tmp_path / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     wav_bytes = create_mock_wav(1.0, 24000)
@@ -339,22 +341,21 @@ def test_audio_serving_endpoint(tmp_path, monkeypatch):
         name="voiceover",
         status="done",
         output={
+            "audio_file": rel_path,
+            "audio_hash": "testhash123456",
             "voiceover": {
+                "continuous": True,
+                "audio_file": rel_path,
+                "audio_hash": "testhash123456",
                 "items": [
                     {
                         "index": 1,
                         "status": "ok",
-                        "file": rel_path,
-                        "audio_hash": "testhash123456",
+                        "narration": "Scene 1",
+                        "duration_seconds": 1.0,
                     },
-                    {
-                        "index": 2,
-                        "status": "failed",
-                        "file": None,
-                        "audio_hash": "failhash",
-                    },
-                ]
-            }
+                ],
+            },
         },
     )
     video.steps = [vo_step]
@@ -366,20 +367,20 @@ def test_audio_serving_endpoint(tmp_path, monkeypatch):
     # 1. Successful fetch by authorized owner
     app.dependency_overrides[get_owned_video] = lambda: video
     try:
-        resp = client.get(f"/videos/{video_id}/audio/1")
+        resp = client.get(f"/videos/{video_id}/audio")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/wav"
         assert resp.headers["etag"] == '"testhash123456"'
         assert "no-cache" in resp.headers["cache-control"]
         assert resp.content == wav_bytes
 
-        # 2. Failed scene returns 404
-        resp_failed = client.get(f"/videos/{video_id}/audio/2")
-        assert resp_failed.status_code == 404
-        assert "No generated audio available" in resp_failed.json()["detail"]
+        # 2. Legacy per-scene audio route /videos/{video_id}/audio/{index} is removed (404)
+        resp_scene = client.get(f"/videos/{video_id}/audio/1")
+        assert resp_scene.status_code == 404
 
-        # 3. Non-existent scene index returns 404
-        resp_missing = client.get(f"/videos/{video_id}/audio/99")
+        # 3. Missing audio_file in step output returns 404
+        vo_step.output = {"voiceover": {"items": []}}
+        resp_missing = client.get(f"/videos/{video_id}/audio")
         assert resp_missing.status_code == 404
 
         # 4. Unauthorized / other user returns 404
@@ -389,14 +390,14 @@ def test_audio_serving_endpoint(tmp_path, monkeypatch):
             raise HTTPException(404, "Video not found")
 
         app.dependency_overrides[get_owned_video] = mock_other_user
-        resp_unowned = client.get(f"/videos/{video_id}/audio/1")
+        resp_unowned = client.get(f"/videos/{video_id}/audio")
         assert resp_unowned.status_code == 404
     finally:
         app.dependency_overrides.clear()
 
 
 def test_audio_serving_path_traversal_forbidden(tmp_path, monkeypatch):
-    """Ensure path traversal attacks on audio serving are rejected with 403."""
+    """Ensure path traversal attacks on continuous audio serving are rejected with 403."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video = Video(id=uuid.uuid4(), channel_id=uuid.uuid4(), topic="Traversal test")
@@ -405,16 +406,14 @@ def test_audio_serving_path_traversal_forbidden(tmp_path, monkeypatch):
         name="voiceover",
         status="done",
         output={
+            "audio_file": "../../etc/passwd",
+            "audio_hash": "traversalhash",
             "voiceover": {
-                "items": [
-                    {
-                        "index": 1,
-                        "status": "ok",
-                        "file": "../../etc/passwd",
-                        "audio_hash": "traversalhash",
-                    }
-                ]
-            }
+                "continuous": True,
+                "audio_file": "../../etc/passwd",
+                "audio_hash": "traversalhash",
+                "items": [],
+            },
         },
     )
     video.steps = [vo_step]
@@ -423,7 +422,7 @@ def test_audio_serving_path_traversal_forbidden(tmp_path, monkeypatch):
     app.dependency_overrides[get_owned_video] = lambda: video
     client = TestClient(app)
     try:
-        resp = client.get(f"/videos/{video.id}/audio/1")
+        resp = client.get(f"/videos/{video.id}/audio")
         assert resp.status_code == 403
         assert "forbidden" in resp.json()["detail"].lower()
     finally:
@@ -527,50 +526,26 @@ def test_trim_silence_wav_round_trip():
     assert round(len(read_data) / float(read_sr), 3) == dur
 
 
-def test_silence_trimming_subtitle_synchronization(tmp_path):
-    """Verify that trimming silence from audio maintains exact acoustic subtitle synchronization."""
-    import io
-    import soundfile as sf
-    import numpy as np
-    from app.subtitles.acoustic import _align_scene_audio
+def test_voiceover_regenerates_when_continuous_wav_missing_on_disk(tmp_path, monkeypatch):
+    """Verify that if the cached continuous narration WAV is missing on disk, rerunning regenerates it."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
-    sr = 24000
-    lead = np.zeros(int(0.35 * sr), dtype=np.float32)
-    # 3 tone pulses representing 3 words: "airplane", "window", "hole"
-    w1 = 0.5 * np.sin(2 * np.pi * 300.0 * np.linspace(0, 0.3, int(0.3 * sr), dtype=np.float32))
-    pause1 = np.zeros(int(0.08 * sr), dtype=np.float32)
-    w2 = 0.5 * np.sin(2 * np.pi * 400.0 * np.linspace(0, 0.25, int(0.25 * sr), dtype=np.float32))
-    pause2 = np.zeros(int(0.08 * sr), dtype=np.float32)
-    w3 = 0.5 * np.sin(2 * np.pi * 500.0 * np.linspace(0, 0.3, int(0.3 * sr), dtype=np.float32))
-    trail = np.zeros(int(0.55 * sr), dtype=np.float32)
+    video = DummyVideo()
+    prev = _make_storyboard_prev(scene_count=2, est_seconds_per_scene=2.0)
+    step = DummyStep()
 
-    raw_audio = np.concatenate([lead, w1, pause1, w2, pause2, w3, trail])
-    buf = io.BytesIO()
-    sf.write(buf, raw_audio, sr, format="WAV", subtype="PCM_16")
+    prov1 = CountingFakeVoiceoverProvider()
+    out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
+    assert prov1.call_count == 1
+    step.output = out1
 
-    trimmed_bytes, out_sr, trimmed_dur = trim_silence_wav(buf.getvalue(), is_terminal=True)
+    cont_abs = tmp_path / out1["audio_file"]
+    assert cont_abs.is_file()
+    cont_abs.unlink()
 
-    wav_file = tmp_path / "scene_trimmed.wav"
-    wav_file.write_bytes(trimmed_bytes)
-
-    narration = "Airplane window hole."
-    actual_dur, word_ts = _align_scene_audio(
-        audio_path=wav_file,
-        narration=narration,
-        duration_fallback=trimmed_dur,
-        scene_offset=0.0,
-    )
-
-    # 1. Actual duration matches trimmed audio duration
-    assert round(actual_dur, 3) == round(trimmed_dur, 3)
-
-    # 2. Word timestamps are within trimmed duration bounds
-    assert len(word_ts) == 3
-    assert word_ts[0].text == "Airplane"
-    assert word_ts[1].text == "window"
-    assert word_ts[2].text == "hole"
-
-    # 3. First word starts near lead pad headroom (~0.035s)
-    assert 0.0 <= word_ts[0].start <= 0.08
-    # 4. Final word ends before total trimmed duration
-    assert word_ts[2].end <= actual_dur
+    prov2 = CountingFakeVoiceoverProvider()
+    out2 = generate_voiceover_step(video, prev, step, voiceover_provider=prov2)
+    assert prov2.call_count == 1
+    assert cont_abs.is_file()
+    assert out2["meta"]["scenes_generated"] == 2
+    assert out2["meta"]["scenes_reused"] == 0

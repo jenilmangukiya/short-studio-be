@@ -77,6 +77,7 @@ class MockSubtitleProvider(BaseSubtitleProvider):
                     start=round(cumulative_start, 3),
                     end=round(scene_end, 3),
                     words=words,
+                    timing_source="estimated",
                 )
             )
             cumulative_start = scene_end
@@ -89,4 +90,5 @@ class MockSubtitleProvider(BaseSubtitleProvider):
             provider=self.provider_name,
             model=self.model,
             latency_seconds=latency,
+            timing_source="estimated",
         )

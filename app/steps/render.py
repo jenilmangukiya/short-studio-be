@@ -1,8 +1,8 @@
 """Video rendering step implementation for Shorts Studio.
 
-Composes vertical short videos (1080x1920, 30 fps, H.264 / AAC) by synchronizing
-each storyboard scene's vertical image with its exact Kokoro narration audio
-using FFmpeg via standard-library subprocess.
+Composes vertical short videos (1080x1920, 30 fps, H.264 / AAC) by animating
+each storyboard scene's vertical image according to its timing metadata and
+muxing the complete continuous narration audio WAV using FFmpeg.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def generate_render_step(
     valid_audio = {
         it["index"]: it
         for it in vo_items
-        if isinstance(it, dict) and it.get("index") and it.get("status") == "ok" and (it.get("file") or it.get("duration_seconds") is not None)
+        if isinstance(it, dict) and it.get("index") and it.get("status", "ok") == "ok"
     }
     if not valid_audio:
         raise PipelineError("Voiceover step must be completed with valid generated audio before rendering")
@@ -141,83 +141,59 @@ def generate_render_step(
             elif inner_vo.get("file") and isinstance(inner_vo["file"], str) and inner_vo["file"].endswith((".wav", ".mp3", ".aac", ".ogg", ".flac", ".m4a")):
                 cont_audio_rel = inner_vo["file"]
 
-    is_continuous_audio = False
-    continuous_audio_abs: Path | None = None
-    continuous_duration: float = 0.0
+    if not cont_audio_rel:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise PipelineError("Continuous narration audio file is missing in voiceover step output")
 
-    if cont_audio_rel:
-        continuous_audio_abs = (storage_root / cont_audio_rel).resolve()
-        if not continuous_audio_abs.is_file():
-            raise PipelineError(f"Continuous narration audio file does not exist: {continuous_audio_abs}")
+    continuous_audio_abs = (storage_root / cont_audio_rel).resolve()
+    if not continuous_audio_abs.is_file():
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise PipelineError(f"Continuous narration audio file does not exist: {continuous_audio_abs}")
 
-        try:
-            import soundfile as sf
-            audio_info = sf.info(str(continuous_audio_abs))
-            continuous_duration = float(audio_info.duration)
-        except Exception as exc:
-            raise PipelineError(f"Failed to decode continuous narration audio '{continuous_audio_abs}': {exc}") from exc
+    try:
+        import soundfile as sf
+        audio_info = sf.info(str(continuous_audio_abs))
+        continuous_duration = float(audio_info.duration)
+    except Exception as exc:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise PipelineError(f"Failed to decode continuous narration audio '{continuous_audio_abs}': {exc}") from exc
 
-        if continuous_duration <= 0.0:
-            raise PipelineError(f"Continuous narration audio file has zero duration: {continuous_audio_abs}")
-
-        is_continuous_audio = True
+    if continuous_duration <= 0.0:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise PipelineError(f"Continuous narration audio file has zero duration: {continuous_audio_abs}")
 
     # 6. Allocate per-scene visual display durations
     scene_durations: dict[int, float] = {}
-    if is_continuous_audio:
-        # Determine preliminary duration for each scene
-        prelim_durations: dict[int, float] = {}
-        for idx in all_indices:
-            sc_audio = valid_audio[idx]
-            raw_dur = float(sc_audio.get("duration_seconds", 0.0) or 0.0)
-            if raw_dur <= 0.0 and "end_time" in sc_audio and "start_time" in sc_audio:
-                raw_dur = float(sc_audio["end_time"]) - float(sc_audio["start_time"])
-            if raw_dur <= 0.0 and sc_audio.get("file"):
-                vo_slice_abs = (storage_root / sc_audio["file"]).resolve()
-                if vo_slice_abs.is_file():
-                    try:
-                        import soundfile as sf
-                        raw_dur = float(sf.info(str(vo_slice_abs)).duration)
-                    except Exception:
-                        pass
-            if raw_dur <= 0.0:
-                raw_dur = continuous_duration / len(all_indices)
-            prelim_durations[idx] = max(0.5, round(raw_dur, 3))
+    prelim_durations: dict[int, float] = {}
+    for idx in all_indices:
+        sc_audio = valid_audio[idx]
+        raw_dur = float(sc_audio.get("duration_seconds", 0.0) or 0.0)
+        if raw_dur <= 0.0 and "end_time" in sc_audio and "start_time" in sc_audio:
+            raw_dur = float(sc_audio["end_time"]) - float(sc_audio["start_time"])
+        if raw_dur <= 0.0:
+            raw_dur = continuous_duration / len(all_indices)
+        prelim_durations[idx] = max(0.5, round(raw_dur, 3))
 
-        # Adjust scene durations so total visual timeline matches continuous audio duration
-        if len(all_indices) == 1:
-            scene_durations[all_indices[0]] = round(continuous_duration, 3)
-        else:
-            total_prelim = sum(prelim_durations.values())
-            scale = (continuous_duration / total_prelim) if (total_prelim > 0 and abs(total_prelim - continuous_duration) > 0.05) else 1.0
-
-            accum = 0.0
-            for i, idx in enumerate(all_indices):
-                if i == len(all_indices) - 1:
-                    final_dur = max(0.5, round(continuous_duration - accum, 3))
-                    scene_durations[idx] = final_dur
-                else:
-                    d = max(0.5, round(prelim_durations[idx] * scale, 3))
-                    scene_durations[idx] = d
-                    accum += d
+    # Adjust scene durations so total visual timeline matches continuous audio duration
+    if len(all_indices) == 1:
+        scene_durations[all_indices[0]] = round(continuous_duration, 3)
     else:
-        # Legacy fallback mode: validate per-scene audio files on disk and use scene audio durations
-        for idx in all_indices:
-            vo_rel = valid_audio[idx].get("file")
-            if not vo_rel:
-                raise PipelineError(f"Audio file for scene {idx} is missing in voiceover metadata")
-            vo_abs = (storage_root / vo_rel).resolve()
-            if not vo_abs.is_file():
-                raise PipelineError(f"Audio file for scene {idx} does not exist: {vo_abs}")
+        total_prelim = sum(prelim_durations.values())
+        scale = (continuous_duration / total_prelim) if (total_prelim > 0 and abs(total_prelim - continuous_duration) > 0.05) else 1.0
 
-            scene_dur = float(valid_audio[idx].get("duration_seconds", 0.0) or 0.0)
-            if scene_dur <= 0.0:
-                try:
-                    import soundfile as sf
-                    scene_dur = float(sf.info(str(vo_abs)).duration)
-                except Exception:
-                    scene_dur = 2.5
-            scene_durations[idx] = scene_dur
+        accum = 0.0
+        for i, idx in enumerate(all_indices):
+            if i == len(all_indices) - 1:
+                final_dur = max(0.5, round(continuous_duration - accum, 3))
+                scene_durations[idx] = final_dur
+            else:
+                d = max(0.5, round(prelim_durations[idx] * scale, 3))
+                scene_durations[idx] = d
+                accum += d
 
     # Render configurations
     target_width = getattr(settings, "render_width", 1080)
@@ -281,45 +257,21 @@ def generate_render_step(
             prev_anim_type = resolved_anim.get("animation_type")
             rendered_animations.append({"scene_index": idx, **resolved_anim})
 
-            if is_continuous_audio:
-                # Video-only segment (no audio stream encoded)
-                seg_cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-i", str(img_abs),
-                    "-filter_complex", f"[0:v]{filter_chain}[v]",
-                    "-map", "[v]",
-                    "-t", f"{scene_dur:.3f}",
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "19",
-                    "-pix_fmt", "yuv420p",
-                    "-an",
-                    str(seg_path),
-                ]
-            else:
-                # Legacy mode: encode individual scene audio into segment
-                vo_rel = valid_audio[idx]["file"]
-                vo_abs = (storage_root / vo_rel).resolve()
-                seg_cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-i", str(img_abs),
-                    "-i", str(vo_abs),
-                    "-filter_complex", f"[0:v]{filter_chain}[v]",
-                    "-map", "[v]",
-                    "-map", "1:a",
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "19",
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-ar", "44100",
-                    "-ac", "2",
-                    "-shortest",
-                    str(seg_path),
-                ]
+            # Video-only segment (no audio stream encoded; continuous audio is muxed after concatenation)
+            seg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", str(img_abs),
+                "-filter_complex", f"[0:v]{filter_chain}[v]",
+                "-map", "[v]",
+                "-t", f"{scene_dur:.3f}",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "19",
+                "-pix_fmt", "yuv420p",
+                "-an",
+                str(seg_path),
+            ]
 
             try:
                 subprocess.run(
@@ -341,97 +293,70 @@ def generate_render_step(
 
             segment_paths.append(seg_path)
 
-        # 8. Concatenate segments and mux audio
+        # 8. Concatenate segments and mux continuous narration audio
         concat_file = temp_dir / "concat_list.txt"
         concat_lines = [f"file '{p.resolve()}'" for p in segment_paths]
         concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
 
-        if is_continuous_audio:
-            temp_video_mp4 = temp_dir / "temp_video.mp4"
-            concat_cmd = [
-                "ffmpeg",
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),
-                "-c", "copy",
-                str(temp_video_mp4),
-            ]
-            try:
-                subprocess.run(
-                    concat_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=True,
-                    timeout=timeout_sec,
-                )
-            except subprocess.CalledProcessError as exc:
-                err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
-                raise PipelineError(f"FFmpeg video concatenation failed: {err_tail.strip()}") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise PipelineError(f"FFmpeg timed out concatenating video segments after {timeout_sec}s") from exc
+        temp_video_mp4 = temp_dir / "temp_video.mp4"
+        concat_cmd = [
+            "ffmpeg",
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",
+            str(temp_video_mp4),
+        ]
+        try:
+            subprocess.run(
+                concat_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=timeout_sec,
+            )
+        except subprocess.CalledProcessError as exc:
+            err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
+            raise PipelineError(f"FFmpeg video concatenation failed: {err_tail.strip()}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PipelineError(f"FFmpeg timed out concatenating video segments after {timeout_sec}s") from exc
 
-            if not temp_video_mp4.is_file() or temp_video_mp4.stat().st_size == 0:
-                raise PipelineError("FFmpeg produced empty concatenated video")
+        if not temp_video_mp4.is_file() or temp_video_mp4.stat().st_size == 0:
+            raise PipelineError("FFmpeg produced empty concatenated video")
 
-            # Mux continuous narration audio WAV into final MP4
-            mux_cmd = [
-                "ffmpeg",
-                "-y",
-                "-i", str(temp_video_mp4),
-                "-i", str(continuous_audio_abs),
-                "-map", "0:v",
-                "-map", "1:a",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ar", "44100",
-                "-ac", "2",
-                "-shortest",
-                "-movflags", "+faststart",
-                str(temp_final_mp4),
-            ]
-            try:
-                subprocess.run(
-                    mux_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=True,
-                    timeout=timeout_sec,
-                )
-            except subprocess.CalledProcessError as exc:
-                err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
-                raise PipelineError(f"FFmpeg audio muxing failed: {err_tail.strip()}") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise PipelineError(f"FFmpeg timed out muxing continuous audio after {timeout_sec}s") from exc
-        else:
-            # Legacy mode: concatenate all AV segments directly to temp_final_mp4
-            concat_cmd = [
-                "ffmpeg",
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),
-                "-c", "copy",
-                "-movflags", "+faststart",
-                str(temp_final_mp4),
-            ]
-            try:
-                subprocess.run(
-                    concat_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=True,
-                    timeout=timeout_sec,
-                )
-            except subprocess.CalledProcessError as exc:
-                err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
-                raise PipelineError(f"FFmpeg concatenation failed: {err_tail.strip()}") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise PipelineError(f"FFmpeg timed out concatenating video segments after {timeout_sec}s") from exc
+        # Mux continuous narration audio WAV into final MP4
+        mux_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(temp_video_mp4),
+            "-i", str(continuous_audio_abs),
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(temp_final_mp4),
+        ]
+        try:
+            subprocess.run(
+                mux_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=timeout_sec,
+            )
+        except subprocess.CalledProcessError as exc:
+            err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
+            raise PipelineError(f"FFmpeg audio muxing failed: {err_tail.strip()}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PipelineError(f"FFmpeg timed out muxing continuous audio after {timeout_sec}s") from exc
 
         if not temp_final_mp4.is_file() or temp_final_mp4.stat().st_size == 0:
             raise PipelineError("FFmpeg produced empty concatenated video output")
@@ -503,8 +428,8 @@ def generate_render_step(
                 "file_size_bytes": file_size_bytes,
                 "scenes_rendered": len(all_indices),
                 "animations": rendered_animations,
-                "audio_source": "continuous" if is_continuous_audio else "legacy_scenes",
-                "audio_file": cont_audio_rel if is_continuous_audio else None,
+                "audio_source": "continuous",
+                "audio_file": cont_audio_rel,
             },
             # Top-level video_path and duration_seconds for backward compatibility
             "video_path": str(final_mp4_path),
@@ -516,8 +441,8 @@ def generate_render_step(
                 "fps": target_fps,
                 "latency_seconds": render_latency,
                 "file_size_bytes": file_size_bytes,
-                "audio_source": "continuous" if is_continuous_audio else "legacy_scenes",
-                "audio_file": cont_audio_rel if is_continuous_audio else None,
+                "audio_source": "continuous",
+                "audio_file": cont_audio_rel,
             },
         }
 

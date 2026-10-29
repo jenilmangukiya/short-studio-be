@@ -280,61 +280,6 @@ def estimate_scene_timings(
     return timings
 
 
-def slice_scene_audio(
-    continuous_audio_bytes: bytes, scene_timings: list[dict[str, Any]]
-) -> list[bytes]:
-    """Slice continuous narration WAV into individual scene WAV files for pipeline compatibility.
-
-    Applies subtle boundary micro-fades (3ms) to prevent speaker pops/clicks.
-
-    Args:
-        continuous_audio_bytes: WAV byte stream of the continuous narration audio.
-        scene_timings: List of scene timing metadata from estimate_scene_timings.
-
-    Returns:
-        List of WAV byte streams corresponding to each scene.
-    """
-    if not continuous_audio_bytes:
-        raise ValueError("Continuous audio bytes are empty")
-    if not scene_timings:
-        return []
-
-    data, sr = sf.read(io.BytesIO(continuous_audio_bytes))
-    if data.ndim > 1:
-        data = np.mean(data, axis=1)
-
-    total_samples = len(data)
-    sliced_bytes_list: list[bytes] = []
-
-    for i, timing in enumerate(scene_timings):
-        start_t = float(timing.get("start_time", 0.0))
-        end_t = float(timing.get("end_time", 0.0))
-
-        start_idx = max(0, min(total_samples, int(round(start_t * sr))))
-        if i == len(scene_timings) - 1:
-            end_idx = total_samples
-        else:
-            end_idx = max(start_idx + 1, min(total_samples, int(round(end_t * sr))))
-
-        scene_samples = data[start_idx:end_idx].copy()
-        if len(scene_samples) == 0:
-            scene_samples = np.zeros(int(0.1 * sr), dtype=np.float32)
-
-        # Apply subtle 3ms micro-fade at cut boundaries
-        fade_len = min(len(scene_samples) // 4, int(0.003 * sr))
-        if fade_len > 0:
-            fade_in = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-            fade_out = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
-            scene_samples[:fade_len] *= fade_in
-            scene_samples[-fade_len:] *= fade_out
-
-        buf = io.BytesIO()
-        sf.write(buf, scene_samples, sr, format="WAV", subtype="PCM_16")
-        sliced_bytes_list.append(buf.getvalue())
-
-    return sliced_bytes_list
-
-
 def generate_continuous_audio(
     narration_script: str,
     provider: BaseVoiceoverProvider,

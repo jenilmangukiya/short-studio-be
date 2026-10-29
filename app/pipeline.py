@@ -279,6 +279,22 @@ def update_step_content(
         else:
             new_output[k] = v
 
+    if target.name in ("subtitles", "subtitle"):
+        new_output["captioned_video_path"] = None
+        if isinstance(new_output.get("subtitles"), dict):
+            new_output["subtitles"] = {
+                **new_output["subtitles"],
+                "captioned_file": None,
+                "captioned_video_path": None,
+            }
+        if isinstance(new_output.get("meta"), dict):
+            new_output["meta"] = {
+                **new_output["meta"],
+                "captioned_burned": False,
+            }
+        else:
+            new_output["meta"] = {"captioned_burned": False}
+
     target.output = new_output
 
     # 3. Snapshot new output
@@ -290,12 +306,14 @@ def update_step_content(
         user_prompt=target.user_prompt,
     )
 
-    # 4. Invalidate downstream steps to stale
+    # 4. Invalidate downstream steps to stale (and mark subtitles stale if edited directly so captioned MP4 is regenerated)
     for s in video.steps:
         if s.position > target.position and s.status in ("done", "awaiting_approval"):
             s.status = "stale"
 
-    if target.name not in ("subtitles", "subtitle"):
+    if target.name in ("subtitles", "subtitle"):
+        target.status = "stale"
+    else:
         video.output_path = None
 
     video.status = "in_progress"
@@ -337,7 +355,24 @@ def rollback_step(db: Session, video: Video, step_name: str, target_version: int
         )
 
     # 2. Restore revision
-    target.output = revision.output
+    restored_output = dict(revision.output) if isinstance(revision.output, dict) else revision.output
+    if target.name in ("subtitles", "subtitle") and isinstance(restored_output, dict):
+        restored_output["captioned_video_path"] = None
+        if isinstance(restored_output.get("subtitles"), dict):
+            restored_output["subtitles"] = {
+                **restored_output["subtitles"],
+                "captioned_file": None,
+                "captioned_video_path": None,
+            }
+        if isinstance(restored_output.get("meta"), dict):
+            restored_output["meta"] = {
+                **restored_output["meta"],
+                "captioned_burned": False,
+            }
+        else:
+            restored_output["meta"] = {"captioned_burned": False}
+
+    target.output = restored_output
     target.user_prompt = revision.user_prompt
 
     # 3. Snapshot rollback action
@@ -354,7 +389,9 @@ def rollback_step(db: Session, video: Video, step_name: str, target_version: int
         if s.position > target.position and s.status in ("done", "awaiting_approval"):
             s.status = "stale"
 
-    if target.name not in ("subtitles", "subtitle"):
+    if target.name in ("subtitles", "subtitle"):
+        target.status = "stale"
+    else:
         video.output_path = None
 
     video.status = "in_progress"

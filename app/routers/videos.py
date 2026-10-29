@@ -212,10 +212,56 @@ def download(
     # Clean topic slug for friendly filename in download header
     topic_slug = re.sub(r"[^a-zA-Z0-9]+", "-", (video.topic or "video").lower()).strip("-") or "video"
 
+    steps = list(getattr(video, "steps", None) or [])
+    render_step = next((s for s in steps if s.name == "render"), None)
+    subtitles_step = next((s for s in steps if s.name in ("subtitles", "subtitle")), None)
+
     if captioned:
+        if steps:
+            if any(s.status == "running" for s in steps):
+                raise HTTPException(
+                    404,
+                    "Captioned video is currently being generated and not available yet",
+                )
+
+            if subtitles_step is not None:
+                upstream_steps = [s for s in steps if s.position < subtitles_step.position]
+            else:
+                upstream_steps = steps
+
+            sub_output = subtitles_step.output if (subtitles_step and isinstance(subtitles_step.output, dict)) else {}
+            sub_meta = sub_output.get("meta") if isinstance(sub_output.get("meta"), dict) else {}
+            captioned_burned_flag = sub_meta.get("captioned_burned")
+
+            has_stale_step = any(s.status == "stale" for s in steps)
+            has_reset_upstream_with_old_subs = bool(
+                subtitles_step
+                and subtitles_step.output
+                and (
+                    subtitles_step.status == "pending"
+                    or any(s.status in ("pending", "stale", "failed") for s in upstream_steps)
+                )
+            )
+
+            if has_stale_step or has_reset_upstream_with_old_subs or captioned_burned_flag is False:
+                raise HTTPException(
+                    409,
+                    "Captioned video output is outdated because narration, render, or subtitles changed. Please regenerate the remaining pipeline steps.",
+                )
+
+            if (
+                not render_step
+                or render_step.status not in ("done", "awaiting_approval")
+                or not subtitles_step
+                or subtitles_step.status not in ("done", "awaiting_approval")
+                or any(s.status not in ("done", "awaiting_approval") for s in upstream_steps)
+            ):
+                raise HTTPException(404, "Captioned video output not available yet")
+
         if captioned_file.is_file() and captioned_file.stat().st_size > 0:
             headers = {
-                "Content-Disposition": f'attachment; filename="{topic_slug}-captioned.mp4"'
+                "Content-Disposition": f'attachment; filename="{topic_slug}-captioned.mp4"',
+                "Cache-Control": "private, no-store",
             }
             return FileResponse(
                 path=str(captioned_file),
@@ -224,23 +270,31 @@ def download(
                 headers=headers,
             )
 
-        # Fallback to original if captioned is not yet generated
-        if original_file.is_file() and original_file.stat().st_size > 0:
-            headers = {
-                "Content-Disposition": f'attachment; filename="{topic_slug}.mp4"'
-            }
-            return FileResponse(
-                path=str(original_file),
-                media_type="video/mp4",
-                filename=f"{topic_slug}.mp4",
-                headers=headers,
-            )
-
-        raise HTTPException(404, "Final video output not available yet")
+        raise HTTPException(404, "Captioned video output not available yet")
     else:
+        if steps and render_step is not None:
+            upstream_before_render = [s for s in steps if s.position < render_step.position]
+            if render_step.status == "running" or any(s.status == "running" for s in upstream_before_render):
+                raise HTTPException(404, "Original uncaptioned video is currently rendering and not available yet")
+            if (
+                render_step.status == "stale"
+                or any(s.status == "stale" for s in upstream_before_render)
+                or (
+                    render_step.output
+                    and (
+                        render_step.status == "pending"
+                        or any(s.status in ("pending", "stale", "failed") for s in upstream_before_render)
+                    )
+                )
+            ):
+                raise HTTPException(409, "Original uncaptioned video output is outdated")
+            if render_step.status not in ("done", "awaiting_approval"):
+                raise HTTPException(404, "Original uncaptioned video not available yet")
+
         if original_file.is_file() and original_file.stat().st_size > 0:
             headers = {
-                "Content-Disposition": f'attachment; filename="{topic_slug}-original.mp4"'
+                "Content-Disposition": f'attachment; filename="{topic_slug}-original.mp4"',
+                "Cache-Control": "private, no-store",
             }
             return FileResponse(
                 path=str(original_file),
@@ -315,39 +369,6 @@ def get_continuous_narration_audio(video: Video = Depends(get_owned_video)):
         or step.output.get("voiceover", {}).get("audio_hash")
         or ""
     )
-    headers = {
-        "ETag": f'"{audio_hash}"',
-        "Cache-Control": "private, no-cache",
-    }
-    return FileResponse(path=str(abs_path), media_type="audio/wav", headers=headers)
-
-
-@router.get("/videos/{video_id}/audio/{index}")
-def get_scene_audio(index: int, video: Video = Depends(get_owned_video)):
-    """Serve a scene narration audio by integer index if it has status 'ok', regardless of overall step status."""
-    step = next((s for s in video.steps if s.name == "voiceover"), None)
-    if not step or not step.output or not isinstance(step.output, dict):
-        raise HTTPException(404, f"No voiceover found for video {video.id}")
-
-    items = step.output.get("voiceover", {}).get("items", [])
-    target = next((it for it in items if it.get("index") == index and it.get("status") == "ok"), None)
-    if not target or not target.get("file"):
-        raise HTTPException(404, f"No generated audio available for scene {index}")
-
-    storage_root = Path(settings.storage_dir).resolve()
-    file_rel = target["file"]
-    abs_path = (storage_root / file_rel).resolve()
-
-    # Security check: Ensure the resolved path resides strictly within the storage directory
-    try:
-        abs_path.relative_to(storage_root)
-    except ValueError:
-        raise HTTPException(403, "Access to requested file path is forbidden")
-
-    if not abs_path.is_file():
-        raise HTTPException(404, f"Audio file for scene {index} does not exist on disk")
-
-    audio_hash = target.get("audio_hash", "")
     headers = {
         "ETag": f'"{audio_hash}"',
         "Cache-Control": "private, no-cache",

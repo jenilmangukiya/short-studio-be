@@ -118,32 +118,43 @@ def test_mock_subtitle_provider_generates_valid_timestamps():
             prev_end = w.end
 
 
-def test_acoustic_subtitle_provider_with_synthetic_audio(tmp_path):
-    # Create two synthetic wav files
-    wav1_bytes = create_mock_wav(duration_seconds=2.0)
-    wav2_bytes = create_mock_wav(duration_seconds=1.5)
+def test_acoustic_subtitle_provider_with_continuous_audio(tmp_path, monkeypatch):
+    import app.subtitles.acoustic as acoustic_mod
 
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir(parents=True)
-    f1 = audio_dir / "scene_01.wav"
-    f2 = audio_dir / "scene_02.wav"
-    f1.write_bytes(wav1_bytes)
-    f2.write_bytes(wav2_bytes)
+    cont_wav = tmp_path / "narration.wav"
+    cont_wav.write_bytes(create_mock_wav(duration_seconds=3.5))
+
+    def fake_vosk_align(audio_path, script_tokens, model_path=None):
+        words = []
+        t = 0.0
+        step_dur = 3.5 / max(1, len(script_tokens))
+        for tok in script_tokens:
+            words.append(
+                WordTimestamp(
+                    text=tok,
+                    start=round(t, 3),
+                    end=round(t + step_dur * 0.9, 3),
+                    confidence=0.99,
+                )
+            )
+            t += step_dur
+        return 3.5, words
+
+    monkeypatch.setattr(acoustic_mod, "align_script_with_vosk", fake_vosk_align)
 
     scenes = [
-        {"index": 1, "narration": "Why do airplane windows need a tiny hole?", "duration_seconds": 2.0, "file": "audio/scene_01.wav"},
-        {"index": 2, "narration": "They balance cabin pressure.", "duration_seconds": 1.5, "file": "audio/scene_02.wav"},
+        {"index": 1, "narration": "Why do airplane windows need a tiny hole?", "duration_seconds": 2.0},
+        {"index": 2, "narration": "They balance cabin pressure.", "duration_seconds": 1.5},
     ]
 
     provider = AcousticSubtitleProvider()
-    res = provider.generate(scenes, storage_root=tmp_path)
+    res = provider.generate(scenes, storage_root=tmp_path, continuous_audio_path=cont_wav)
 
     assert res.provider == "acoustic"
+    assert res.timing_source == "forced_alignment"
     assert len(res.segments) == 2
     assert res.segments[0].start == 0.0
-    assert res.segments[0].end == pytest.approx(2.0, abs=0.05)
-    assert res.segments[1].start == pytest.approx(2.0, abs=0.05)
-    assert res.segments[1].end == pytest.approx(3.5, abs=0.1)
+    assert res.segments[1].end <= 3.5
 
     # Word timestamps inside each segment must be strictly non-overlapping
     for seg in res.segments:
@@ -152,17 +163,17 @@ def test_acoustic_subtitle_provider_with_synthetic_audio(tmp_path):
             assert seg.words[i].end <= seg.words[i + 1].start + 0.001
 
 
-def test_acoustic_subtitle_provider_fallback_when_audio_missing():
-    """Provider falls back cleanly to phonetic duration estimation if audio file is missing."""
+def test_acoustic_subtitle_provider_rejects_missing_continuous_audio():
+    """Provider explicitly rejects calls without continuous_audio_path (legacy per-scene alignment removed)."""
+    from app.subtitles.base import SubtitleError
+
     scenes = [
-        {"index": 1, "narration": "Pockets on jeans tore completely off.", "duration_seconds": 2.4, "file": "missing.wav"}
+        {"index": 1, "narration": "Pockets on jeans tore completely off.", "duration_seconds": 2.4}
     ]
     provider = AcousticSubtitleProvider()
-    res = provider.generate(scenes, storage_root=Path("/nonexistent"))
-
-    assert len(res.segments) == 1
-    assert res.segments[0].end == pytest.approx(2.4, abs=0.01)
-    assert len(res.segments[0].words) == 6
+    with pytest.raises(SubtitleError) as exc_info:
+        provider.generate(scenes, storage_root=Path("/nonexistent"))
+    assert "Continuous narration WAV path is required" in str(exc_info.value)
 
 
 # ==============================================================================
@@ -173,7 +184,11 @@ def test_subtitles_step_requires_render_step():
     video = DummyVideo(output_path=None)
     prev = {
         "voiceover": {
-            "voiceover": {"items": [{"index": 1, "status": "ok", "narration": "Test"}]}
+            "audio_file": "vid/audio/narration.wav",
+            "voiceover": {
+                "audio_file": "vid/audio/narration.wav",
+                "items": [{"index": 1, "status": "ok", "narration": "Test"}],
+            },
         }
     }
     with pytest.raises(PipelineError) as exc_info:
@@ -191,6 +206,21 @@ def test_subtitles_step_requires_voiceover_step():
     assert "Voiceover step must be completed" in str(exc_info.value)
 
 
+def test_subtitles_step_requires_continuous_audio_file():
+    video = DummyVideo(output_path="/tmp/final.mp4")
+    prev = {
+        "render": {"video_path": "/tmp/final.mp4", "duration_seconds": 2.0},
+        "voiceover": {
+            "voiceover": {
+                "items": [{"index": 1, "status": "ok", "narration": "Missing audio_file", "duration_seconds": 2.0}]
+            }
+        },
+    }
+    with pytest.raises(PipelineError) as exc_info:
+        generate_subtitles_step(video, prev)
+    assert "Voiceover step must include continuous narration audio" in str(exc_info.value)
+
+
 # ==============================================================================
 # 4. Step Execution & Artifact Generation
 # ==============================================================================
@@ -200,26 +230,28 @@ def test_generate_subtitles_step_full_execution(tmp_path, monkeypatch):
     video_id = uuid.uuid4()
     video = DummyVideo(video_id=video_id, output_path=str(tmp_path / "final.mp4"))
 
-    # Prepare fake audio
+    # Prepare continuous narration audio
     audio_dir = tmp_path / str(video_id) / "audio"
     audio_dir.mkdir(parents=True)
-    f1 = audio_dir / "s1.wav"
-    f1.write_bytes(create_mock_wav(2.0))
+    narration_wav = audio_dir / "narration_12345678.wav"
+    narration_wav.write_bytes(create_mock_wav(2.0))
 
     prev = {
         "render": {"video_path": str(tmp_path / "final.mp4"), "duration_seconds": 2.0},
         "voiceover": {
+            "audio_file": f"{video_id}/audio/narration_12345678.wav",
             "voiceover": {
+                "continuous": True,
+                "audio_file": f"{video_id}/audio/narration_12345678.wav",
                 "items": [
                     {
                         "index": 1,
                         "status": "ok",
                         "narration": "Why do airplane windows need a tiny hole?",
                         "duration_seconds": 2.0,
-                        "file": f"{video_id}/audio/s1.wav",
                     }
-                ]
-            }
+                ],
+            },
         },
     }
 
@@ -395,23 +427,25 @@ def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):
 
     audio_dir = video_dir / "audio"
     audio_dir.mkdir(parents=True)
-    f1 = audio_dir / "s1.wav"
-    f1.write_bytes(create_mock_wav(1.0))
+    narration_wav = audio_dir / "narration_12345678.wav"
+    narration_wav.write_bytes(create_mock_wav(1.0))
 
     prev = {
         "render": {"video_path": str(raw_mp4), "duration_seconds": 1.0},
         "voiceover": {
+            "audio_file": f"{video_id}/audio/narration_12345678.wav",
             "voiceover": {
+                "continuous": True,
+                "audio_file": f"{video_id}/audio/narration_12345678.wav",
                 "items": [
                     {
                         "index": 1,
                         "status": "ok",
                         "narration": "Why airplane windows?",
                         "duration_seconds": 1.0,
-                        "file": f"{video_id}/audio/s1.wav",
                     }
-                ]
-            }
+                ],
+            },
         },
     }
 
@@ -429,6 +463,7 @@ def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):
 
 
 def test_download_endpoint_captioned_and_original(tmp_path, monkeypatch):
+    from fastapi import HTTPException
     from app.routers.videos import download
 
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
@@ -454,10 +489,106 @@ def test_download_endpoint_captioned_and_original(tmp_path, monkeypatch):
     assert resp_orig.path == str(raw_mp4)
     assert "original" in resp_orig.filename
 
-    # 3. Fallback when captioned not yet generated
+    # 3. Missing captioned MP4 raises 404 instead of silently serving uncaptioned MP4
     captioned_mp4.unlink()
-    resp_fallback = download(video=video, captioned=True)
-    assert resp_fallback.path == str(raw_mp4)
+    with pytest.raises(HTTPException) as exc_info:
+        download(video=video, captioned=True)
+    assert exc_info.value.status_code == 404
+    assert "not available yet" in str(exc_info.value.detail).lower()
+
+
+def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_path, monkeypatch):
+    """Ensure download(captioned=True) never serves a stale final_video_captioned.mp4 after narration or subtitle changes."""
+    from fastapi import HTTPException
+    from app.pipeline import update_step_content
+    from app.routers.videos import download
+
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        user = User(email="test_stale_dl@example.com", password_hash="hash")
+        session.add(user)
+        session.flush()
+
+        channel = Channel(user_id=user.id, name="Stale Check Channel")
+        session.add(channel)
+        session.flush()
+
+        video = Video(channel_id=channel.id, topic="Stale Caption Guard", status="completed")
+        session.add(video)
+        session.flush()
+
+        video_dir = tmp_path / str(video.id)
+        video_dir.mkdir(parents=True)
+        raw_mp4 = video_dir / "final_video.mp4"
+        raw_mp4.write_bytes(b"RAW_MP4_CONTENT")
+        captioned_mp4 = video_dir / "final_video_captioned.mp4"
+        captioned_mp4.write_bytes(b"OLD_CAPTIONED_MP4_CONTENT")
+        video.output_path = str(raw_mp4)
+
+        init_steps(session, video)
+        for s in video.steps:
+            s.status = "done"
+            s.output = {"ok": True}
+        video.steps[0].output = {"script": {"narration": "Original narration"}}
+        video.steps[5].output = {
+            "subtitles": {"segments": [{"index": 1, "text": "Original narration", "start": 0.0, "end": 1.0, "words": []}]},
+            "captioned_video_path": str(captioned_mp4),
+            "meta": {"captioned_burned": True},
+        }
+        session.commit()
+
+        # When all steps are done, captioned download succeeds
+        resp_ok = download(video=video, captioned=True)
+        assert resp_ok.path == str(captioned_mp4)
+
+        # Inline-edit script narration -> downstream steps (including subtitles) become stale
+        update_step_content(
+            session,
+            video,
+            "script",
+            {"script": {"narration": "Revised narration text"}},
+            "Revise narration",
+        )
+        assert video.steps[5].status == "stale"
+
+        # Old captioned_mp4 still exists on disk, but download(captioned=True) must reject it as outdated (409)
+        with pytest.raises(HTTPException) as exc_stale:
+            download(video=video, captioned=True)
+        assert exc_stale.value.status_code == 409
+        assert "outdated" in str(exc_stale.value.detail).lower()
+
+        # Reset all upstream steps to done, and test inline-editing subtitles directly
+        for s in video.steps[:5]:
+            s.status = "done"
+        video.output_path = str(raw_mp4)
+        video.steps[5].status = "done"
+        video.steps[5].output["meta"]["captioned_burned"] = True
+        session.commit()
+
+        update_step_content(
+            session,
+            video,
+            "subtitles",
+            {"subtitles": {"segments": [{"index": 1, "text": "Edited subtitle text", "start": 0.0, "end": 1.0, "words": []}]}},
+            "Edit subtitle text",
+        )
+        assert video.steps[5].status == "stale"
+        assert video.steps[5].output["meta"]["captioned_burned"] is False
+
+        with pytest.raises(HTTPException) as exc_sub_stale:
+            download(video=video, captioned=True)
+        assert exc_sub_stale.value.status_code == 409
+
+        # While subtitles is actively regenerating (status='running'), download returns 404 not available yet
+        video.steps[5].status = "running"
+        session.commit()
+        with pytest.raises(HTTPException) as exc_running:
+            download(video=video, captioned=True)
+        assert exc_running.value.status_code == 404
+        assert "not available yet" in str(exc_running.value.detail).lower()
 
 
 # ==============================================================================

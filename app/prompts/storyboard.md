@@ -77,7 +77,7 @@ For educational, scientific, engineering, or curiosity-driven topics, construct 
 - Joined scene narrations, in order, must reproduce the script narration EXACTLY: identical words, identical order, nothing added, removed, reordered, or reworded.
 
 ### Critical Voiceover Prosody & Natural Boundary Rules:
-Each scene's narration is synthesized independently by the voiceover engine. Mid-sentence or mid-phrase cuts break the voiceover's natural intonation and breathing rhythm, causing awkward pauses and jarring robotic restarts. Therefore:
+The complete video narration is synthesized as a single continuous voiceover track while visual scenes and subtitle segments transition at each scene boundary. Mid-sentence or mid-phrase cuts disrupt visual-to-spoken alignment and subtitle phrasing. Therefore:
 1. **Preserve Complete Sentences**: Sentences between 5 and 18 words MUST be kept as a single self-contained scene. Do NOT break a standard sentence across two scenes unless it exceeds 18 words or consists of multiple distinct independent clauses.
 2. **Allowed Multi-Clause Splits**: When a long sentence must be split across scenes, split ONLY at major natural grammatical pause points:
    - Independent clauses joined by a coordinating conjunction with a comma (`, and`, `, but`, `, while`, `, so`)

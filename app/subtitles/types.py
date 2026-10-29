@@ -43,7 +43,7 @@ class SubtitleSegment:
         start: Start timestamp of the scene in seconds from video start.
         end: End timestamp of the scene in seconds from video start.
         words: List of WordTimestamp objects within this segment.
-        timing_source: How segment/word timings were derived ('forced_alignment', 'scene_waveform', 'estimated').
+        timing_source: How segment/word timings were derived ('forced_alignment', 'estimated').
     """
 
     index: int
@@ -51,7 +51,7 @@ class SubtitleSegment:
     start: float
     end: float
     words: list[WordTimestamp] = field(default_factory=list)
-    timing_source: str = "scene_waveform"
+    timing_source: str = "forced_alignment"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -192,7 +192,7 @@ class SubtitleResult:
     provider: str
     model: str
     latency_seconds: float = 0.0
-    timing_source: str = "scene_waveform"
+    timing_source: str = "forced_alignment"
     alignment_hash: str | None = None
     reused: bool = False
 
@@ -229,7 +229,7 @@ class SubtitleResult:
                     start=float(s_dict["start"]),
                     end=float(s_dict["end"]),
                     words=words,
-                    timing_source=str(s_dict.get("timing_source", data.get("timing_source", "scene_waveform"))),
+                    timing_source=str(s_dict.get("timing_source", data.get("timing_source", "forced_alignment"))),
                 )
             )
         return cls(
@@ -239,7 +239,7 @@ class SubtitleResult:
             provider=str(data.get("provider", "acoustic")),
             model=str(data.get("model", "default")),
             latency_seconds=0.0,
-            timing_source=str(data.get("timing_source", "scene_waveform")),
+            timing_source=str(data.get("timing_source", "forced_alignment")),
             alignment_hash=data.get("alignment_hash"),
             reused=reused,
         )

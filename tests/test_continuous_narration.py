@@ -32,7 +32,6 @@ from app.voiceover import (
     create_mock_wav,
     estimate_scene_timings,
     generate_continuous_audio,
-    slice_scene_audio,
     split_script_into_chunks,
 )
 
@@ -249,7 +248,7 @@ def test_chunking_and_audio_concatenation():
 
 def test_preserve_scene_to_narration_associations(tmp_path, monkeypatch):
     """Verify that scene timing metadata is preserved, start/end times are monotonic,
-    and scene slice WAV files correspond to the continuous narration."""
+    and no separate per-scene WAV files are written to disk."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video = DummyVideo()
@@ -280,13 +279,14 @@ def test_preserve_scene_to_narration_associations(tmp_path, monkeypatch):
     assert items[2]["start_time"] == items[1]["end_time"]
     assert items[2]["end_time"] == 7.0  # Total duration (2.5 + 2.0 + 2.5)
 
-    # Check that individual scene WAV files exist on disk
+    # Confirm no per-scene WAV files are referenced or created on disk
     for it in items:
-        file_path = tmp_path / it["file"]
-        assert file_path.is_file()
-        with wave.open(str(file_path), "rb") as wf:
-            assert wf.getframerate() == 24000
-            assert wf.getnframes() > 0
+        assert "file" not in it
+
+    audio_dir = tmp_path / str(video.id) / "audio"
+    wav_files = list(audio_dir.glob("*.wav"))
+    assert len(wav_files) == 1
+    assert wav_files[0].name.startswith("narration_")
 
 
 # ==============================================================================
@@ -362,8 +362,8 @@ def test_retry_after_failure_succeeds_consistently(tmp_path, monkeypatch):
 # ==============================================================================
 
 def test_downstream_compatibility_subtitles_and_endpoints(tmp_path, monkeypatch):
-    """Verify that continuous narration output is fully compatible with the subtitles step,
-    GET /videos/{video_id}/audio (continuous), and GET /videos/{video_id}/audio/{index} (scene)."""
+    """Verify that continuous narration output is served via GET /videos/{video_id}/audio
+    and legacy per-scene audio endpoint /videos/{video_id}/audio/{index} is removed."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video_id = uuid.uuid4()
@@ -398,11 +398,8 @@ def test_downstream_compatibility_subtitles_and_endpoints(tmp_path, monkeypatch)
             assert wf.getframerate() == 24000
             assert wf.getnchannels() == 1
 
-        # Verify GET /videos/{video_id}/audio/1 serves scene 1 slice WAV
+        # Verify legacy GET /videos/{video_id}/audio/1 endpoint is removed (404)
         resp_sc1 = client.get(f"/videos/{video_id}/audio/1")
-        assert resp_sc1.status_code == 200
-        assert resp_sc1.headers["content-type"] == "audio/wav"
-        with wave.open(io.BytesIO(resp_sc1.content), "rb") as wf:
-            assert wf.getframerate() == 24000
+        assert resp_sc1.status_code == 404
     finally:
         app.dependency_overrides.clear()

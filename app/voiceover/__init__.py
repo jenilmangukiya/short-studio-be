@@ -13,7 +13,6 @@ from .continuous import (
     concatenate_audio_segments,
     estimate_scene_timings,
     generate_continuous_audio,
-    slice_scene_audio,
     split_script_into_chunks,
 )
 from .factory import get_voiceover_provider
@@ -38,7 +37,6 @@ __all__ = [
     "estimate_scene_timings",
     "generate_continuous_audio",
     "get_voiceover_provider",
-    "slice_scene_audio",
     "split_script_into_chunks",
     "trim_silence_samples",
     "trim_silence_wav",

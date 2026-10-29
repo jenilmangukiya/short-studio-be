@@ -1,8 +1,7 @@
 """Subtitles pipeline step implementation for Shorts Studio.
 
 Generates synchronized word-level and scene-level subtitle timing for the rendered video
-using ground-truth narration audio and acoustic forced alignment (Vosk Kaldi HMM-TDNN on
-continuous narration WAV, with compatible scene waveform fallback for legacy videos).
+using ground-truth continuous narration audio and acoustic forced alignment (Vosk Kaldi HMM-TDNN).
 Caches alignment results by a deterministic SHA-256 hash of narration script, audio identity,
 and aligner configuration.
 Exports clean JSON, WebVTT, SRT, and ASS subtitle artifacts, and uses FFmpeg with libass
@@ -92,9 +91,6 @@ def _compute_alignment_hash(
     if continuous_audio_abs and continuous_audio_abs.is_file():
         stat = continuous_audio_abs.stat()
         audio_identity = f"{audio_identity}:{continuous_audio_abs.name}:{stat.st_size}"
-    else:
-        scene_files = "|".join(str(s.get("file") or "") for s in sorted_scenes)
-        audio_identity = f"{audio_identity}:{scene_files}"
 
     config_part = f"{provider.provider_name}:{provider.model}:v2_caption_grouping"
     payload = f"{script_part}||{audio_identity}||{config_part}".encode("utf-8")
@@ -164,11 +160,15 @@ def generate_subtitles_step(
     ass_abs_path = storage_root / ass_rel_path
     captioned_abs_path = storage_root / captioned_rel_path
 
-    # 6. Resolve continuous narration audio if present
+    # 6. Resolve continuous narration audio
     cont_rel, cont_abs, narration_script, audio_hash = _resolve_continuous_audio(
         vo_data if isinstance(vo_data, dict) else {}, storage_root
     )
-    if cont_rel and cont_abs and not cont_abs.is_file():
+    if not cont_rel or not cont_abs:
+        raise PipelineError(
+            "Voiceover step must include continuous narration audio before generating subtitles"
+        )
+    if not cont_abs.is_file():
         raise PipelineError(
             f"Continuous narration WAV referenced in voiceover step does not exist: {cont_abs}"
         )
@@ -183,11 +183,27 @@ def generate_subtitles_step(
     cache_rel_path = f"{video.id}/audio/alignment_{alignment_hash[:12]}.json"
     cache_abs_path = storage_root / cache_rel_path
 
-    # 7. Check alignment cache or execute subtitle alignment
+    # 7. Check inline-edited step output, alignment cache, or execute subtitle alignment
     result: SubtitleResult | None = None
     reused_cache = False
 
-    if cache_abs_path.is_file():
+    if (
+        step is not None
+        and not step.user_prompt
+        and isinstance(step.output, dict)
+        and isinstance(step.output.get("subtitles"), dict)
+        and isinstance(step.output.get("meta"), dict)
+        and step.output["meta"].get("captioned_burned") is False
+        and step.output["subtitles"].get("alignment_hash") == alignment_hash
+        and step.output["subtitles"].get("segments")
+    ):
+        try:
+            result = SubtitleResult.from_dict(step.output["subtitles"], reused=True)
+            reused_cache = True
+        except Exception:
+            result = None
+
+    if result is None and cache_abs_path.is_file():
         try:
             cached_data = json.loads(cache_abs_path.read_text(encoding="utf-8"))
             if (
@@ -213,13 +229,13 @@ def generate_subtitles_step(
         except Exception as exc:
             raise PipelineError(f"Subtitle generation failed: {exc}") from exc
 
-        if cont_abs and cont_abs.parent.is_dir():
-            try:
-                cache_abs_path.write_text(
-                    json.dumps(result.to_dict(), indent=2), encoding="utf-8"
-                )
-            except Exception:
-                pass
+    if cont_abs and cont_abs.parent.is_dir():
+        try:
+            cache_abs_path.write_text(
+                json.dumps(result.to_dict(), indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
 
     # 8. Write subtitle artifacts to storage
     subtitles_dict = result.to_dict()
@@ -230,6 +246,7 @@ def generate_subtitles_step(
 
     # 9. Burn subtitles into separate captioned video via FFmpeg if rendered video exists
     warnings: list[str] = []
+    burn_succeeded = False
     input_video_path = getattr(video, "output_path", None)
     if not input_video_path or not Path(input_video_path).is_file():
         candidate = video_dir / "final_video.mp4"
@@ -263,6 +280,7 @@ def generate_subtitles_step(
             )
             if temp_captioned_path.is_file() and temp_captioned_path.stat().st_size > 0:
                 shutil.move(str(temp_captioned_path), str(captioned_abs_path))
+                burn_succeeded = True
             else:
                 warnings.append("FFmpeg produced an empty captioned video output.")
         except subprocess.CalledProcessError as exc:
@@ -283,7 +301,7 @@ def generate_subtitles_step(
 
     total_latency = round(time.perf_counter() - start_time, 4)
 
-    is_captioned_ready = captioned_abs_path.is_file() and captioned_abs_path.stat().st_size > 0
+    is_captioned_ready = burn_succeeded and captioned_abs_path.is_file() and captioned_abs_path.stat().st_size > 0
 
     # 11. Build output payload conforming to Shorts Studio conventions
     payload: dict[str, Any] = {

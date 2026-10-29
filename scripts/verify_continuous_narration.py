@@ -200,25 +200,20 @@ def main():
     assert not analysis["clipping_detected"], "Audio must not clip"
     assert analysis["rms_energy"] > 0.02, "Speech must contain active audio energy"
 
-    # 6. Scene-to-Narration Mapping Verification & Slice Audit
+    # 6. Scene-to-Narration Mapping Verification
     print("\n" + "-" * 75)
-    print("SCENE MAPPINGS & SLICE AUDIT")
+    print("SCENE MAPPINGS AUDIT")
     print("-" * 75)
 
     items = vo["items"]
     for it in items:
         sc_idx = it["index"]
-        sc_file = storage_root / it["file"]
-        assert sc_file.is_file(), f"Scene {sc_idx} slice file not found at {sc_file}"
-        sc_analysis = analyze_audio_waveform(sc_file)
+        assert "file" not in it, f"Scene {sc_idx} should not have a separate audio slice file"
 
         print(f"Scene {sc_idx}:")
         print(f"  Narration:     \"{it['narration'][:45]}...\"")
         print(f"  Timing:        {it['start_time']:.3f}s -> {it['end_time']:.3f}s (dur: {it['duration_seconds']:.3f}s)")
         print(f"  Timing Type:   {it['timing_type']}")
-        print(f"  Slice Path:    {it['file']}")
-        print(f"  Slice Dur:     {sc_analysis['duration_seconds']:.3f}s (verified frames)")
-        print(f"  Slice RMS:     {sc_analysis['rms_db']} dBFS")
 
     # 7. Idempotent Reuse Verification (Run 2: Warm rerun with identical storyboard)
     print("\n" + "-" * 75)

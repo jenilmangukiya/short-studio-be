@@ -1,8 +1,8 @@
-"""Audio silence trimming utilities for Shorts Studio voiceover clips.
+"""Audio silence trimming utilities for Shorts Studio voiceover audio.
 
 Provides robust silence detection and trimming on speech audio waveforms,
 preserving natural speech onsets (breathing headroom) and trailing decay
-while preventing abrupt clicks or unnatural transitions between video scenes.
+while preventing abrupt clicks at waveform boundaries.
 """
 
 from __future__ import annotations

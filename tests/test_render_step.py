@@ -95,9 +95,10 @@ def test_asset_file_missing_on_disk(tmp_path, monkeypatch):
             }
         },
         "voiceover": {
+            "audio_file": "nonexistent/narration.wav",
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "file": "nonexistent/audio.wav", "duration_seconds": 2.0}]
-            }
+                "items": [{"index": 1, "status": "ok", "duration_seconds": 2.0}]
+            },
         },
     }
     with pytest.raises(PipelineError) as exc_info:
@@ -115,7 +116,7 @@ def test_ffmpeg_subprocess_error_cleanup(tmp_path, monkeypatch):
     video_dir.mkdir(parents=True, exist_ok=True)
     img_path = video_dir / "scene_01.png"
     img_path.write_bytes(create_solid_png(100, 150, 200, 100, 50))
-    vo_path = video_dir / "scene_01.wav"
+    vo_path = video_dir / "narration.wav"
     vo_path.write_bytes(create_mock_wav(1.0, 24000))
 
     prev = {
@@ -125,9 +126,10 @@ def test_ffmpeg_subprocess_error_cleanup(tmp_path, monkeypatch):
             }
         },
         "voiceover": {
+            "audio_file": f"{video.id}/narration.wav",
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "file": f"{video.id}/scene_01.wav", "duration_seconds": 1.0}]
-            }
+                "items": [{"index": 1, "status": "ok", "duration_seconds": 1.0}]
+            },
         },
     }
 
@@ -147,7 +149,7 @@ def test_ffmpeg_subprocess_error_cleanup(tmp_path, monkeypatch):
 
 
 def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
-    """Fast end-to-end integration test rendering a 0.5s synthetic clip with local FFmpeg."""
+    """Fast end-to-end integration test rendering a 0.6s synthetic clip with local FFmpeg."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
     monkeypatch.setattr(settings, "render_fps", 30)
 
@@ -160,9 +162,9 @@ def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
     img_rel = f"{video.id}/scene_01.png"
     (tmp_path / img_rel).write_bytes(img_bytes)
 
-    # Create synthetic 0.5s 24kHz WAV
-    wav_bytes = create_mock_wav(0.5, 24000)
-    wav_rel = f"{video.id}/scene_01.wav"
+    # Create synthetic 0.6s 24kHz continuous WAV
+    wav_bytes = create_mock_wav(0.6, 24000)
+    wav_rel = f"{video.id}/narration.wav"
     (tmp_path / wav_rel).write_bytes(wav_bytes)
 
     prev = {
@@ -172,9 +174,10 @@ def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
             }
         },
         "voiceover": {
+            "audio_file": wav_rel,
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "file": wav_rel, "duration_seconds": 0.5}]
-            }
+                "items": [{"index": 1, "status": "ok", "duration_seconds": 0.6}]
+            },
         },
     }
 
@@ -188,7 +191,7 @@ def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
     assert res["render"]["audio_codec"] == "aac"
     assert res["render"]["fps"] == 30
     assert res["render"]["scenes_rendered"] == 1
-    assert abs(res["duration_seconds"] - 0.5) < 0.1
+    assert abs(res["duration_seconds"] - 0.6) < 0.1
 
     # Verify final video file exists on disk and is non-empty
     final_file = Path(res["video_path"])
@@ -226,10 +229,8 @@ def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
     img2_rel = f"{video.id}/scene_02.png"
     img2.save(tmp_path / img2_rel)
 
-    wav1_rel = f"{video.id}/scene_01.wav"
-    (tmp_path / wav1_rel).write_bytes(create_mock_wav(0.6, 24000))
-    wav2_rel = f"{video.id}/scene_02.wav"
-    (tmp_path / wav2_rel).write_bytes(create_mock_wav(0.6, 24000))
+    cont_wav_rel = f"{video.id}/narration.wav"
+    (tmp_path / cont_wav_rel).write_bytes(create_mock_wav(1.2, 24000))
 
     prev = {
         "storyboard": {
@@ -249,12 +250,13 @@ def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
             }
         },
         "voiceover": {
+            "audio_file": cont_wav_rel,
             "voiceover": {
                 "items": [
-                    {"index": 1, "status": "ok", "file": wav1_rel, "duration_seconds": 0.6},
-                    {"index": 2, "status": "ok", "file": wav2_rel, "duration_seconds": 0.6},
+                    {"index": 1, "status": "ok", "duration_seconds": 0.6},
+                    {"index": 2, "status": "ok", "duration_seconds": 0.6},
                 ]
-            }
+            },
         },
     }
 
@@ -324,12 +326,6 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
     cont_audio_rel = f"{video.id}/audio/narration_test123.wav"
     (tmp_path / cont_audio_rel).write_bytes(create_mock_wav(total_audio_dur, 24000))
 
-    # Also create scene slices for backward compatibility
-    slice1_rel = f"{video.id}/audio/scene_01.wav"
-    slice2_rel = f"{video.id}/audio/scene_02.wav"
-    (tmp_path / slice1_rel).write_bytes(create_mock_wav(0.7, 24000))
-    (tmp_path / slice2_rel).write_bytes(create_mock_wav(0.8, 24000))
-
     prev = {
         "storyboard": {
             "storyboard": {
@@ -354,8 +350,8 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
                 "continuous": True,
                 "audio_file": cont_audio_rel,
                 "items": [
-                    {"index": 1, "status": "ok", "file": slice1_rel, "duration_seconds": 0.7, "start_time": 0.0, "end_time": 0.7},
-                    {"index": 2, "status": "ok", "file": slice2_rel, "duration_seconds": 0.8, "start_time": 0.7, "end_time": 1.5},
+                    {"index": 1, "status": "ok", "duration_seconds": 0.7, "start_time": 0.0, "end_time": 0.7},
+                    {"index": 2, "status": "ok", "duration_seconds": 0.8, "start_time": 0.7, "end_time": 1.5},
                 ],
             },
         },
@@ -406,8 +402,8 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
     assert len(tmp_dirs) == 0
 
 
-def test_legacy_fallback_when_continuous_audio_absent(tmp_path, monkeypatch):
-    """Verify legacy fallback rendering when voiceover lacks continuous audio."""
+def test_render_rejects_missing_continuous_audio_in_voiceover_output(tmp_path, monkeypatch):
+    """Verify rendering raises PipelineError when voiceover output lacks continuous audio_file."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
     monkeypatch.setattr(settings, "render_fps", 30)
 
@@ -417,10 +413,7 @@ def test_legacy_fallback_when_continuous_audio_absent(tmp_path, monkeypatch):
 
     img_rel = f"{video.id}/scene_01.png"
     (tmp_path / img_rel).write_bytes(create_solid_png(1024, 1536, 60, 60, 60))
-    wav_rel = f"{video.id}/scene_01.wav"
-    (tmp_path / wav_rel).write_bytes(create_mock_wav(0.6, 24000))
 
-    # Legacy voiceover output: no top-level audio_file or voiceover.audio_file
     prev = {
         "images": {
             "images": {
@@ -429,16 +422,14 @@ def test_legacy_fallback_when_continuous_audio_absent(tmp_path, monkeypatch):
         },
         "voiceover": {
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "file": wav_rel, "duration_seconds": 0.6}]
+                "items": [{"index": 1, "status": "ok", "duration_seconds": 0.6}]
             }
         },
     }
 
-    res = h_render(video, prev, None)
-    assert res["render"]["audio_source"] == "legacy_scenes"
-    assert res["render"]["audio_file"] is None
-    assert Path(res["video_path"]).is_file()
-    assert abs(res["duration_seconds"] - 0.6) < 0.1
+    with pytest.raises(PipelineError) as exc_info:
+        h_render(video, prev, None)
+    assert "Continuous narration audio file is missing" in str(exc_info.value)
 
 
 def test_continuous_audio_missing_on_disk(tmp_path, monkeypatch):

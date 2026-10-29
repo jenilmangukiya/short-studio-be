@@ -99,20 +99,16 @@ def main():
         cont_audio_abs = tmp_path / cont_audio_rel
         cont_audio_abs.write_bytes(create_mock_wav(total_audio_duration, sample_rate))
 
-        # Scene slices for backward compatibility
+        # Scene timing metadata for continuous narration
         # Scene 1: 1.5s, Scene 2: 1.8s, Scene 3: 1.5s (Sum: 4.8s)
         slice_durs = [1.5, 1.8, 1.5]
         vo_items = []
         cur_t = 0.0
         for idx, (sc, d) in enumerate(zip(scenes_def, slice_durs), 1):
-            slice_rel = f"{video.id}/audio/scene_{idx:02d}.wav"
-            slice_abs = tmp_path / slice_rel
-            slice_abs.write_bytes(create_mock_wav(d, sample_rate))
             vo_items.append({
                 "index": idx,
                 "scene_id": idx,
                 "status": "ok",
-                "file": slice_rel,
                 "narration": sc["narration"],
                 "start_time": round(cur_t, 3),
                 "end_time": round(cur_t + d, 3),

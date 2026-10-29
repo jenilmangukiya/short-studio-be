@@ -1,11 +1,8 @@
-"""Acoustic forced alignment and waveform subtitle provider.
+"""Acoustic forced alignment subtitle provider.
 
 Uses local Vosk (Kaldi HMM-TDNN) acoustic forced alignment against the continuous
 narration WAV to produce exact word-level timestamps in seconds relative to the
 start of the continuous audio track.
-
-Preserves full backward compatibility with legacy per-scene audio projects via
-scene waveform envelope alignment when a continuous narration WAV is not present.
 """
 
 from __future__ import annotations
@@ -372,108 +369,8 @@ def map_recognized_words_to_script(
     return final_words
 
 
-def _align_scene_audio(
-    audio_path: Path | None,
-    narration: str,
-    duration_fallback: float,
-    scene_offset: float,
-) -> tuple[float, list[WordTimestamp]]:
-    """Analyze individual scene audio waveform (legacy fallback) and align narration words."""
-    clean_narration = narration.replace("’", "'").replace("‘", "'")
-    tokens = re.findall(r"\b[\w'-]+\b", clean_narration)
-    if not tokens:
-        return duration_fallback, []
-
-    weights = _compute_word_weights(tokens)
-    total_weight = sum(weights) or 1.0
-
-    onset_rel = 0.04
-    offset_rel = max(0.2, duration_fallback - 0.08)
-    actual_duration = duration_fallback
-    smoothed_rms = None
-    frame_ms = 10
-
-    if audio_path and audio_path.is_file():
-        try:
-            import soundfile as sf
-
-            data, sr = sf.read(str(audio_path))
-            if len(data) > 0 and sr > 0:
-                actual_duration = round(len(data) / float(sr), 3)
-
-                if data.ndim > 1:
-                    data = np.mean(data, axis=1)
-
-                frame_len = int(sr * (frame_ms / 1000.0))
-                num_frames = len(data) // frame_len
-
-                if num_frames > 4:
-                    frames = data[: num_frames * frame_len].reshape(num_frames, frame_len)
-                    rms = np.sqrt(np.mean(frames**2, axis=1))
-
-                    p75 = np.percentile(rms, 75)
-                    thresh = max(0.004, p75 * 0.12)
-                    speech_frames = np.where(rms > thresh)[0]
-
-                    if len(speech_frames) > 0:
-                        onset_rel = max(0.0, float(speech_frames[0] * (frame_ms / 1000.0)))
-                        offset_rel = min(
-                            actual_duration,
-                            float((speech_frames[-1] + 1) * (frame_ms / 1000.0)),
-                        )
-
-                    kernel = np.ones(3) / 3.0
-                    smoothed_rms = np.convolve(rms, kernel, mode="same")
-        except Exception:
-            pass
-
-    active_speech_duration = max(0.15, offset_rel - onset_rel)
-    words: list[WordTimestamp] = []
-
-    curr_rel = onset_rel
-    total_tokens = len(tokens)
-
-    for i, (token, wt) in enumerate(zip(tokens, weights)):
-        if i == total_tokens - 1:
-            next_rel = max(curr_rel + 0.06, offset_rel)
-        else:
-            raw_dur = active_speech_duration * (wt / total_weight)
-            next_rel = curr_rel + raw_dur
-
-            if smoothed_rms is not None:
-                target_frame = int(next_rel / (frame_ms / 1000.0))
-                search_window = 4
-                f_start = max(0, target_frame - search_window)
-                f_end = min(len(smoothed_rms), target_frame + search_window + 1)
-                if f_end > f_start:
-                    min_idx = f_start + int(np.argmin(smoothed_rms[f_start:f_end]))
-                    snapped_rel = min_idx * (frame_ms / 1000.0)
-                    if snapped_rel > curr_rel + 0.06 and snapped_rel < offset_rel - 0.06:
-                        next_rel = snapped_rel
-
-        w_start = round(scene_offset + curr_rel, 3)
-        w_end = round(scene_offset + min(actual_duration, next_rel), 3)
-
-        if w_end <= w_start:
-            w_end = round(w_start + 0.05, 3)
-
-        words.append(
-            WordTimestamp(
-                text=token,
-                start=w_start,
-                end=w_end,
-                confidence=0.98 if smoothed_rms is not None else 0.90,
-            )
-        )
-        curr_rel = next_rel
-
-    return actual_duration, words
-
-
 class AcousticSubtitleProvider(BaseSubtitleProvider):
-    """Subtitle provider using local Vosk forced alignment on continuous narration WAV,
-    with compatible fallback to scene waveform envelope alignment for legacy scene audio.
-    """
+    """Subtitle provider using local Vosk forced alignment on continuous narration WAV."""
 
     def __init__(
         self,
@@ -561,74 +458,15 @@ class AcousticSubtitleProvider(BaseSubtitleProvider):
         continuous_audio_path: Path | None = None,
         narration_script: str | None = None,
     ) -> SubtitleResult:
-        if continuous_audio_path is not None:
-            if not Path(continuous_audio_path).is_file():
-                raise SubtitleError(
-                    f"Continuous narration WAV not found at '{continuous_audio_path}'"
-                )
-            return self._generate_from_continuous_audio(
-                scenes=scenes,
-                continuous_audio_path=Path(continuous_audio_path),
+        if continuous_audio_path is None:
+            raise SubtitleError(
+                "Continuous narration WAV path is required for acoustic subtitle alignment"
             )
-
-        start_time = time.perf_counter()
-        segments: list[SubtitleSegment] = []
-        total_words_count = 0
-        cumulative_offset = 0.0
-        overall_sources: set[str] = set()
-
-        for scene in scenes:
-            scene_idx = int(scene.get("index", len(segments) + 1))
-            narration = str(scene.get("narration") or "").strip()
-            est_duration = float(scene.get("duration_seconds", 0.0) or 0.0)
-            if est_duration <= 0.0:
-                est_duration = 2.5
-
-            audio_file_rel = scene.get("file")
-            audio_abs_path = None
-            if audio_file_rel and storage_root:
-                audio_abs_path = Path(storage_root) / audio_file_rel
-
-            has_scene_file = bool(audio_abs_path and audio_abs_path.is_file())
-            actual_duration, words = _align_scene_audio(
-                audio_path=audio_abs_path,
-                narration=narration,
-                duration_fallback=est_duration,
-                scene_offset=cumulative_offset,
+        if not Path(continuous_audio_path).is_file():
+            raise SubtitleError(
+                f"Continuous narration WAV not found at '{continuous_audio_path}'"
             )
-            seg_source = "scene_waveform" if has_scene_file else "estimated"
-            overall_sources.add(seg_source)
-
-            seg_start = round(cumulative_offset, 3)
-            seg_end = round(cumulative_offset + actual_duration, 3)
-
-            segments.append(
-                SubtitleSegment(
-                    index=scene_idx,
-                    text=narration,
-                    start=seg_start,
-                    end=seg_end,
-                    words=words,
-                    timing_source=seg_source,
-                )
-            )
-
-            total_words_count += len(words)
-            cumulative_offset += actual_duration
-
-        latency = round(time.perf_counter() - start_time, 4)
-        resolved_source = (
-            "scene_waveform"
-            if overall_sources == {"scene_waveform"}
-            else ("estimated" if "estimated" in overall_sources else "scene_waveform")
-        )
-
-        return SubtitleResult(
-            segments=segments,
-            total_words=total_words_count,
-            total_duration_seconds=round(cumulative_offset, 3),
-            provider=self.provider_name,
-            model="acoustic-waveform-aligner-v1",
-            latency_seconds=latency,
-            timing_source=resolved_source,
+        return self._generate_from_continuous_audio(
+            scenes=scenes,
+            continuous_audio_path=Path(continuous_audio_path),
         )

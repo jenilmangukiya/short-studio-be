@@ -44,7 +44,6 @@ class BaseSubtitleProvider(ABC):
                 - 'index': Scene index (1, 2, ...)
                 - 'narration': The spoken text string for this scene
                 - 'duration_seconds': Duration of the scene in seconds
-                - 'file': Relative path to scene audio WAV file (optional)
             storage_root: Path to base storage directory to resolve audio files.
             continuous_audio_path: Optional absolute path to continuous narration WAV file.
             narration_script: Optional complete narration script string.

@@ -2,8 +2,8 @@
 
 Generates continuous video narration audio for the complete video as a single
 logical audio asset using Kokoro-82M (or mock for automated tests), with
-natural linguistic chunking, content-addressable caching/reuse, scene-to-narration
-timing mapping, and full backward/downstream compatibility.
+natural linguistic chunking, content-addressable caching/reuse, and scene-to-narration
+timing mapping for downstream rendering and subtitle alignment.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from app.voiceover import (
     estimate_scene_timings,
     generate_continuous_audio,
     get_voiceover_provider,
-    slice_scene_audio,
 )
 
 
@@ -146,8 +145,8 @@ def generate_voiceover_step(
     """Execute the voiceover step for a video using continuous narration.
 
     Collects narration text across all storyboard scenes in order, generates
-    a single continuous narration audio asset, computes proportional scene timing
-    metadata, and prepares scene slices for downstream rendering and subtitle alignment.
+    a single continuous narration audio asset, and computes proportional scene
+    timing metadata for downstream rendering and subtitle alignment.
 
     Args:
         video: Video ORM model instance.
@@ -224,37 +223,33 @@ def generate_voiceover_step(
         if (
             prev_hash == full_hash
             and continuous_file_abs.is_file()
+            and continuous_file_abs.stat().st_size > 44
             and len(prev_items) == len(validated_scenes)
+            and all(it.get("status") == "ok" for it in prev_items)
         ):
-            all_files_exist = all(
-                it.get("status") == "ok"
-                and it.get("file")
-                and (storage_root / it["file"]).is_file()
+            reused_items = [
+                {k: v for k, v in {**it, "reused": True, "error": None}.items() if k != "file"}
                 for it in prev_items
+            ]
+            reused_payload = _build_output_payload(
+                items=reused_items,
+                continuous_file_rel=continuous_file_rel,
+                narration_script=full_script,
+                continuous_hash=full_hash,
+                warnings=warnings,
+                provider=provider,
+                total_scenes=len(validated_scenes),
+                voice=voice,
+                speed=speed,
+                total_duration=float(step.output.get("duration_seconds", 0.0)),
+                total_latency=0.0,
+                chunks_count=int(step.output.get("meta", {}).get("chunks_count", 1)),
+                inference_calls=int(step.output.get("meta", {}).get("inference_calls", 1)),
+                is_complete=True,
+                reused=True,
             )
-            if all_files_exist:
-                reused_items = [
-                    {**it, "reused": True, "error": None} for it in prev_items
-                ]
-                reused_payload = _build_output_payload(
-                    items=reused_items,
-                    continuous_file_rel=continuous_file_rel,
-                    narration_script=full_script,
-                    continuous_hash=full_hash,
-                    warnings=warnings,
-                    provider=provider,
-                    total_scenes=len(validated_scenes),
-                    voice=voice,
-                    speed=speed,
-                    total_duration=float(step.output.get("duration_seconds", 0.0)),
-                    total_latency=0.0,
-                    chunks_count=int(step.output.get("meta", {}).get("chunks_count", 1)),
-                    inference_calls=int(step.output.get("meta", {}).get("inference_calls", 1)),
-                    is_complete=True,
-                    reused=True,
-                )
-                _persist_partial(step, reused_payload)
-                return reused_payload
+            _persist_partial(step, reused_payload)
+            return reused_payload
 
     # 9. Calculate target duration from storyboard scene estimates if provided
     total_est = sum(float(s.get("est_seconds") or 0.0) for s in validated_scenes)
@@ -292,23 +287,13 @@ def generate_voiceover_step(
         _persist_failure(step, err_msg)
         raise PipelineError(err_msg) from exc
 
-    # 10. Preserve scene-to-narration mapping and slice scene audio for downstream compatibility
+    # 10. Compute scene-to-narration timing mapping for downstream rendering and subtitle alignment
     scene_timings = estimate_scene_timings(validated_scenes, result.duration_seconds)
-    try:
-        scene_wavs = slice_scene_audio(result.audio_bytes, scene_timings)
-    except Exception as exc:
-        err_msg = f"Failed to slice scene audio from continuous narration: {exc}"
-        _persist_failure(step, err_msg)
-        raise PipelineError(err_msg) from exc
 
     items: list[dict[str, Any]] = []
     for idx_i, sc in enumerate(validated_scenes):
         sc_idx = sc["index"]
         timing = scene_timings[idx_i]
-
-        scene_file_rel = f"{video.id}/audio/scene_{sc_idx:02d}_{hash8}.wav"
-        scene_file_abs = storage_root / scene_file_rel
-        scene_file_abs.write_bytes(scene_wavs[idx_i])
 
         sc_latency = round(
             result.latency_seconds * (timing["duration_seconds"] / max(0.1, result.duration_seconds)), 4
@@ -319,7 +304,6 @@ def generate_voiceover_step(
                 "index": sc_idx,
                 "scene_id": sc.get("id", sc_idx),
                 "status": "ok",
-                "file": scene_file_rel,
                 "narration": sc["narration"],
                 "audio_hash": full_hash,
                 "reused": False,
