@@ -34,6 +34,8 @@ class BaseSubtitleProvider(ABC):
         self,
         scenes: list[dict[str, Any]],
         storage_root: Path | None = None,
+        continuous_audio_path: Path | None = None,
+        narration_script: str | None = None,
     ) -> SubtitleResult:
         """Generate synchronized subtitle data with word-level timestamps.
 
@@ -44,6 +46,8 @@ class BaseSubtitleProvider(ABC):
                 - 'duration_seconds': Duration of the scene in seconds
                 - 'file': Relative path to scene audio WAV file (optional)
             storage_root: Path to base storage directory to resolve audio files.
+            continuous_audio_path: Optional absolute path to continuous narration WAV file.
+            narration_script: Optional complete narration script string.
 
         Returns:
             SubtitleResult containing segments and word timestamps.

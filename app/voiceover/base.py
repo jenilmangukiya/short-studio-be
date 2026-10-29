@@ -61,4 +61,6 @@ class BaseVoiceoverProvider(ABC):
             model=self.model,
             voice=voice,
             speed=speed,
+            inference_calls=getattr(self, "_last_inference_batches", 1) or 1,
+            chunks_count=1,
         )

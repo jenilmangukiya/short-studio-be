@@ -26,3 +26,5 @@ class VoiceoverResult:
     model: str
     voice: str
     speed: float = 1.0
+    inference_calls: int = 1
+    chunks_count: int = 1

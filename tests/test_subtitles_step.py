@@ -458,3 +458,206 @@ def test_download_endpoint_captioned_and_original(tmp_path, monkeypatch):
     captioned_mp4.unlink()
     resp_fallback = download(video=video, captioned=True)
     assert resp_fallback.path == str(raw_mp4)
+
+
+# ==============================================================================
+# 6. Continuous Narration Forced Alignment, Caching, & Caption Grouping Tests
+# ==============================================================================
+
+def test_word_alignment_output_and_monotonic_timestamps():
+    """Verify map_recognized_words_to_script preserves exact punctuation and produces monotonic timestamps."""
+    from app.subtitles.acoustic import _extract_display_tokens, map_recognized_words_to_script
+
+    narration = "Why does watching someone yawn, make you yawn? It's a social cue!"
+    tokens = _extract_display_tokens(narration)
+    assert tokens == [
+        "Why", "does", "watching", "someone", "yawn,", "make", "you", "yawn?",
+        "It's", "a", "social", "cue!",
+    ]
+
+    # Simulate recognized words including a morphological diff ('yawn' vs 'yawns') and homophone ('queue' vs 'cue')
+    recognized = [
+        {"word": "why", "start": 0.03, "end": 0.18, "conf": 1.0},
+        {"word": "does", "start": 0.18, "end": 0.33, "conf": 1.0},
+        {"word": "watching", "start": 0.33, "end": 0.75, "conf": 1.0},
+        {"word": "someone", "start": 0.75, "end": 1.05, "conf": 1.0},
+        {"word": "yawn", "start": 1.05, "end": 1.35, "conf": 1.0},
+        {"word": "make", "start": 1.35, "end": 1.59, "conf": 1.0},
+        {"word": "you", "start": 1.59, "end": 1.71, "conf": 1.0},
+        {"word": "yawn", "start": 1.71, "end": 2.13, "conf": 1.0},
+        {"word": "it's", "start": 2.40, "end": 2.60, "conf": 1.0},
+        {"word": "a", "start": 2.60, "end": 2.70, "conf": 1.0},
+        {"word": "social", "start": 2.70, "end": 3.10, "conf": 1.0},
+        {"word": "queue", "start": 3.10, "end": 3.55, "conf": 0.96},
+    ]
+
+    aligned = map_recognized_words_to_script(tokens, recognized, audio_duration=3.65)
+    assert len(aligned) == len(tokens)
+    # Original words and punctuation are preserved
+    assert [w.text for w in aligned] == tokens
+    # Exact acoustic timestamps transferred
+    assert aligned[4].text == "yawn,"
+    assert aligned[4].start == 1.05
+    assert aligned[4].end == 1.35
+    assert aligned[7].text == "yawn?"
+    assert aligned[7].start == 1.71
+    assert aligned[7].end == 2.13
+    assert aligned[-1].text == "cue!"
+    assert aligned[-1].start == 3.10
+    assert aligned[-1].end == 3.55
+
+    # Strictly monotonic and valid start/end bounds
+    prev_end = 0.0
+    for w in aligned:
+        assert w.start >= prev_end
+        assert w.end > w.start
+        assert w.end <= 3.65
+        prev_end = w.end
+
+
+def test_caption_grouping_respects_sentence_boundaries_and_pauses():
+    """Verify _partition_words_into_captions splits on sentence punctuation and acoustic pauses."""
+    from app.subtitles.types import _partition_words_into_captions
+
+    words = [
+        WordTimestamp("that", 8.00, 8.20),
+        WordTimestamp("spreads", 8.20, 8.55),
+        WordTimestamp("this", 8.55, 8.75),
+        WordTimestamp("way.", 8.75, 9.10),
+        # Sentence boundary + pause before "The"
+        WordTimestamp("The", 9.45, 9.60),
+        WordTimestamp("effect", 9.60, 9.95),
+        WordTimestamp("is", 9.95, 10.10),
+        WordTimestamp("called", 10.10, 10.45),
+        WordTimestamp("contagious", 10.45, 11.05),
+        WordTimestamp("yawning.", 11.05, 11.55),
+    ]
+
+    groups = _partition_words_into_captions(words, max_words=4, max_chars=28, pause_threshold=0.28)
+    group_texts = [" ".join(w.text for w in g) for g in groups]
+
+    # Must break right after "way." so "way. The effect is" never happens!
+    assert group_texts[0] == "that spreads this way."
+    assert not any("way. The" in gt for gt in group_texts)
+
+    # Check ASS output never overlaps dialogue events
+    seg = SubtitleSegment(index=1, text=" ".join(w.text for w in words), start=8.0, end=11.6, words=words)
+    res = SubtitleResult(segments=[seg], total_words=len(words), total_duration_seconds=11.6, provider="acoustic", model="test")
+    ass_lines = [line for line in res.to_ass().splitlines() if line.startswith("Dialogue:")]
+    assert len(ass_lines) == len(words)
+
+
+def test_continuous_narration_forced_alignment_and_caching(tmp_path, monkeypatch):
+    """Test continuous narration alignment, cache reuse, and cache invalidation when script changes."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    video_id = uuid.uuid4()
+    video_dir = tmp_path / str(video_id)
+    audio_dir = video_dir / "audio"
+    audio_dir.mkdir(parents=True)
+
+    cont_wav = audio_dir / "narration_abc12345.wav"
+    cont_wav.write_bytes(create_mock_wav(3.0))
+
+    raw_mp4 = video_dir / "final_video.mp4"
+    raw_mp4.write_bytes(b"DUMMY")
+    video = DummyVideo(video_id=video_id, output_path=None)
+
+    call_counter = {"count": 0}
+
+    def fake_vosk_align(audio_path, script_tokens, model_path=None):
+        call_counter["count"] += 1
+        words = []
+        t = 0.05
+        step_dur = 2.8 / max(1, len(script_tokens))
+        for tok in script_tokens:
+            words.append(WordTimestamp(text=tok, start=round(t, 3), end=round(t + step_dur * 0.85, 3), confidence=0.99))
+            t += step_dur
+        return 3.0, words
+
+    import app.subtitles.acoustic as acoustic_mod
+    monkeypatch.setattr(acoustic_mod, "align_script_with_vosk", fake_vosk_align)
+
+    prev = {
+        "render": {"video_path": str(raw_mp4), "duration_seconds": 3.0},
+        "voiceover": {
+            "audio_file": f"{video_id}/audio/narration_abc12345.wav",
+            "narration_script": "Why do we yawn? Because others yawn.",
+            "audio_hash": "abc12345",
+            "voiceover": {
+                "continuous": True,
+                "audio_file": f"{video_id}/audio/narration_abc12345.wav",
+                "narration_script": "Why do we yawn? Because others yawn.",
+                "audio_hash": "abc12345",
+                "items": [
+                    {"index": 1, "status": "ok", "narration": "Why do we yawn?", "duration_seconds": 1.0},
+                    {"index": 2, "status": "ok", "narration": "Because others yawn.", "duration_seconds": 2.0},
+                ],
+            },
+        },
+    }
+
+    provider = AcousticSubtitleProvider()
+    out1 = generate_subtitles_step(video, prev, subtitle_provider=provider)
+    assert call_counter["count"] == 1
+    assert out1["subtitles"]["timing_source"] == "forced_alignment"
+    assert out1["subtitles"]["reused"] is False
+    assert out1["subtitles"]["total_words"] == 7
+
+    # Second run with identical narration and audio must reuse cached alignment without calling Vosk
+    out2 = generate_subtitles_step(video, prev, subtitle_provider=provider)
+    assert call_counter["count"] == 1
+    assert out2["subtitles"]["reused"] is True
+    assert out2["subtitles"]["alignment_hash"] == out1["subtitles"]["alignment_hash"]
+
+    # Third run after narration text changes must invalidate cache and re-align
+    prev["voiceover"]["narration_script"] = "Why do we yawn? It is contagious."
+    prev["voiceover"]["voiceover"]["items"][1]["narration"] = "It is contagious."
+    out3 = generate_subtitles_step(video, prev, subtitle_provider=provider)
+    assert call_counter["count"] == 2
+    assert out3["subtitles"]["reused"] is False
+    assert out3["subtitles"]["alignment_hash"] != out1["subtitles"]["alignment_hash"]
+
+
+def test_continuous_alignment_failure_handled_explicitly(tmp_path, monkeypatch):
+    """If continuous audio is missing or alignment fails, raise PipelineError explicitly without fake proportional labeling."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    video_id = uuid.uuid4()
+    video = DummyVideo(video_id=video_id, output_path="/tmp/final.mp4")
+
+    prev = {
+        "render": {"video_path": "/tmp/final.mp4", "duration_seconds": 3.0},
+        "voiceover": {
+            "audio_file": f"{video_id}/audio/missing_narration.wav",
+            "voiceover": {
+                "items": [{"index": 1, "status": "ok", "narration": "Hello world.", "duration_seconds": 3.0}]
+            },
+        },
+    }
+
+    with pytest.raises(PipelineError) as exc_info:
+        generate_subtitles_step(video, prev, subtitle_provider=AcousticSubtitleProvider())
+    assert "Continuous narration WAV" in str(exc_info.value)
+
+
+def test_real_continuous_wav_vosk_alignment_integration():
+    """Integration test aligning the existing real Kokoro-generated continuous WAV with local Vosk."""
+    wav_path = Path("storage/032a2c95-0052-4efa-9423-fe7fbbfe5fc5/audio/narration_f1166385.wav")
+    if not wav_path.is_file():
+        pytest.skip("Real continuous narration WAV not present in storage")
+
+    scenes = [
+        {"index": 1, "narration": "Why does watching someone yawn make you yawn?"},
+        {"index": 2, "narration": "Your brain can automatically copy a movement it sees, and yawning is one action"},
+    ]
+    provider = AcousticSubtitleProvider()
+    res = provider.generate(scenes=scenes, continuous_audio_path=wav_path)
+
+    assert res.timing_source == "forced_alignment"
+    assert res.total_words == 22
+    # In actual audio, "yawn?" at end of scene 1 finishes around 2.13s (not 2.786s estimated)
+    s1_end = res.segments[0].words[-1].end
+    assert 1.8 <= s1_end <= 2.35
+    # Scene 2 "Your" starts around 2.55s after the natural sentence pause
+    s2_start = res.segments[1].words[0].start
+    assert 2.4 <= s2_start <= 2.7
+

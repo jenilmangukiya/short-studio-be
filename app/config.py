@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     render_timeout_seconds: float = 300.0
 
     # Subtitles generation settings
-    subtitles_provider: str = "acoustic"  # acoustic | mock
+    subtitles_provider: str = "acoustic"  # acoustic | vosk | mock
+    vosk_model_path: str = str(_BACKEND_DIR / "storage/models/vosk")
+
 
     @property
     def resolved_storage_dir(self) -> Path:

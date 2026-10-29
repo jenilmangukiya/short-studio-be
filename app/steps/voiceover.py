@@ -1,8 +1,9 @@
 """Voiceover step implementation for Shorts Studio.
 
-Generates vertical short video narration audio for each scene in a storyboard
-using Kokoro-82M (or mock for automated tests), with content-addressable
-caching/reuse, per-scene progress persistence, and duration telemetry.
+Generates continuous video narration audio for the complete video as a single
+logical audio asset using Kokoro-82M (or mock for automated tests), with
+natural linguistic chunking, content-addressable caching/reuse, scene-to-narration
+timing mapping, and full backward/downstream compatibility.
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from app.voiceover import (
     BaseVoiceoverProvider,
     VoiceoverConfigError,
     VoiceoverError,
+    collect_narration_script,
+    estimate_scene_timings,
+    generate_continuous_audio,
     get_voiceover_provider,
+    slice_scene_audio,
 )
 
 
@@ -29,31 +34,42 @@ class PipelineError(Exception):
 
 def _build_output_payload(
     items: list[dict[str, Any]],
+    continuous_file_rel: str | None,
+    narration_script: str,
+    continuous_hash: str,
     warnings: list[str],
     provider: BaseVoiceoverProvider,
     total_scenes: int,
     voice: str,
     speed: float,
+    total_duration: float,
+    total_latency: float,
+    chunks_count: int = 1,
+    inference_calls: int = 1,
     is_complete: bool = False,
+    reused: bool = False,
 ) -> dict[str, Any]:
-    """Construct the standardized output payload for the voiceover step."""
-    generated_count = sum(1 for it in items if it.get("status") == "ok" and not it.get("reused"))
-    reused_count = sum(1 for it in items if it.get("status") == "ok" and it.get("reused"))
+    """Construct the standardized output payload for the continuous voiceover step."""
+    generated_count = 0 if reused else (len(items) if is_complete else 0)
+    reused_count = len(items) if reused else 0
     failed_count = sum(1 for it in items if it.get("status") == "failed")
-
-    total_duration = round(
-        sum(float(it.get("duration_seconds", 0.0)) for it in items if it.get("status") == "ok"), 3
-    )
-    total_latency = round(sum(float(it.get("latency_seconds", 0.0)) for it in items), 4)
 
     payload: dict[str, Any] = {
         "voiceover": {
+            "continuous": True,
+            "audio_file": continuous_file_rel,
+            "narration_script": narration_script,
+            "audio_hash": continuous_hash,
             "items": [dict(it) for it in items],
             "complete": is_complete,
-            "total_duration_seconds": total_duration,
+            "total_duration_seconds": round(total_duration, 3),
         },
-        # Top-level duration_seconds for downstream rendering and backward compatibility
-        "duration_seconds": total_duration,
+        # Top-level fields for downstream rendering, subtitle alignment, and compatibility
+        "audio_file": continuous_file_rel,
+        "file": continuous_file_rel,
+        "narration_script": narration_script,
+        "audio_hash": continuous_hash,
+        "duration_seconds": round(total_duration, 3),
         "warnings": list(warnings),
         "meta": {
             "provider": provider.provider_name,
@@ -65,7 +81,12 @@ def _build_output_payload(
             "scenes_failed": failed_count,
             "voice": voice,
             "speed": speed,
-            "latency_seconds": total_latency,
+            "latency_seconds": round(total_latency, 4),
+            "continuous": True,
+            "chunks_count": chunks_count,
+            "inference_calls": inference_calls,
+            "audio_file": continuous_file_rel,
+            "audio_hash": continuous_hash,
         },
     }
 
@@ -77,9 +98,33 @@ def _build_output_payload(
 
 
 def _persist_partial(step: VideoStep | None, payload: dict[str, Any]) -> None:
-    """Save progress after each audio scene without changing step status."""
+    """Save step output progress without changing step status."""
     if step is not None:
         step.output = dict(payload)
+        sess = None
+        try:
+            sess = object_session(step)
+        except Exception:
+            sess = None
+        if sess is not None:
+            try:
+                sess.commit()
+            except Exception:
+                sess.rollback()
+
+
+def _persist_failure(step: VideoStep | None, error_message: str) -> None:
+    """Save error state in step output upon failure."""
+    if step is not None:
+        step.output = {
+            "voiceover": {
+                "continuous": True,
+                "items": [],
+                "complete": False,
+                "error": error_message,
+            },
+            "error": error_message,
+        }
         sess = None
         try:
             sess = object_session(step)
@@ -95,30 +140,43 @@ def _persist_partial(step: VideoStep | None, payload: dict[str, Any]) -> None:
 def generate_voiceover_step(
     video: Video,
     prev: dict[str, Any],
-    step: VideoStep | None,
+    step: VideoStep | None = None,
     voiceover_provider: BaseVoiceoverProvider | None = None,
 ) -> dict[str, Any]:
-    """Execute the voiceover step for a video.
+    """Execute the voiceover step for a video using continuous narration.
+
+    Collects narration text across all storyboard scenes in order, generates
+    a single continuous narration audio asset, computes proportional scene timing
+    metadata, and prepares scene slices for downstream rendering and subtitle alignment.
 
     Args:
         video: Video ORM model instance.
         prev: Dictionary containing outputs of preceding pipeline steps.
         step: Current VideoStep instance (for progress persistence).
         voiceover_provider: Optional provider override (e.g. for testing).
+
+    Returns:
+        Structured output payload conforming to the pipeline handler interface.
     """
     # 1. Validate storyboard input
     sb_outer = prev.get("storyboard")
     if not sb_outer or not isinstance(sb_outer, dict):
         raise PipelineError("Storyboard step must be completed before generating voiceover")
 
-    # Support both wrapped {"storyboard": {...}} and raw {...} formats
     sb = sb_outer.get("storyboard") if isinstance(sb_outer.get("storyboard"), dict) else sb_outer
 
     scenes = sb.get("scenes") if isinstance(sb, dict) else None
     if not scenes or not isinstance(scenes, list) or len(scenes) == 0:
         raise PipelineError("Storyboard step must be completed before generating voiceover and contain scenes")
 
-    # 2. Extract voice settings from channel or fallback to defaults
+    # 2. Collect and validate narration text from all scenes in order
+    try:
+        full_script, validated_scenes = collect_narration_script(scenes)
+    except ValueError as exc:
+        _persist_failure(step, str(exc))
+        raise PipelineError(str(exc)) from exc
+
+    # 3. Extract voice settings from channel or fallback to defaults
     channel = getattr(video, "channel", None)
     channel_settings = getattr(channel, "settings", None) if channel else None
 
@@ -136,176 +194,164 @@ def generate_voiceover_step(
             except (ValueError, TypeError):
                 pass
 
-    # 3. Check for user revision prompt on this step
+    # 4. Check for user revision prompt on this step
     warnings: list[str] = []
     if step and step.user_prompt:
         warnings.append(
             "Instructions are not used by the voiceover step. Edit the script or storyboard to change narration text."
         )
 
-    # 4. Resolve provider
+    # 5. Resolve provider
     provider = voiceover_provider or get_voiceover_provider()
 
-    # 5. Prepare filesystem storage directory
-    storage_root = Path(settings.storage_dir)
+    # 6. Prepare filesystem storage directory
+    storage_root = getattr(settings, "resolved_storage_dir", Path(settings.storage_dir).resolve())
     audio_dir = storage_root / str(video.id) / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    # 6. Map previously generated items in this step for potential reuse
-    existing_items = (
-        step.output.get("voiceover", {}).get("items", [])
-        if step and isinstance(step.output, dict) and isinstance(step.output.get("voiceover"), dict)
-        else []
-    )
-    existing_by_scene: dict[int, dict[str, Any]] = {
-        it["index"]: it for it in existing_items if isinstance(it, dict) and "index" in it
-    }
+    # 7. Compute continuous narration hash
+    hash_payload = f"{full_script}|{voice}|{speed}|{provider.model}".encode("utf-8")
+    full_hash = hashlib.sha256(hash_payload).hexdigest()
+    hash8 = full_hash[:8]
+
+    continuous_file_rel = f"{video.id}/audio/narration_{hash8}.wav"
+    continuous_file_abs = storage_root / continuous_file_rel
+
+    # 8. Check for reuse of previously generated continuous audio
+    if step and isinstance(step.output, dict):
+        prev_hash = step.output.get("audio_hash") or step.output.get("voiceover", {}).get("audio_hash")
+        prev_items = step.output.get("voiceover", {}).get("items", [])
+        if (
+            prev_hash == full_hash
+            and continuous_file_abs.is_file()
+            and len(prev_items) == len(validated_scenes)
+        ):
+            all_files_exist = all(
+                it.get("status") == "ok"
+                and it.get("file")
+                and (storage_root / it["file"]).is_file()
+                for it in prev_items
+            )
+            if all_files_exist:
+                reused_items = [
+                    {**it, "reused": True, "error": None} for it in prev_items
+                ]
+                reused_payload = _build_output_payload(
+                    items=reused_items,
+                    continuous_file_rel=continuous_file_rel,
+                    narration_script=full_script,
+                    continuous_hash=full_hash,
+                    warnings=warnings,
+                    provider=provider,
+                    total_scenes=len(validated_scenes),
+                    voice=voice,
+                    speed=speed,
+                    total_duration=float(step.output.get("duration_seconds", 0.0)),
+                    total_latency=0.0,
+                    chunks_count=int(step.output.get("meta", {}).get("chunks_count", 1)),
+                    inference_calls=int(step.output.get("meta", {}).get("inference_calls", 1)),
+                    is_complete=True,
+                    reused=True,
+                )
+                _persist_partial(step, reused_payload)
+                return reused_payload
+
+    # 9. Calculate target duration from storyboard scene estimates if provided
+    total_est = sum(float(s.get("est_seconds") or 0.0) for s in validated_scenes)
+    if total_est <= 0.0 and isinstance(sb, dict):
+        total_est = float(sb.get("total_seconds") or 0.0)
+    target_duration = total_est if total_est > 0.0 else None
+
+    # Generate continuous narration audio
+    try:
+        result, chunks_count = generate_continuous_audio(
+            narration_script=full_script,
+            provider=provider,
+            voice=voice,
+            speed=speed,
+            target_duration=target_duration,
+        )
+    except VoiceoverConfigError as exc:
+        _persist_failure(step, str(exc))
+        raise PipelineError(str(exc)) from exc
+    except Exception as exc:
+        _persist_failure(step, str(exc))
+        raise PipelineError(f"Continuous voiceover generation failed: {exc}") from exc
+
+    # Validate audio output
+    if len(result.audio_bytes) <= 44 or result.duration_seconds <= 0.0 or result.sample_rate <= 0:
+        err_msg = "Generated continuous narration audio is empty or invalid"
+        _persist_failure(step, err_msg)
+        raise PipelineError(err_msg)
+
+    # Save continuous WAV asset to disk
+    try:
+        continuous_file_abs.write_bytes(result.audio_bytes)
+    except Exception as exc:
+        err_msg = f"Failed to write continuous audio file to disk: {exc}"
+        _persist_failure(step, err_msg)
+        raise PipelineError(err_msg) from exc
+
+    # 10. Preserve scene-to-narration mapping and slice scene audio for downstream compatibility
+    scene_timings = estimate_scene_timings(validated_scenes, result.duration_seconds)
+    try:
+        scene_wavs = slice_scene_audio(result.audio_bytes, scene_timings)
+    except Exception as exc:
+        err_msg = f"Failed to slice scene audio from continuous narration: {exc}"
+        _persist_failure(step, err_msg)
+        raise PipelineError(err_msg) from exc
 
     items: list[dict[str, Any]] = []
+    for idx_i, sc in enumerate(validated_scenes):
+        sc_idx = sc["index"]
+        timing = scene_timings[idx_i]
 
-    # 7. Sequential generation loop
-    for scene in scenes:
-        scene_idx = int(scene.get("index", len(items) + 1))
-        narration = str(scene.get("narration") or "").strip()
+        scene_file_rel = f"{video.id}/audio/scene_{sc_idx:02d}_{hash8}.wav"
+        scene_file_abs = storage_root / scene_file_rel
+        scene_file_abs.write_bytes(scene_wavs[idx_i])
 
-        if not narration:
-            items.append(
-                {
-                    "index": scene_idx,
-                    "status": "failed",
-                    "file": None,
-                    "narration": "",
-                    "audio_hash": "",
-                    "reused": False,
-                    "duration_seconds": 0.0,
-                    "sample_rate": 24000,
-                    "voice": voice,
-                    "speed": speed,
-                    "latency_seconds": 0.0,
-                    "error": "Scene narration text is empty",
-                }
-            )
-            _persist_partial(
-                step,
-                _build_output_payload(
-                    items, warnings, provider, len(scenes), voice, speed, is_complete=False
-                ),
-            )
-            continue
-
-        # Content hash over narration text, voice, speed, and provider model
-        hash_payload = f"{narration}|{voice}|{speed}|{provider.model}".encode("utf-8")
-        full_hash = hashlib.sha256(hash_payload).hexdigest()
-        hash8 = full_hash[:8]
-
-        file_rel_path = f"{video.id}/audio/scene_{scene_idx:02d}_{hash8}.wav"
-        file_abs_path = storage_root / file_rel_path
-
-        # Check reuse criteria: previous item for same scene, status ok, audio_hash matches, file exists
-        prev_item = existing_by_scene.get(scene_idx)
-        if (
-            prev_item
-            and prev_item.get("status") == "ok"
-            and prev_item.get("audio_hash") == full_hash
-            and file_abs_path.is_file()
-        ):
-            items.append(
-                {
-                    "index": scene_idx,
-                    "status": "ok",
-                    "file": file_rel_path,
-                    "narration": narration,
-                    "audio_hash": full_hash,
-                    "reused": True,
-                    "duration_seconds": float(prev_item.get("duration_seconds", 0.0)),
-                    "sample_rate": int(prev_item.get("sample_rate", 24000)),
-                    "voice": prev_item.get("voice", voice),
-                    "speed": float(prev_item.get("speed", speed)),
-                    "latency_seconds": float(prev_item.get("latency_seconds", 0.0)),
-                    "error": None,
-                }
-            )
-            _persist_partial(
-                step,
-                _build_output_payload(
-                    items, warnings, provider, len(scenes), voice, speed, is_complete=False
-                ),
-            )
-            continue
-
-        # Generate new audio
-        try:
-            est_sec = scene.get("est_seconds")
-            result = provider.generate(
-                text=narration, voice=voice, speed=speed, target_duration=est_sec
-            )
-            file_abs_path.write_bytes(result.audio_bytes)
-
-            items.append(
-                {
-                    "index": scene_idx,
-                    "status": "ok",
-                    "file": file_rel_path,
-                    "narration": narration,
-                    "audio_hash": full_hash,
-                    "reused": False,
-                    "duration_seconds": result.duration_seconds,
-                    "sample_rate": result.sample_rate,
-                    "voice": voice,
-                    "speed": speed,
-                    "latency_seconds": result.latency_seconds,
-                    "error": None,
-                }
-            )
-        except VoiceoverConfigError as exc:
-            # Fatal configuration or dependency error: save partial output and abort immediately
-            _persist_partial(
-                step,
-                _build_output_payload(
-                    items, warnings, provider, len(scenes), voice, speed, is_complete=False
-                ),
-            )
-            raise PipelineError(str(exc)) from exc
-        except Exception as exc:
-            # Scene-specific generation error: record failure and continue with other scenes
-            items.append(
-                {
-                    "index": scene_idx,
-                    "status": "failed",
-                    "file": None,
-                    "narration": narration,
-                    "audio_hash": full_hash,
-                    "reused": False,
-                    "duration_seconds": 0.0,
-                    "sample_rate": 24000,
-                    "voice": voice,
-                    "speed": speed,
-                    "latency_seconds": 0.0,
-                    "error": str(exc),
-                }
-            )
-
-        # Persist partial output after each scene
-        _persist_partial(
-            step,
-            _build_output_payload(
-                items, warnings, provider, len(scenes), voice, speed, is_complete=False
-            ),
+        sc_latency = round(
+            result.latency_seconds * (timing["duration_seconds"] / max(0.1, result.duration_seconds)), 4
         )
 
-    # 8. Verify if any scene failed
-    failed_scenes = [it["index"] for it in items if it.get("status") == "failed"]
-    if failed_scenes:
-        final_payload = _build_output_payload(
-            items, warnings, provider, len(scenes), voice, speed, is_complete=False
+        items.append(
+            {
+                "index": sc_idx,
+                "scene_id": sc.get("id", sc_idx),
+                "status": "ok",
+                "file": scene_file_rel,
+                "narration": sc["narration"],
+                "audio_hash": full_hash,
+                "reused": False,
+                "start_time": timing["start_time"],
+                "end_time": timing["end_time"],
+                "duration_seconds": timing["duration_seconds"],
+                "timing_type": "estimated",
+                "sample_rate": result.sample_rate,
+                "voice": voice,
+                "speed": speed,
+                "latency_seconds": sc_latency,
+                "error": None,
+            }
         )
-        _persist_partial(step, final_payload)
-        scenes_str = ", ".join(str(s) for s in failed_scenes)
-        raise PipelineError(f"Voiceover generation failed for scenes: {scenes_str}")
 
-    # 9. Complete output
+    # 11. Complete standardized payload
     final_payload = _build_output_payload(
-        items, warnings, provider, len(scenes), voice, speed, is_complete=True
+        items=items,
+        continuous_file_rel=continuous_file_rel,
+        narration_script=full_script,
+        continuous_hash=full_hash,
+        warnings=warnings,
+        provider=provider,
+        total_scenes=len(validated_scenes),
+        voice=voice,
+        speed=speed,
+        total_duration=result.duration_seconds,
+        total_latency=result.latency_seconds,
+        chunks_count=chunks_count,
+        inference_calls=result.inference_calls,
+        is_complete=True,
+        reused=False,
     )
     _persist_partial(step, final_payload)
     return final_payload

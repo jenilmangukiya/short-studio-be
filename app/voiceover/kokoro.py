@@ -105,6 +105,14 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
             ) from exc
 
         try:
+            # Measure how many internal ONNX inference calls/batches Kokoro will execute
+            phonemes = kokoro.tokenizer.phonemize(text, lang)
+            batches = kokoro._split_phonemes(phonemes)
+            self._last_inference_batches = max(1, len(batches))
+        except Exception:
+            self._last_inference_batches = 1
+
+        try:
             samples, sample_rate = kokoro.create(
                 text=text,
                 voice=voice,

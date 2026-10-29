@@ -81,9 +81,16 @@ def _make_storyboard_prev(scene_count: int = 3, est_seconds_per_scene: float = 2
 class CountingFakeVoiceoverProvider(BaseVoiceoverProvider):
     """Fake voiceover provider for testing call counts, scene tracking, and error injections."""
 
-    def __init__(self, model="fake-voice-model", fail_on_scene=None, error_to_raise=None):
+    def __init__(
+        self,
+        model="fake-voice-model",
+        fail_on_scene=None,
+        fail_on_call=None,
+        error_to_raise=None,
+    ):
         super().__init__(model=model, timeout_seconds=10.0)
         self.fail_on_scene = fail_on_scene
+        self.fail_on_call = fail_on_call if fail_on_call is not None else fail_on_scene
         self.error_to_raise = error_to_raise
         self.call_count = 0
         self.called_narrations = []
@@ -98,7 +105,7 @@ class CountingFakeVoiceoverProvider(BaseVoiceoverProvider):
         self.call_count += 1
         self.called_narrations.append(text)
 
-        if self.fail_on_scene is not None and self.call_count == self.fail_on_scene:
+        if self.fail_on_call is not None and self.call_count == self.fail_on_call:
             if self.error_to_raise:
                 raise self.error_to_raise
             raise VoiceoverProviderError(f"Simulated voiceover failure on call {self.call_count}")
@@ -153,6 +160,7 @@ def test_voiceover_step_multi_scene_success(tmp_path, monkeypatch):
     assert "voiceover" in output
     vo = output["voiceover"]
     assert vo["complete"] is True
+    assert vo["continuous"] is True
     assert len(vo["items"]) == 3
     assert vo["total_duration_seconds"] == 6.0
     assert output["duration_seconds"] == 6.0
@@ -162,58 +170,61 @@ def test_voiceover_step_multi_scene_success(tmp_path, monkeypatch):
     assert meta["scenes_generated"] == 3
     assert meta["scenes_reused"] == 0
     assert meta["scenes_failed"] == 0
+    assert meta["continuous"] is True
 
-    # Verify all audio files exist on disk
+    # Continuous audio file must exist on disk
+    cont_abs = tmp_path / output["audio_file"]
+    assert cont_abs.is_file()
+    with wave.open(str(cont_abs), "rb") as wf:
+        assert wf.getframerate() == 24000
+
+    # Verify all scene audio slices exist on disk
     for it in vo["items"]:
         assert it["status"] == "ok"
         assert it["reused"] is False
         assert it["error"] is None
+        assert it["timing_type"] == "estimated"
+        assert it["start_time"] >= 0.0
+        assert it["end_time"] > it["start_time"]
         abs_path = tmp_path / it["file"]
         assert abs_path.is_file()
         with wave.open(str(abs_path), "rb") as wf:
             assert wf.getframerate() == 24000
 
 
-def test_voiceover_step_partial_failure_and_resume(tmp_path, monkeypatch):
-    """Verify that a failure on scene 2 persists scene 1, marks scene 2 failed, and allows retry."""
+def test_voiceover_step_failure_and_resume(tmp_path, monkeypatch):
+    """Verify that a failure during continuous generation records error and allows retry."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video = DummyVideo()
     prev = _make_storyboard_prev(scene_count=3, est_seconds_per_scene=2.0)
     step = DummyStep()
 
-    # Provider fails on scene 2
-    failing_provider = CountingFakeVoiceoverProvider(fail_on_scene=2)
+    # Provider fails on call 1
+    failing_provider = CountingFakeVoiceoverProvider(fail_on_call=1)
 
     with pytest.raises(PipelineError) as exc_info:
         generate_voiceover_step(video, prev, step, voiceover_provider=failing_provider)
 
-    assert "failed for scenes: 2" in str(exc_info.value)
+    assert "Simulated voiceover failure" in str(exc_info.value)
 
-    # Check partial persistence in step.output
+    # Check error persistence in step.output
     assert step.output is not None
     vo = step.output["voiceover"]
     assert vo["complete"] is False
-    assert len(vo["items"]) == 3
-    assert vo["items"][0]["status"] == "ok"
-    assert vo["items"][1]["status"] == "failed"
-    assert "Simulated voiceover failure" in vo["items"][1]["error"]
-
-    # Scene 1 file must exist on disk
-    scene_1_file = tmp_path / vo["items"][0]["file"]
-    assert scene_1_file.is_file()
+    assert "Simulated voiceover failure" in step.output["error"]
 
 
-def test_voiceover_step_retry_failed_scene_reuses_successful(tmp_path, monkeypatch):
-    """Verify retrying a failed run reuses already generated audio and generates remaining."""
+def test_voiceover_step_retry_after_failure_succeeds(tmp_path, monkeypatch):
+    """Verify retrying a failed run with working provider succeeds and establishes reusable state."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video = DummyVideo()
     prev = _make_storyboard_prev(scene_count=3, est_seconds_per_scene=2.0)
     step = DummyStep()
 
-    # 1. Run with failure on scene 2
-    failing_prov = CountingFakeVoiceoverProvider(fail_on_scene=2)
+    # 1. Run with failure on call 1
+    failing_prov = CountingFakeVoiceoverProvider(fail_on_call=1)
     with pytest.raises(PipelineError):
         generate_voiceover_step(video, prev, step, voiceover_provider=failing_prov)
 
@@ -223,50 +234,36 @@ def test_voiceover_step_retry_failed_scene_reuses_successful(tmp_path, monkeypat
 
     vo = retry_output["voiceover"]
     assert vo["complete"] is True
-    # Scene 1 was reused
-    assert vo["items"][0]["status"] == "ok"
-    assert vo["items"][0]["reused"] is True
-    # Scene 2 was newly generated
-    assert vo["items"][1]["status"] == "ok"
-    assert vo["items"][1]["reused"] is False
-    # Scene 3 succeeded in run 1 and was reused in retry
-    assert vo["items"][2]["status"] == "ok"
-    assert vo["items"][2]["reused"] is True
-
-    # Provider was called ONLY for the failed scene 2 (call_count == 1)
+    assert vo["continuous"] is True
+    assert len(vo["items"]) == 3
+    assert all(it["status"] == "ok" for it in vo["items"])
     assert working_prov.call_count == 1
-    assert retry_output["meta"]["scenes_reused"] == 2
-    assert retry_output["meta"]["scenes_generated"] == 1
+    assert retry_output["meta"]["scenes_generated"] == 3
+    assert retry_output["meta"]["scenes_reused"] == 0
 
 
 def test_voiceover_step_fatal_config_error_aborts_immediately(tmp_path, monkeypatch):
-    """Verify that a fatal VoiceoverConfigError aborts immediately and does not process subsequent scenes."""
+    """Verify that a fatal VoiceoverConfigError aborts immediately and records error."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
 
     video = DummyVideo()
     prev = _make_storyboard_prev(scene_count=3, est_seconds_per_scene=2.0)
     step = DummyStep()
 
-    # Provider raises fatal VoiceoverConfigError on scene 2
+    # Provider raises fatal VoiceoverConfigError on call 1
     fatal_prov = CountingFakeVoiceoverProvider(
-        fail_on_scene=2, error_to_raise=VoiceoverConfigError("Missing Kokoro ONNX model")
+        fail_on_call=1, error_to_raise=VoiceoverConfigError("Missing Kokoro ONNX model")
     )
     with pytest.raises(PipelineError) as exc_info:
         generate_voiceover_step(video, prev, step, voiceover_provider=fatal_prov)
 
     assert "Missing Kokoro ONNX model" in str(exc_info.value)
-    # Only scene 1 was saved; scene 2 failed fatally and scene 3 was not attempted
-    vo = step.output["voiceover"]
-    assert len(vo["items"]) == 1
-    assert vo["items"][0]["status"] == "ok"
+    assert step.output["voiceover"]["complete"] is False
 
-    # Retry with working provider: scene 1 is reused, scenes 2 and 3 are generated
+    # Retry with working provider succeeds
     working_prov = CountingFakeVoiceoverProvider()
     retry_output = generate_voiceover_step(video, prev, step, voiceover_provider=working_prov)
     assert retry_output["voiceover"]["complete"] is True
-    assert retry_output["meta"]["scenes_reused"] == 1
-    assert retry_output["meta"]["scenes_generated"] == 2
-    assert working_prov.call_count == 2
 
 
 def test_voiceover_step_reuse_when_narration_unchanged(tmp_path, monkeypatch):
@@ -280,14 +277,14 @@ def test_voiceover_step_reuse_when_narration_unchanged(tmp_path, monkeypatch):
     # Initial successful run
     prov1 = CountingFakeVoiceoverProvider()
     out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
-    assert prov1.call_count == 2
+    assert prov1.call_count == 1
     step.output = out1
 
     # Second run with same input
     prov2 = CountingFakeVoiceoverProvider()
     out2 = generate_voiceover_step(video, prev, step, voiceover_provider=prov2)
 
-    assert prov2.call_count == 0  # Reused all!
+    assert prov2.call_count == 0  # Reused completely with 0 TTS calls
     assert out2["meta"]["scenes_reused"] == 2
     assert out2["meta"]["scenes_generated"] == 0
     assert all(it["reused"] is True for it in out2["voiceover"]["items"])
@@ -307,13 +304,14 @@ def test_voiceover_step_regenerates_when_voice_changes(tmp_path, monkeypatch):
     out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
     step.output = out1
     assert out1["meta"]["voice"] == "af_heart"
+    assert prov1.call_count == 1
 
     # 2. Change channel voice to am_adam
     channel.settings["voice"] = "am_adam"
     prov2 = CountingFakeVoiceoverProvider()
     out2 = generate_voiceover_step(video, prev, step, voiceover_provider=prov2)
 
-    assert prov2.call_count == 2
+    assert prov2.call_count == 1
     assert out2["meta"]["voice"] == "am_adam"
     assert out2["meta"]["scenes_reused"] == 0
     assert all(it["reused"] is False for it in out2["voiceover"]["items"])

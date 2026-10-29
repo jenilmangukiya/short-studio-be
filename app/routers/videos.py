@@ -284,6 +284,44 @@ def get_scene_image(index: int, video: Video = Depends(get_owned_video)):
     return FileResponse(path=str(abs_path), media_type="image/png", headers=headers)
 
 
+@router.get("/videos/{video_id}/audio")
+def get_continuous_narration_audio(video: Video = Depends(get_owned_video)):
+    """Serve the complete continuous narration audio WAV for a video."""
+    step = next((s for s in video.steps if s.name == "voiceover"), None)
+    if not step or not step.output or not isinstance(step.output, dict):
+        raise HTTPException(404, f"No voiceover found for video {video.id}")
+
+    audio_file_rel = (
+        step.output.get("audio_file")
+        or step.output.get("file")
+        or step.output.get("voiceover", {}).get("audio_file")
+    )
+    if not audio_file_rel:
+        raise HTTPException(404, f"No continuous audio file recorded for video {video.id}")
+
+    storage_root = Path(settings.storage_dir).resolve()
+    abs_path = (storage_root / audio_file_rel).resolve()
+
+    try:
+        abs_path.relative_to(storage_root)
+    except ValueError:
+        raise HTTPException(403, "Access to requested file path is forbidden")
+
+    if not abs_path.is_file():
+        raise HTTPException(404, f"Continuous audio file does not exist on disk for video {video.id}")
+
+    audio_hash = (
+        step.output.get("audio_hash")
+        or step.output.get("voiceover", {}).get("audio_hash")
+        or ""
+    )
+    headers = {
+        "ETag": f'"{audio_hash}"',
+        "Cache-Control": "private, no-cache",
+    }
+    return FileResponse(path=str(abs_path), media_type="audio/wav", headers=headers)
+
+
 @router.get("/videos/{video_id}/audio/{index}")
 def get_scene_audio(index: int, video: Video = Depends(get_owned_video)):
     """Serve a scene narration audio by integer index if it has status 'ok', regardless of overall step status."""

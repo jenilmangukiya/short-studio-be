@@ -17,7 +17,7 @@ def get_subtitle_provider(provider_name: str | None = None) -> BaseSubtitleProvi
 
     if selected == "mock":
         return MockSubtitleProvider()
-    if selected in ("acoustic", "waveform", "default"):
+    if selected in ("acoustic", "vosk", "waveform", "default"):
         return AcousticSubtitleProvider()
 
     # Optional Whisper integration if configured and installed

@@ -25,6 +25,8 @@ class MockSubtitleProvider(BaseSubtitleProvider):
         self,
         scenes: list[dict[str, Any]],
         storage_root: Path | None = None,
+        continuous_audio_path: Path | None = None,
+        narration_script: str | None = None,
     ) -> SubtitleResult:
         start_time = time.perf_counter()
         segments: list[SubtitleSegment] = []
