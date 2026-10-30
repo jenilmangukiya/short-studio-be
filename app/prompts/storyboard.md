@@ -1,4 +1,4 @@
-version: storyboard-v2
+version: storyboard-v3
 
 # Storyboard Creation Rules: Faceless Vertical Short Videos
 
@@ -51,7 +51,7 @@ For educational, scientific, engineering, or curiosity-driven topics, construct 
 - Never use the same `shot_type` in two consecutive scenes.
 - Employ at least 4 distinct shot types across the video.
 
-## 4. Subject Anchor & `uses_anchor` Discipline
+## 4. Subject Anchor & Environment Anchor Discipline
 - `subject_anchor`: 1 or 2 plain, concrete sentences describing the core recurring physical object (shape, materials, colors, size cues; no style words, no text/logos/people, max 250 characters).
   - Example: "A commercial passenger airliner with rounded cabin windows and triple-pane acrylic glass."
 - `uses_anchor`: Set to `true` ONLY when that recurring object is the central physical subject of the shot.
@@ -62,9 +62,17 @@ For educational, scientific, engineering, or curiosity-driven topics, construct 
   - Schematic airflow or pressure diagrams.
   - Atmospheric or conclusion shots.
 - At least one scene must have `uses_anchor: true`, but avoid setting `uses_anchor: true` on every scene.
+- `environment_anchor`: 1 or 2 plain sentences describing the primary overarching environment or world setting across scenes (e.g. "Inside a modern high-density data center with dark aisles, blue server LED status racks, and overhead cable trays." or "High-altitude cruising altitude above rolling sunlit cloud decks."). Leave empty if scenes take place across completely diverse settings.
 
-## 5. Scene Image Prompts (`image_prompt`)
-- Write a rich, self-contained prompt describing the scene's visual subject, framing, environment, lighting, and composition (max 300 characters).
+## 5. Scene Image Prompts & Responsive Environments
+- `environment`: Specify the concrete physical setting and background for each scene (e.g. "vast enterprise data center server hall with glowing indicator racks", "passenger cabin interior with window view", "outer space with blue Earth curvature in background", "dark technical blueprint void").
+- **Background Responsiveness**: Never default to generic pastel gradients or studio lighting for scenes set in specific real-world environments.
+  - A data-center scene must show an authentic server environment.
+  - A space scene must have an authentic cosmic or orbital backdrop.
+  - An interior scene must depict authentic architectural interiors.
+  - A technical cutaway or diagram must use a high-contrast technical staging.
+  - Only abstract standalone object beats should use minimalist studio backdrops.
+- `image_prompt`: Write a rich, self-contained prompt describing the scene's visual subject, specific action, environment, lighting, and composition (max 500 characters).
 - Include the shot framing, subject, environment, lighting, and focal point directly in `image_prompt`.
 - In scenes where `uses_anchor` is `true`, describe the specific framing, focal point, lighting, and action without re-describing the anchor's full material definition.
 - In scenes where `uses_anchor` is `false`, describe the complete environment, diagram, or subject concretely.
@@ -118,7 +126,8 @@ Each scene must feature its own tailored camera animation plan (`animation`) ref
 
 ## 9. Structured Output
 Return structured JSON matching the StoryboardLLMOutput schema:
-- `subject_anchor`: Core recurring object description.
+- `subject_anchor`: Core recurring object description (or empty).
+- `environment_anchor`: Core recurring environment/setting description (or empty).
 - `scenes`: Array of 8 to 12 scenes, each containing:
   - `narration`: Exact spoken words for this beat.
   - `visual_purpose`: The visual story beat or viewer takeaway (e.g. establish subject, direct attention, macro detail, interior POV, structural cutaway, mechanism diagram, proof, closure).
@@ -126,7 +135,8 @@ Return structured JSON matching the StoryboardLLMOutput schema:
   - `camera_angle`: Camera angle or perspective (e.g. high-angle aerial, exterior 45-degree, extreme macro 90-degree, passenger-perspective, isometric cutaway, cross-section schematic).
   - `focal_point`: Primary visual focal element of the image.
   - `visual_technique`: Visual technique (e.g. cinematic-photo, macro-photo, passenger-pov, technical-illustration, cutaway-diagram, schematic).
-  - `image_prompt`: Rich scene-specific description (max 300 chars).
+  - `environment`: Specific physical setting and background for this scene.
+  - `image_prompt`: Rich scene-specific description (max 500 chars).
   - `uses_anchor`: Boolean (true ONLY when the recurring anchor object is the primary focus of this shot).
   - `animation`: Object containing:
     - `animation_type`: One of ('zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'subtle-drift', 'static').

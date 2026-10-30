@@ -79,16 +79,84 @@ def plan_scene_animation(
         # If image file exists, verify/refine focal coordinates with real image centroid
         if image_path and Path(image_path).is_file():
             img_metrics = analyze_image_composition(image_path)
-            # Refine anchor subtly toward visual centroid if close to center
-            cx = img_metrics.get("centroid_x", 0.5)
-            cy = img_metrics.get("centroid_y", DEFAULT_SUBJECT_Y)
+            cx = float(img_metrics.get("centroid_x", 0.5))
+            cy = float(img_metrics.get("centroid_y", DEFAULT_SUBJECT_Y))
             if existing_plan.focal_x == 0.5 and existing_plan.focal_y == DEFAULT_SUBJECT_Y:
-                existing_plan.focal_x = max(0.44, min(0.56, float(cx)))
-                existing_plan.focal_y = max(0.36, min(0.48, float(cy)))
-                existing_plan.start_x = existing_plan.focal_x
+                # Apply a stability deadzone around (0.50, 0.42) to avoid micro-offset jitter
+                fx = 0.50 if abs(cx - 0.50) <= 0.04 else round(max(0.44, min(0.56, cx)), 2)
+                fy = (
+                    DEFAULT_SUBJECT_Y
+                    if abs(cy - DEFAULT_SUBJECT_Y) <= 0.03
+                    else round(max(0.36, min(0.48, cy)), 2)
+                )
+                existing_plan.focal_x = fx
+                existing_plan.focal_y = fy
+
+        # Normalize movement coordinates and scales by animation_type to prevent shake/drift or clipped pans
+        atype = existing_plan.animation_type
+        if atype == "static":
+            existing_plan.start_scale = 1.00
+            existing_plan.end_scale = 1.00
+            existing_plan.start_x = existing_plan.focal_x
+            existing_plan.end_x = existing_plan.focal_x
+            existing_plan.start_y = existing_plan.focal_y
+            existing_plan.end_y = existing_plan.focal_y
+        elif atype == "zoom-in":
+            if existing_plan.end_scale <= existing_plan.start_scale + 0.005:
+                existing_plan.start_scale = 1.00
+                existing_plan.end_scale = 1.05
+            existing_plan.start_x = existing_plan.focal_x
+            existing_plan.end_x = existing_plan.focal_x
+            existing_plan.start_y = existing_plan.focal_y
+            existing_plan.end_y = existing_plan.focal_y
+        elif atype == "zoom-out":
+            if existing_plan.start_scale <= existing_plan.end_scale + 0.005:
+                existing_plan.start_scale = 1.05
+                existing_plan.end_scale = 1.00
+            existing_plan.start_x = existing_plan.focal_x
+            existing_plan.end_x = existing_plan.focal_x
+            existing_plan.start_y = existing_plan.focal_y
+            existing_plan.end_y = existing_plan.focal_y
+        elif atype in ("pan-left", "pan-right", "pan-up", "pan-down"):
+            # Ensure overscan scale (>= 1.05) so camera can translate without hitting borders
+            existing_plan.start_scale = max(1.05, existing_plan.start_scale)
+            existing_plan.end_scale = max(1.05, existing_plan.end_scale)
+            if atype == "pan-left":
                 existing_plan.start_y = existing_plan.focal_y
-                existing_plan.end_x = existing_plan.focal_x
                 existing_plan.end_y = existing_plan.focal_y
+                if existing_plan.start_x <= existing_plan.end_x + 0.005:
+                    existing_plan.start_x = round(min(0.65, existing_plan.focal_x + 0.06), 3)
+                    existing_plan.end_x = round(max(0.35, existing_plan.focal_x - 0.06), 3)
+            elif atype == "pan-right":
+                existing_plan.start_y = existing_plan.focal_y
+                existing_plan.end_y = existing_plan.focal_y
+                if existing_plan.end_x <= existing_plan.start_x + 0.005:
+                    existing_plan.start_x = round(max(0.35, existing_plan.focal_x - 0.06), 3)
+                    existing_plan.end_x = round(min(0.65, existing_plan.focal_x + 0.06), 3)
+            elif atype == "pan-up":
+                existing_plan.start_x = existing_plan.focal_x
+                existing_plan.end_x = existing_plan.focal_x
+                if existing_plan.start_y <= existing_plan.end_y + 0.005:
+                    existing_plan.start_y = round(min(SUBTITLE_SAFETY_MAX_Y, existing_plan.focal_y + 0.05), 3)
+                    existing_plan.end_y = round(max(0.20, existing_plan.focal_y - 0.05), 3)
+            elif atype == "pan-down":
+                existing_plan.start_x = existing_plan.focal_x
+                existing_plan.end_x = existing_plan.focal_x
+                if existing_plan.end_y <= existing_plan.start_y + 0.005:
+                    existing_plan.start_y = round(max(0.20, existing_plan.focal_y - 0.05), 3)
+                    existing_plan.end_y = round(min(SUBTITLE_SAFETY_MAX_Y, existing_plan.focal_y + 0.05), 3)
+        elif atype == "subtle-drift":
+            existing_plan.start_scale = max(1.02, existing_plan.start_scale)
+            existing_plan.end_scale = max(1.05, existing_plan.end_scale)
+            if (
+                abs(existing_plan.end_x - existing_plan.start_x) < 0.005
+                and abs(existing_plan.end_y - existing_plan.start_y) < 0.005
+            ):
+                existing_plan.start_x = round(max(0.40, existing_plan.focal_x - 0.04), 3)
+                existing_plan.end_x = round(min(0.60, existing_plan.focal_x + 0.04), 3)
+                existing_plan.start_y = existing_plan.focal_y
+                existing_plan.end_y = existing_plan.focal_y
+
         return existing_plan.validate_and_clamp()
 
     # 2. Extract semantic cues
@@ -100,15 +168,20 @@ def plan_scene_animation(
 
     # 3. Analyze real image composition if present
     img_analysis = analyze_image_composition(image_path)
-    centroid_x = img_analysis.get("centroid_x", 0.5)
-    centroid_y = img_analysis.get("centroid_y", DEFAULT_SUBJECT_Y)
+    centroid_x = float(img_analysis.get("centroid_x", 0.5))
+    centroid_y = float(img_analysis.get("centroid_y", DEFAULT_SUBJECT_Y))
     comp_type = img_analysis.get("composition_type", "balanced_scene")
 
     # Confident focal point determination:
     # Anchor must be restrained near center of vertical 9:16 frame to prevent awkward framing
+    # and use a stability deadzone around (0.50, 0.42) so near-centered images zoom without lateral wobble.
     if image_path and Path(image_path).is_file() and comp_type != "diffuse_low_contrast":
-        fx = max(0.45, min(0.55, float(centroid_x)))
-        fy = max(0.38, min(0.46, float(centroid_y)))
+        fx = 0.50 if abs(centroid_x - 0.50) <= 0.04 else round(max(0.45, min(0.55, centroid_x)), 2)
+        fy = (
+            DEFAULT_SUBJECT_Y
+            if abs(centroid_y - DEFAULT_SUBJECT_Y) <= 0.03
+            else round(max(0.38, min(0.46, centroid_y)), 2)
+        )
     else:
         # Inferred from semantic text or default Phase 1 anchor
         sx, sy = _infer_semantic_focal_point(scene_data)

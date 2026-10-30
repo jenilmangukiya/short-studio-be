@@ -16,6 +16,14 @@ from sqlalchemy.orm import object_session
 
 from app.config import settings
 from app.models import Video, VideoStep
+from app.subtitles import (
+    BaseSubtitleProvider,
+    SubtitleError,
+    apply_aligned_timings_to_items,
+    compute_aligned_scene_timings,
+    get_subtitle_provider,
+    load_or_compute_alignment,
+)
 from app.voiceover import (
     BaseVoiceoverProvider,
     VoiceoverConfigError,
@@ -47,11 +55,18 @@ def _build_output_payload(
     inference_calls: int = 1,
     is_complete: bool = False,
     reused: bool = False,
+    alignment_hash: str | None = None,
+    alignment_reused: bool = False,
 ) -> dict[str, Any]:
     """Construct the standardized output payload for the continuous voiceover step."""
     generated_count = 0 if reused else (len(items) if is_complete else 0)
     reused_count = len(items) if reused else 0
     failed_count = sum(1 for it in items if it.get("status") == "failed")
+    timing_type = (
+        "aligned"
+        if items and all(it.get("timing_type") == "aligned" for it in items)
+        else "estimated"
+    )
 
     payload: dict[str, Any] = {
         "voiceover": {
@@ -62,6 +77,8 @@ def _build_output_payload(
             "items": [dict(it) for it in items],
             "complete": is_complete,
             "total_duration_seconds": round(total_duration, 3),
+            "timing_type": timing_type,
+            "alignment_hash": alignment_hash,
         },
         # Top-level fields for downstream rendering, subtitle alignment, and compatibility
         "audio_file": continuous_file_rel,
@@ -86,6 +103,9 @@ def _build_output_payload(
             "inference_calls": inference_calls,
             "audio_file": continuous_file_rel,
             "audio_hash": continuous_hash,
+            "timing_type": timing_type,
+            "alignment_hash": alignment_hash,
+            "alignment_reused": alignment_reused,
         },
     }
 
@@ -136,23 +156,78 @@ def _persist_failure(step: VideoStep | None, error_message: str) -> None:
                 sess.rollback()
 
 
+def _align_scene_timings(
+    video: Video,
+    storage_root: Path,
+    validated_scenes: list[dict[str, Any]],
+    full_script: str,
+    full_hash: str,
+    continuous_file_abs: Path,
+    total_duration: float,
+    voiceover_provider: BaseVoiceoverProvider,
+    subtitle_provider: BaseSubtitleProvider | None,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], str, bool] | None:
+    """Run (or reuse) Vosk word alignment on the continuous narration and map scene boundaries.
+
+    Returns (aligned_timings, alignment_hash, reused) or None when alignment is unavailable,
+    in which case callers fall back to estimated timing.
+    """
+    if voiceover_provider.provider_name == "mock" and subtitle_provider is None:
+        # Synthetic mock audio contains no speech; skip alignment in tests/dev mock mode.
+        return None
+    try:
+        aligner = subtitle_provider or get_subtitle_provider()
+    except Exception:
+        return None
+    if aligner.provider_name == "mock":
+        return None
+
+    try:
+        alignment, alignment_hash, reused = load_or_compute_alignment(
+            video_id=video.id,
+            storage_root=storage_root,
+            sorted_scenes=validated_scenes,
+            narration_script=full_script,
+            continuous_audio_abs=continuous_file_abs,
+            audio_hash=full_hash,
+            provider=aligner,
+        )
+        timings = compute_aligned_scene_timings(
+            validated_scenes,
+            alignment,
+            total_duration if total_duration > 0 else alignment.total_duration_seconds,
+        )
+    except SubtitleError as exc:
+        warnings.append(f"Word alignment unavailable; using estimated scene timing ({exc}).")
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        warnings.append(f"Word alignment failed; using estimated scene timing ({exc}).")
+        return None
+    return timings, alignment_hash, reused
+
+
 def generate_voiceover_step(
     video: Video,
     prev: dict[str, Any],
     step: VideoStep | None = None,
     voiceover_provider: BaseVoiceoverProvider | None = None,
+    subtitle_provider: BaseSubtitleProvider | None = None,
 ) -> dict[str, Any]:
     """Execute the voiceover step for a video using continuous narration.
 
     Collects narration text across all storyboard scenes in order, generates
-    a single continuous narration audio asset, and computes proportional scene
-    timing metadata for downstream rendering and subtitle alignment.
+    a single continuous narration audio asset, runs word-level forced alignment
+    on it (persisted and reused by render/subtitles), and maps scene boundaries
+    to actual narration word timestamps. Falls back to proportional estimated
+    timing when alignment is unavailable.
 
     Args:
         video: Video ORM model instance.
         prev: Dictionary containing outputs of preceding pipeline steps.
         step: Current VideoStep instance (for progress persistence).
         voiceover_provider: Optional provider override (e.g. for testing).
+        subtitle_provider: Optional word-aligner override (e.g. for testing).
 
     Returns:
         Structured output payload conforming to the pipeline handler interface.
@@ -231,6 +306,27 @@ def generate_voiceover_step(
                 {k: v for k, v in {**it, "reused": True, "error": None}.items() if k != "file"}
                 for it in prev_items
             ]
+            reused_duration = float(step.output.get("duration_seconds", 0.0))
+            prev_inner = step.output.get("voiceover", {}) if isinstance(step.output.get("voiceover"), dict) else {}
+            alignment_hash = prev_inner.get("alignment_hash")
+            alignment_reused = True
+            if not all(it.get("timing_type") == "aligned" for it in reused_items):
+                # Upgrade legacy estimated timing to real word-aligned timing (audio is reused as-is).
+                aligned = _align_scene_timings(
+                    video=video,
+                    storage_root=storage_root,
+                    validated_scenes=validated_scenes,
+                    full_script=full_script,
+                    full_hash=full_hash,
+                    continuous_file_abs=continuous_file_abs,
+                    total_duration=reused_duration,
+                    voiceover_provider=provider,
+                    subtitle_provider=subtitle_provider,
+                    warnings=warnings,
+                )
+                if aligned is not None:
+                    timings, alignment_hash, alignment_reused = aligned
+                    reused_items = apply_aligned_timings_to_items(reused_items, timings)
             reused_payload = _build_output_payload(
                 items=reused_items,
                 continuous_file_rel=continuous_file_rel,
@@ -241,12 +337,14 @@ def generate_voiceover_step(
                 total_scenes=len(validated_scenes),
                 voice=voice,
                 speed=speed,
-                total_duration=float(step.output.get("duration_seconds", 0.0)),
+                total_duration=reused_duration,
                 total_latency=0.0,
                 chunks_count=int(step.output.get("meta", {}).get("chunks_count", 1)),
                 inference_calls=int(step.output.get("meta", {}).get("inference_calls", 1)),
                 is_complete=True,
                 reused=True,
+                alignment_hash=alignment_hash,
+                alignment_reused=alignment_reused,
             )
             _persist_partial(step, reused_payload)
             return reused_payload
@@ -287,8 +385,26 @@ def generate_voiceover_step(
         _persist_failure(step, err_msg)
         raise PipelineError(err_msg) from exc
 
-    # 10. Compute scene-to-narration timing mapping for downstream rendering and subtitle alignment
+    # 10. Compute scene-to-narration timing mapping for downstream rendering and subtitle alignment.
+    # Prefer actual word timestamps from forced alignment on the continuous WAV; fall back to
+    # proportional estimates only when alignment is unavailable.
     scene_timings = estimate_scene_timings(validated_scenes, result.duration_seconds)
+    alignment_hash: str | None = None
+    alignment_reused = False
+    aligned = _align_scene_timings(
+        video=video,
+        storage_root=storage_root,
+        validated_scenes=validated_scenes,
+        full_script=full_script,
+        full_hash=full_hash,
+        continuous_file_abs=continuous_file_abs,
+        total_duration=result.duration_seconds,
+        voiceover_provider=provider,
+        subtitle_provider=subtitle_provider,
+        warnings=warnings,
+    )
+    if aligned is not None:
+        scene_timings, alignment_hash, alignment_reused = aligned
 
     items: list[dict[str, Any]] = []
     for idx_i, sc in enumerate(validated_scenes):
@@ -299,25 +415,27 @@ def generate_voiceover_step(
             result.latency_seconds * (timing["duration_seconds"] / max(0.1, result.duration_seconds)), 4
         )
 
-        items.append(
-            {
-                "index": sc_idx,
-                "scene_id": sc.get("id", sc_idx),
-                "status": "ok",
-                "narration": sc["narration"],
-                "audio_hash": full_hash,
-                "reused": False,
-                "start_time": timing["start_time"],
-                "end_time": timing["end_time"],
-                "duration_seconds": timing["duration_seconds"],
-                "timing_type": "estimated",
-                "sample_rate": result.sample_rate,
-                "voice": voice,
-                "speed": speed,
-                "latency_seconds": sc_latency,
-                "error": None,
-            }
-        )
+        item: dict[str, Any] = {
+            "index": sc_idx,
+            "scene_id": sc.get("id", sc_idx),
+            "status": "ok",
+            "narration": sc["narration"],
+            "audio_hash": full_hash,
+            "reused": False,
+            "start_time": timing["start_time"],
+            "end_time": timing["end_time"],
+            "duration_seconds": timing["duration_seconds"],
+            "timing_type": timing.get("timing_type", "estimated"),
+            "sample_rate": result.sample_rate,
+            "voice": voice,
+            "speed": speed,
+            "latency_seconds": sc_latency,
+            "error": None,
+        }
+        if "speech_start_time" in timing:
+            item["speech_start_time"] = timing["speech_start_time"]
+            item["speech_end_time"] = timing["speech_end_time"]
+        items.append(item)
 
     # 11. Complete standardized payload
     final_payload = _build_output_payload(
@@ -336,6 +454,8 @@ def generate_voiceover_step(
         inference_calls=result.inference_calls,
         is_complete=True,
         reused=False,
+        alignment_hash=alignment_hash,
+        alignment_reused=alignment_reused,
     )
     _persist_partial(step, final_payload)
     return final_payload

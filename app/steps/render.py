@@ -20,6 +20,12 @@ from sqlalchemy.orm import object_session
 from app.animation import build_ffmpeg_zoompan_filter, plan_scene_animation
 from app.config import settings
 from app.models import Video, VideoStep
+from app.subtitles import (
+    SubtitleError,
+    compute_aligned_scene_timings,
+    get_subtitle_provider,
+    load_or_compute_alignment,
+)
 
 
 class PipelineError(Exception):
@@ -51,6 +57,84 @@ def _probe_video_file(file_path: Path) -> dict[str, Any]:
         raise PipelineError(f"ffprobe inspection failed for '{file_path}': {exc.stderr.strip()}") from exc
     except Exception as exc:
         raise PipelineError(f"Failed to inspect rendered video with ffprobe: {exc}") from exc
+
+
+def _resolve_aligned_bounds(
+    video: Video,
+    vo_data: dict[str, Any],
+    valid_audio: dict[int, dict[str, Any]],
+    all_indices: list[int],
+    continuous_audio_abs: Path,
+    continuous_duration: float,
+    storage_root: Path,
+) -> tuple[dict[int, tuple[float, float]] | None, str, str | None, bool]:
+    """Resolve per-scene (start, end) intervals from actual narration word timestamps.
+
+    1. Use voiceover items already carrying ``timing_type == "aligned"``.
+    2. Otherwise (legacy voiceover output with estimated timing), load the persisted alignment
+       or run forced alignment once on the continuous WAV and persist it for reuse.
+    3. Return (None, "estimated", ...) when alignment is unavailable.
+    """
+    inner = vo_data.get("voiceover") if isinstance(vo_data.get("voiceover"), dict) else {}
+    items = [valid_audio[idx] for idx in all_indices]
+
+    def _bounds_from(entries: list[dict[str, Any]]) -> dict[int, tuple[float, float]] | None:
+        bounds: dict[int, tuple[float, float]] = {}
+        prev_end = 0.0
+        for idx, it in zip(all_indices, entries):
+            try:
+                s = float(it["start_time"])
+                e = float(it["end_time"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if e <= s or abs(s - prev_end) > 0.002:
+                return None
+            bounds[idx] = (s, e)
+            prev_end = e
+        if abs(prev_end - continuous_duration) > 0.25:
+            return None
+        return bounds
+
+    alignment_hash = inner.get("alignment_hash") or vo_data.get("alignment_hash")
+    if items and all(it.get("timing_type") == "aligned" for it in items):
+        bounds = _bounds_from(items)
+        if bounds is not None:
+            return bounds, "aligned", alignment_hash, True
+
+    # Legacy/estimated voiceover output: try the shared alignment cache (or align once).
+    vo_meta = vo_data.get("meta") if isinstance(vo_data.get("meta"), dict) else {}
+    if vo_meta.get("provider") == "mock" or vo_data.get("mock"):
+        return None, "estimated", None, False
+    if not all(str(it.get("narration") or "").strip() for it in items):
+        return None, "estimated", None, False
+
+    try:
+        aligner = get_subtitle_provider()
+    except Exception:
+        return None, "estimated", None, False
+    if aligner.provider_name == "mock":
+        return None, "estimated", None, False
+
+    scenes = [
+        {"index": idx, "narration": str(it.get("narration") or "").strip()}
+        for idx, it in zip(all_indices, items)
+    ]
+    try:
+        alignment, alignment_hash, reused = load_or_compute_alignment(
+            video_id=video.id,
+            storage_root=storage_root,
+            sorted_scenes=scenes,
+            narration_script=vo_data.get("narration_script") or inner.get("narration_script"),
+            continuous_audio_abs=continuous_audio_abs,
+            audio_hash=vo_data.get("audio_hash") or inner.get("audio_hash"),
+            provider=aligner,
+        )
+        timings = compute_aligned_scene_timings(scenes, alignment, continuous_duration)
+    except SubtitleError:
+        return None, "estimated", None, False
+
+    bounds = {t["index"]: (float(t["start_time"]), float(t["end_time"])) for t in timings}
+    return bounds, "aligned", alignment_hash, reused
 
 
 def generate_render_step(
@@ -166,7 +250,19 @@ def generate_render_step(
             shutil.rmtree(temp_dir, ignore_errors=True)
         raise PipelineError(f"Continuous narration audio file has zero duration: {continuous_audio_abs}")
 
-    # 6. Allocate per-scene visual display durations
+    # 6. Allocate per-scene visual display intervals.
+    # Preferred: actual narration word timestamps (forced alignment), so visual cuts land in the
+    # pauses between scenes. Fallback: legacy estimated durations scaled to the audio length.
+    aligned_bounds, timing_source, alignment_hash, alignment_reused = _resolve_aligned_bounds(
+        video=video,
+        vo_data=vo_data if isinstance(vo_data, dict) else {},
+        valid_audio=valid_audio,
+        all_indices=all_indices,
+        continuous_audio_abs=continuous_audio_abs,
+        continuous_duration=continuous_duration,
+        storage_root=storage_root,
+    )
+
     scene_durations: dict[int, float] = {}
     prelim_durations: dict[int, float] = {}
     for idx in all_indices:
@@ -200,6 +296,30 @@ def generate_render_step(
     target_height = getattr(settings, "render_height", 1920)
     target_fps = getattr(settings, "render_fps", 30)
     timeout_sec = getattr(settings, "render_timeout_seconds", 300.0)
+
+    # Cumulative scene end times on the narration timeline.
+    if aligned_bounds is not None:
+        scene_end_times = {idx: aligned_bounds[idx][1] for idx in all_indices}
+        scene_end_times[all_indices[-1]] = continuous_duration
+    else:
+        scene_end_times = {}
+        running = 0.0
+        for idx in all_indices:
+            running += scene_durations[idx]
+            scene_end_times[idx] = running
+
+    # Frame-accurate segment lengths derived from cumulative end timestamps so that rounding
+    # never accumulates drift between the concatenated picture and the continuous narration.
+    scene_frames: dict[int, int] = {}
+    scene_start_frames: dict[int, int] = {}
+    prev_cum_frames = 0
+    for idx in all_indices:
+        cum_frames = int(round(scene_end_times[idx] * target_fps))
+        frames = max(1, cum_frames - prev_cum_frames)
+        scene_frames[idx] = frames
+        scene_start_frames[idx] = prev_cum_frames
+        prev_cum_frames += frames
+        scene_durations[idx] = round(frames / float(target_fps), 4)
 
     try:
         # 7. Render individual scene segments into temp_dir
@@ -255,7 +375,15 @@ def generate_render_step(
                 fallback_scene_idx=idx,
             )
             prev_anim_type = resolved_anim.get("animation_type")
-            rendered_animations.append({"scene_index": idx, **resolved_anim})
+            rendered_animations.append(
+                {
+                    "scene_index": idx,
+                    **resolved_anim,
+                    "start_time": round(scene_start_frames[idx] / float(target_fps), 3),
+                    "end_time": round((scene_start_frames[idx] + scene_frames[idx]) / float(target_fps), 3),
+                    "frames": scene_frames[idx],
+                }
+            )
 
             # Video-only segment (no audio stream encoded; continuous audio is muxed after concatenation)
             seg_cmd = [
@@ -264,7 +392,7 @@ def generate_render_step(
                 "-i", str(img_abs),
                 "-filter_complex", f"[0:v]{filter_chain}[v]",
                 "-map", "[v]",
-                "-t", f"{scene_dur:.3f}",
+                "-frames:v", str(scene_frames[idx]),
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "19",
@@ -430,6 +558,8 @@ def generate_render_step(
                 "animations": rendered_animations,
                 "audio_source": "continuous",
                 "audio_file": cont_audio_rel,
+                "timing_source": timing_source,
+                "alignment_hash": alignment_hash,
             },
             # Top-level video_path and duration_seconds for backward compatibility
             "video_path": str(final_mp4_path),
@@ -443,6 +573,9 @@ def generate_render_step(
                 "file_size_bytes": file_size_bytes,
                 "audio_source": "continuous",
                 "audio_file": cont_audio_rel,
+                "timing_source": timing_source,
+                "alignment_hash": alignment_hash,
+                "alignment_reused": alignment_reused,
             },
         }
 

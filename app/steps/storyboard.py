@@ -102,6 +102,10 @@ DANGLING_BOUNDARY_WORDS: frozenset[str] = frozenset({
 
 # Default deterministic subject anchor for mock LLM runs
 DEFAULT_MOCK_SUBJECT_ANCHOR: str = "A small glossy blue cube with rounded edges."
+DEFAULT_MOCK_ENVIRONMENT_ANCHOR: str = ""
+
+# Maximum allowed character length for raw scene image_prompt
+MAX_IMAGE_PROMPT_LENGTH: int = 500
 
 PROMPT_FILE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "storyboard.md"
 DEFAULT_STYLE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "default_visual_style.txt"
@@ -214,6 +218,10 @@ class SceneInput(BaseModel):
         default="cinematic-photo",
         description="Visual technique (e.g. cinematic-photo, macro-photo, passenger-pov, technical-illustration, cutaway-diagram, schematic)",
     )
+    environment: str = Field(
+        default="",
+        description="The specific environment or background setting for this shot (e.g. data center server hall, passenger cabin, outer space, minimal technical void)",
+    )
     image_prompt: str = Field(
         description="Rich scene-specific visual description specifying subject, environment, lighting, composition, and focal point. No text, logos, or watermarks."
     )
@@ -235,6 +243,14 @@ class StoryboardLLMOutput(BaseModel):
         description=(
             "One or two plain sentences describing the main recurring object(s) of the video: "
             "shape, colors, materials, size cues. No style words, no text, letters, numbers, logos, brands or people."
+        ),
+    )
+    environment_anchor: str = Field(
+        default="",
+        description=(
+            "One or two plain sentences describing the primary environment or setting across scenes "
+            "(e.g. room architecture, materials, ambient colors, environmental lighting). "
+            "Leave empty if scenes take place across varied environments."
         ),
     )
     scenes: list[SceneInput] = Field(
@@ -313,6 +329,7 @@ def validate_storyboard_soft_checks(
     script_narration: str,
     subject_anchor: str = "",
     visual_style: str = "",
+    environment_anchor: str = "",
 ) -> list[str]:
     """Execute code-side soft checks on the generated storyboard scenes.
 
@@ -377,6 +394,19 @@ def validate_storyboard_soft_checks(
                 f"Subject anchor contains forbidden whole words: {forbidden_anchor}."
             )
 
+    # 3b. Environment anchor checks (optional)
+    if environment_anchor and environment_anchor.strip():
+        env_str = environment_anchor.strip()
+        if len(env_str) > 250:
+            warnings.append(
+                f"Environment anchor length is {len(env_str)} chars (target: at most 250 chars)."
+            )
+        forbidden_env = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(env_str)}))
+        if forbidden_env:
+            warnings.append(
+                f"Environment anchor contains forbidden whole words: {forbidden_env}."
+            )
+
     # 4. Check that at least one scene uses the subject anchor
     has_anchor = any(bool(get_field(s, "uses_anchor")) for s in scenes)
     if not has_anchor:
@@ -431,13 +461,13 @@ def validate_storyboard_soft_checks(
                             f"Scene {idx} narration ends on dangling word '{last_w}'. Split narration at natural grammatical boundaries."
                         )
 
-        # Image prompt checks: non-empty, max 300 chars, no forbidden words
+        # Image prompt checks: non-empty, max MAX_IMAGE_PROMPT_LENGTH chars, no forbidden words
         if not img_prompt or not str(img_prompt).strip():
             warnings.append(f"Scene {idx} image prompt is empty.")
         else:
-            if len(img_prompt) > 300:
+            if len(img_prompt) > MAX_IMAGE_PROMPT_LENGTH:
                 warnings.append(
-                    f"Scene {idx} image prompt length is {len(img_prompt)} chars (target: at most 300 chars)."
+                    f"Scene {idx} image prompt length is {len(img_prompt)} chars (target: at most {MAX_IMAGE_PROMPT_LENGTH} chars)."
                 )
 
             forbidden_matches = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(img_prompt)}))
@@ -498,6 +528,7 @@ def validate_storyboard_soft_checks(
                 scene=s,
                 subject_anchor=subject_anchor,
                 visual_style=visual_style,
+                environment_anchor=environment_anchor,
             )
 
         if not resolved_final_prompt or not str(resolved_final_prompt).strip():
@@ -828,6 +859,7 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
                 camera_angle=beat["camera_angle"],
                 focal_point=beat["focal_point"],
                 visual_technique=beat["technique"],
+                environment=beat.get("environment", ""),
                 image_prompt=beat["prompt"],
                 uses_anchor=uses_anchor,
                 animation=anim_obj,
@@ -975,10 +1007,12 @@ def generate_storyboard_step(
     attempts = 1
     raw_scenes: list[SceneInput]
     subject_anchor: str = ""
+    environment_anchor: str = ""
 
     if llm.provider_name == "mock":
         # Deterministic local splitter for mock provider with zero AI cost
         raw_scenes, subject_anchor = split_script_for_mock(script_narration)
+        environment_anchor = DEFAULT_MOCK_ENVIRONMENT_ANCHOR
         total_in_tokens = max(1, len(prompt.split()))
         total_out_tokens = max(25, 20 * len(raw_scenes))
         total_latency = 0.001
@@ -987,6 +1021,7 @@ def generate_storyboard_step(
             script_narration,
             subject_anchor=subject_anchor,
             visual_style=visual_style,
+            environment_anchor=environment_anchor,
         )
     else:
         try:
@@ -1001,6 +1036,7 @@ def generate_storyboard_step(
         output_obj: StoryboardLLMOutput = result.output
         raw_scenes = output_obj.scenes
         subject_anchor = output_obj.subject_anchor or ""
+        environment_anchor = getattr(output_obj, "environment_anchor", "") or ""
         total_in_tokens += result.input_tokens or 0
         total_out_tokens += result.output_tokens or 0
         if result.thinking_tokens is not None:
@@ -1013,6 +1049,7 @@ def generate_storyboard_step(
             script_narration,
             subject_anchor=subject_anchor,
             visual_style=visual_style,
+            environment_anchor=environment_anchor,
         )
 
         # Retry once if soft checks fail
@@ -1033,6 +1070,7 @@ def generate_storyboard_step(
                 output_obj = retry_result.output
                 raw_scenes = output_obj.scenes
                 subject_anchor = output_obj.subject_anchor or subject_anchor
+                environment_anchor = getattr(output_obj, "environment_anchor", "") or environment_anchor
                 total_in_tokens += retry_result.input_tokens or 0
                 total_out_tokens += retry_result.output_tokens or 0
                 if retry_result.thinking_tokens is not None:
@@ -1044,6 +1082,7 @@ def generate_storyboard_step(
                     script_narration,
                     subject_anchor=subject_anchor,
                     visual_style=visual_style,
+                    environment_anchor=environment_anchor,
                 )
             except Exception:
                 # If retry fails, retain original output and warnings
@@ -1060,10 +1099,18 @@ def generate_storyboard_step(
         est_sec = round(len(words) / WORDS_PER_SECOND, 1)
         accumulated_seconds += est_sec
 
+        prev_s = raw_scenes[idx - 2] if idx > 1 else None
+        next_s = raw_scenes[idx] if idx < len(raw_scenes) else None
+
         final_prompt = compose_final_prompt(
             scene=s,
             subject_anchor=subject_anchor,
             visual_style=visual_style,
+            environment_anchor=environment_anchor,
+            video_topic=getattr(video, "topic", None),
+            video_title=getattr(video, "title", None),
+            prev_scene=prev_s,
+            next_scene=next_s,
         )
 
         # Extract or resolve animation plan for this scene
@@ -1097,6 +1144,7 @@ def generate_storyboard_step(
                 "camera_angle": getattr(s, "camera_angle", "eye-level") or "eye-level",
                 "focal_point": getattr(s, "focal_point", "") or "",
                 "visual_technique": getattr(s, "visual_technique", "cinematic-photo") or "cinematic-photo",
+                "environment": getattr(s, "environment", "") or "",
                 "image_prompt": s.image_prompt,
                 "uses_anchor": bool(s.uses_anchor),
                 "final_prompt": final_prompt,
@@ -1112,6 +1160,7 @@ def generate_storyboard_step(
             "visual_style": visual_style,
             "style_source": style_source,
             "subject_anchor": subject_anchor,
+            "environment_anchor": environment_anchor,
             "scenes": final_scenes,
             "total_seconds": total_seconds,
         },

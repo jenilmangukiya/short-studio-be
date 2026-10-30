@@ -11,7 +11,6 @@ The original uncaptioned MP4 is preserved intact.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -28,7 +27,11 @@ from app.subtitles import (
     BaseSubtitleProvider,
     SubtitleError,
     SubtitleResult,
+    apply_aligned_timings_to_items,
+    compute_aligned_scene_timings,
+    compute_alignment_hash,
     get_subtitle_provider,
+    load_cached_alignment,
 )
 
 
@@ -80,21 +83,59 @@ def _compute_alignment_hash(
     audio_hash: str | None,
     provider: BaseSubtitleProvider,
 ) -> str:
-    """Compute a stable SHA-256 hash of narration text, audio content/identity, and aligner configuration."""
-    scene_texts = "|".join(
-        f"{s.get('index', i)}:{str(s.get('narration') or '').strip()}"
-        for i, s in enumerate(sorted_scenes, 1)
+    """Compute a stable SHA-256 hash of narration text, audio content/identity, and aligner configuration.
+
+    Delegates to the shared helper so alignments persisted by the voiceover/render steps are
+    cache hits here (no second Vosk run).
+    """
+    return compute_alignment_hash(
+        sorted_scenes=sorted_scenes,
+        narration_script=narration_script,
+        continuous_audio_abs=continuous_audio_abs,
+        audio_hash=audio_hash,
+        provider=provider,
     )
-    script_part = (narration_script or scene_texts).strip()
 
-    audio_identity = audio_hash or ""
-    if continuous_audio_abs and continuous_audio_abs.is_file():
-        stat = continuous_audio_abs.stat()
-        audio_identity = f"{audio_identity}:{continuous_audio_abs.name}:{stat.st_size}"
 
-    config_part = f"{provider.provider_name}:{provider.model}:v2_caption_grouping"
-    payload = f"{script_part}||{audio_identity}||{config_part}".encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+def _sync_voiceover_timings(
+    video: Video,
+    prev: dict[str, Any],
+    sorted_scenes: list[dict[str, Any]],
+    result: SubtitleResult,
+    alignment_hash: str,
+) -> list[dict[str, Any]] | None:
+    """Back-fill aligned scene timings into the voiceover output if it still holds estimates."""
+    try:
+        timings = compute_aligned_scene_timings(
+            sorted_scenes, result, result.total_duration_seconds
+        )
+    except SubtitleError:
+        return None
+
+    def _patch(vo_out: Any) -> None:
+        if not isinstance(vo_out, dict) or not isinstance(vo_out.get("voiceover"), dict):
+            return
+        inner = vo_out["voiceover"]
+        items = inner.get("items")
+        if not isinstance(items, list) or not items:
+            return
+        if all(isinstance(it, dict) and it.get("timing_type") == "aligned" for it in items):
+            return
+        inner["items"] = apply_aligned_timings_to_items(items, timings)
+        inner["timing_type"] = "aligned"
+        inner["alignment_hash"] = alignment_hash
+
+    vo_prev = prev.get("voiceover")
+    _patch(vo_prev)
+
+    for vstep in getattr(video, "steps", None) or []:
+        if getattr(vstep, "name", None) == "voiceover" and isinstance(getattr(vstep, "output", None), dict):
+            new_out = json.loads(json.dumps(vstep.output))
+            before = json.dumps(new_out, sort_keys=True)
+            _patch(new_out)
+            if json.dumps(new_out, sort_keys=True) != before:
+                vstep.output = new_out
+    return timings
 
 
 def generate_subtitles_step(
@@ -203,18 +244,11 @@ def generate_subtitles_step(
         except Exception:
             result = None
 
-    if result is None and cache_abs_path.is_file():
-        try:
-            cached_data = json.loads(cache_abs_path.read_text(encoding="utf-8"))
-            if (
-                isinstance(cached_data, dict)
-                and cached_data.get("alignment_hash") == alignment_hash
-                and cached_data.get("segments")
-            ):
-                result = SubtitleResult.from_dict(cached_data, reused=True)
-                reused_cache = True
-        except Exception:
-            result = None
+    if result is None:
+        # Reuse the alignment persisted by the voiceover/render steps (no second Vosk run).
+        result = load_cached_alignment(cache_abs_path, alignment_hash)
+        if result is not None:
+            reused_cache = True
 
     if result is None:
         try:
@@ -229,13 +263,16 @@ def generate_subtitles_step(
         except Exception as exc:
             raise PipelineError(f"Subtitle generation failed: {exc}") from exc
 
-    if cont_abs and cont_abs.parent.is_dir():
+    if cont_abs and cont_abs.parent.is_dir() and (not result.reused or not cache_abs_path.is_file()):
         try:
             cache_abs_path.write_text(
                 json.dumps(result.to_dict(), indent=2), encoding="utf-8"
             )
         except Exception:
             pass
+
+    # Keep voiceover scene timings consistent with the alignment used for captions.
+    _sync_voiceover_timings(video, prev, sorted_scenes, result, alignment_hash)
 
     # 8. Write subtitle artifacts to storage
     subtitles_dict = result.to_dict()

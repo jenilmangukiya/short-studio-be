@@ -157,6 +157,9 @@ def generate_images_step(
     # 5. Extract style and anchor for prompt composition
     visual_style = sb.get("visual_style")
     subject_anchor = sb.get("subject_anchor")
+    environment_anchor = sb.get("environment_anchor")
+    video_topic = getattr(video, "topic", None)
+    video_title = getattr(video, "title", None)
 
     # 6. Prepare filesystem storage directory
     storage_root = Path(settings.storage_dir)
@@ -176,14 +179,21 @@ def generate_images_step(
     items: list[dict[str, Any]] = []
 
     # 8. Sequential generation loop
-    for scene in scenes:
+    for idx, scene in enumerate(scenes):
         scene_idx = int(scene.get("index", len(items) + 1))
+        prev_scene = scenes[idx - 1] if idx > 0 else None
+        next_scene = scenes[idx + 1] if idx + 1 < len(scenes) else None
 
         # Dynamically compose exact final prompt at generation time
         prompt_text = compose_final_prompt(
             scene=scene,
             subject_anchor=subject_anchor,
             visual_style=visual_style,
+            environment_anchor=environment_anchor,
+            video_topic=video_topic,
+            video_title=video_title,
+            prev_scene=prev_scene,
+            next_scene=next_scene,
         )
 
         # Full SHA256 prompt hash over exact prompt, provider model, size, and quality

@@ -149,9 +149,9 @@ def test_validator_detects_empty_image_prompt():
 def test_validator_detects_image_prompt_too_long():
     script = _make_sample_script_dict()
     scenes = _make_valid_scenes(script["narration"], count=8)
-    scenes[2].image_prompt = "a" * 305
+    scenes[2].image_prompt = "a" * 505
     warnings = validate_storyboard_soft_checks(scenes, script["narration"])
-    assert any("at most 300 chars" in w.lower() for w in warnings)
+    assert any("at most 500 chars" in w.lower() for w in warnings)
 
 
 def test_validator_detects_forbidden_words_whole_word_only():
@@ -493,7 +493,7 @@ def test_full_storyboard_step_mock(monkeypatch):
     assert meta["provider"] == "mock"
     assert meta["task"] == "storyboard"
     assert meta["revision"] is False
-    assert "storyboard-v2:" in meta["prompt_version"]
+    assert "storyboard-v3:" in meta["prompt_version"]
 
 
 def test_full_storyboard_step_revision_mode(monkeypatch):
@@ -811,10 +811,10 @@ def test_validator_composed_prompt_with_rules_does_not_trigger_forbidden_words()
 def test_validator_detects_final_prompt_too_long():
     script = _make_sample_script_dict()
     scenes = _make_valid_scenes(script["narration"], count=8)
-    # Construct a scene whose composed final_prompt exceeds MAX_FINAL_PROMPT_LENGTH (1000)
-    scenes[0].image_prompt = "A" * 600
-    long_anchor = "B" * 240
-    long_style = "C" * 200
+    # Construct a scene whose composed final_prompt exceeds MAX_FINAL_PROMPT_LENGTH (1500)
+    scenes[0].image_prompt = "A" * 900
+    long_anchor = "B" * 350
+    long_style = "C" * 350
 
     warnings = validate_storyboard_soft_checks(
         scenes,
@@ -822,7 +822,7 @@ def test_validator_detects_final_prompt_too_long():
         subject_anchor=long_anchor,
         visual_style=long_style,
     )
-    assert any("final prompt length is" in w.lower() and "target: at most 1000 chars" in w.lower() for w in warnings)
+    assert any("final prompt length is" in w.lower() and f"target: at most {MAX_FINAL_PROMPT_LENGTH} chars" in w.lower() for w in warnings)
 
 
 # ==============================================================================

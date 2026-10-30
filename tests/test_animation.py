@@ -337,13 +337,16 @@ def test_build_fallback_ken_burns_filter_smoothstep():
         target_height=1920,
     )
     assert "zoompan" in fc
-    assert "scale=1620:2880" in fc
+    # 2x lanczos oversampling + 4:4:4 zoompan output eliminates sub-pixel shake
+    assert "scale=2160:3840" in fc
+    assert "flags=lanczos" in fc
+    assert fc.endswith("format=yuv444p")
     assert "s=1080x1920" in fc
     assert "fps=30" in fc
     # Verify smoothstep Hermite formula is present in zoom expression
     assert "(on/60)*(on/60)*(3-2*(on/60))" in z
     # Verify Phase 1 horizontal and vertical centering
-    assert x == "iw/2-(iw/zoom/2)"
+    assert x == "iw/2-(iw/zoom/2)+0.5"
     assert "0.42" in y
 
 
@@ -383,9 +386,11 @@ def test_build_ffmpeg_zoompan_filter_smooth_zoom_in():
     # Smoothstep easing present
     assert "(on/60)*(on/60)*(3-2*(on/60))" in z_expr
     assert "(1.000+(+0.050)*" in z_expr
+    # Zoom is quantized to even crop widths (prevents odd/even parity wobble)
+    assert z_expr.startswith("(iw/(2*round(iw/(2*")
 
     # X and Y match Phase 1 Ken Burns anchor
-    assert x_expr == "iw/2-(iw/zoom/2)"
+    assert x_expr == "iw/2-(iw/zoom/2)+0.5"
     assert "0.42" in y_expr
 
 
@@ -404,4 +409,164 @@ def test_build_ffmpeg_zoompan_filter_static():
         target_fps=30,
     )
     assert z_expr == "1.000"
-    assert x_expr == "iw/2-(iw/zoom/2)"
+    assert x_expr == "iw/2-(iw/zoom/2)+0.5"
+
+
+# ---------------------------------------------------------------------------
+# 5. Phase 1 stability fixes: pan coordinate preservation, drift, and no shake
+# ---------------------------------------------------------------------------
+
+
+def _write_centered_image(path: Path) -> Path:
+    img = Image.new("RGB", (1024, 1536), color=(20, 25, 35))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([412, 545, 612, 745], fill=(230, 200, 80))
+    img.save(path)
+    return path
+
+
+def test_planner_preserves_explicit_pan_coordinates_with_default_focal(tmp_path):
+    """Planned pan start/end must not be overwritten when focal is the default anchor."""
+    img = _write_centered_image(tmp_path / "pan.png")
+    plan = plan_scene_animation(
+        scene_data={
+            "animation": {
+                "animation_type": "pan-right",
+                "focal_x": 0.5,
+                "focal_y": DEFAULT_SUBJECT_Y,
+                "start_x": 0.40,
+                "end_x": 0.60,
+                "start_y": 0.42,
+                "end_y": 0.42,
+                "start_scale": 1.08,
+                "end_scale": 1.08,
+            }
+        },
+        image_path=img,
+        duration_seconds=3.0,
+    )
+    assert plan.animation_type == "pan-right"
+    assert plan.start_x < plan.end_x
+    assert abs(plan.end_x - plan.start_x) >= 0.1
+    # Orthogonal axis is locked (no cross-axis wobble) and overscan allows translation
+    assert plan.start_y == plan.end_y
+    assert plan.start_scale >= 1.05 and plan.end_scale >= 1.05
+
+
+def test_planner_zoom_locks_position_and_static_locks_scale(tmp_path):
+    img = _write_centered_image(tmp_path / "zoom.png")
+    zoom = plan_scene_animation(
+        scene_data={
+            "animation": {
+                "animation_type": "zoom-in",
+                "focal_x": 0.5,
+                "focal_y": 0.42,
+                "start_x": 0.3,
+                "end_x": 0.7,
+                "start_scale": 1.0,
+                "end_scale": 1.05,
+            }
+        },
+        image_path=img,
+        duration_seconds=3.0,
+    )
+    assert zoom.start_x == zoom.end_x == zoom.focal_x
+    assert zoom.start_y == zoom.end_y == zoom.focal_y
+    assert zoom.end_scale > zoom.start_scale
+
+    static = plan_scene_animation(
+        scene_data={"animation": {"animation_type": "static", "start_scale": 1.1, "end_scale": 1.2}},
+        image_path=img,
+        duration_seconds=3.0,
+    )
+    assert static.start_scale == static.end_scale == 1.0
+
+
+def test_planner_centroid_deadzone_snaps_near_center(tmp_path):
+    """Near-centered subjects snap to the exact default anchor (no micro-offset jitter)."""
+    img = _write_centered_image(tmp_path / "center.png")
+    plan = plan_scene_animation(
+        scene_data={"narration": "A glowing chip.", "shot_type": "medium"},
+        image_path=img,
+        duration_seconds=3.0,
+    )
+    assert plan.focal_x == 0.5
+    assert plan.focal_y in (DEFAULT_SUBJECT_Y, round(plan.focal_y, 2))
+
+
+def test_renderer_subtle_drift_interpolates_in_bounds():
+    """subtle-drift must interpolate position with in-bounds proportional anchors."""
+    plan = AnimationPlan(
+        animation_type="subtle-drift",
+        focal_x=0.5,
+        focal_y=0.42,
+        start_x=0.46,
+        end_x=0.54,
+        start_y=0.42,
+        end_y=0.42,
+        start_scale=1.03,
+        end_scale=1.06,
+        duration_seconds=3.0,
+    )
+    _, x_expr, y_expr, _, meta = build_ffmpeg_zoompan_filter(
+        plan=plan, scene_dur=3.0, target_fps=30, target_width=1080, target_height=1920
+    )
+    assert meta["animation_type"] == "subtle-drift"
+    assert "(iw-trunc(iw/zoom))*(0.460+(+0.080)*" in x_expr
+    assert "clip(" in x_expr and "iw-iw/zoom" in x_expr
+    # Legacy out-of-bounds formula is gone
+    assert "*iw)-(iw/zoom/2)" not in x_expr
+    assert "(ih-trunc(ih/zoom))*0.420" in y_expr
+
+
+@pytest.mark.parametrize("anim", ["zoom-in", "zoom-out"])
+def test_rendered_zoom_has_no_back_and_forth_shake(tmp_path, anim):
+    """Render a real zoom and verify the image centre never oscillates frame-to-frame."""
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    # High-detail pattern so sub-pixel motion is measurable
+    w, h = 512, 768
+    yy, xx = np.mgrid[0:h, 0:w]
+    pattern = (((xx // 16) + (yy // 16)) % 2 * 200 + 30).astype(np.uint8)
+    img_path = tmp_path / "pattern.png"
+    Image.fromarray(np.stack([pattern] * 3, axis=-1)).save(img_path)
+
+    start, end = (1.0, 1.05) if anim == "zoom-in" else (1.05, 1.0)
+    plan = AnimationPlan(
+        animation_type=anim,
+        focal_x=0.5,
+        focal_y=0.42,
+        start_scale=start,
+        end_scale=end,
+        duration_seconds=1.0,
+    )
+    tw, th, fps, frames = 216, 384, 30, 30
+    _, _, _, fc, _ = build_ffmpeg_zoompan_filter(
+        plan=plan, scene_dur=1.0, target_fps=fps, target_width=tw, target_height=th
+    )
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(img_path),
+            "-filter_complex", f"[0:v]{fc},format=gray[v]", "-map", "[v]",
+            "-frames:v", str(frames), "-f", "rawvideo", "-",
+        ],
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    video = np.frombuffer(proc.stdout, dtype=np.uint8).reshape(frames, th, tw).astype(float)
+
+    # Track horizontal centre-of-mass of edge energy; a smooth centred zoom keeps it steady.
+    centres = []
+    for fr in video:
+        gx = np.abs(np.diff(fr, axis=1)).sum(axis=0)
+        cols = np.arange(gx.size)
+        centres.append(float((gx * cols).sum() / max(gx.sum(), 1e-6)))
+    deltas = np.diff(centres)
+    sign_flips = sum(
+        1 for a, b in zip(deltas[:-1], deltas[1:]) if abs(a) > 0.25 and abs(b) > 0.25 and a * b < 0
+    )
+    assert sign_flips == 0, f"Detected {sign_flips} back-and-forth shake reversals: {deltas}"
