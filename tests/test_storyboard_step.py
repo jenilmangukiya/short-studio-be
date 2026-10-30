@@ -1224,3 +1224,31 @@ def test_airplane_window_story_progression():
         assert COMPOSITION_RULES in p
         assert len(p) <= MAX_FINAL_PROMPT_LENGTH
 
+
+def test_split_script_for_mock_flows_long_sentence_across_scenes():
+    """Verify an 8-sentence script containing a 22-word multi-clause sentence splits cleanly across scenes."""
+    narration = (
+        "Why do people yawn when someone else yawns? "
+        "Seeing a friend yawn can make your own jaw stretch within seconds. "
+        "Many people blame low oxygen, but breathing extra oxygen does not stop the reflex at all. "
+        "Instead, your brain automatically mirrors the facial actions of people nearby, while empathy networks light up to keep the group in sync. "
+        "This automatic mirroring builds quiet social connection across the group. "
+        "Even dogs can catch a yawn from the person sitting beside them. "
+        "People who feel closer to each other catch yawns much faster than strangers do. "
+        "Next time you catch a yawn, remember your brain is quietly syncing with the room."
+    )
+    scenes, anchor = split_script_for_mock(narration)
+    assert 8 <= len(scenes) <= 12
+    # Every scene should be within the 5-17 word (2.0-7.0s) window
+    for s in scenes:
+        wc = len(s.narration.split())
+        assert 4 <= wc <= 17
+    warnings = validate_storyboard_soft_checks(
+        scenes,
+        narration,
+        subject_anchor=anchor,
+        visual_style="Clean 3D render",
+    )
+    assert warnings == []
+
+

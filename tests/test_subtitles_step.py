@@ -47,6 +47,7 @@ class DummyVideo:
 # 1. Subtitle Data Structures & Exporters
 # ==============================================================================
 
+
 def test_word_timestamp_and_segment_serialization():
     w1 = WordTimestamp(text="Why", start=0.04, end=0.25, confidence=0.98)
     w2 = WordTimestamp(text="do", start=0.25, end=0.42, confidence=0.98)
@@ -71,7 +72,9 @@ def test_word_timestamp_and_segment_serialization():
 
 def test_subtitle_result_srt_and_vtt_formatting():
     w1 = WordTimestamp(text="Why", start=1.5, end=1.8)
-    seg1 = SubtitleSegment(index=1, text="Why airplane windows have holes.", start=1.0, end=3.5, words=[w1])
+    seg1 = SubtitleSegment(
+        index=1, text="Why airplane windows have holes.", start=1.0, end=3.5, words=[w1]
+    )
     res = SubtitleResult(
         segments=[seg1],
         total_words=5,
@@ -95,11 +98,20 @@ def test_subtitle_result_srt_and_vtt_formatting():
 # 2. Providers: Mock & Acoustic Timing Precision
 # ==============================================================================
 
+
 def test_mock_subtitle_provider_generates_valid_timestamps():
     provider = MockSubtitleProvider()
     scenes = [
-        {"index": 1, "narration": "Why do airplane windows need a tiny hole?", "duration_seconds": 3.0},
-        {"index": 2, "narration": "They balance the cabin pressure.", "duration_seconds": 2.5},
+        {
+            "index": 1,
+            "narration": "Why do airplane windows need a tiny hole?",
+            "duration_seconds": 3.0,
+        },
+        {
+            "index": 2,
+            "narration": "They balance the cabin pressure.",
+            "duration_seconds": 2.5,
+        },
     ]
     res = provider.generate(scenes)
 
@@ -143,12 +155,22 @@ def test_acoustic_subtitle_provider_with_continuous_audio(tmp_path, monkeypatch)
     monkeypatch.setattr(acoustic_mod, "align_script_with_vosk", fake_vosk_align)
 
     scenes = [
-        {"index": 1, "narration": "Why do airplane windows need a tiny hole?", "duration_seconds": 2.0},
-        {"index": 2, "narration": "They balance cabin pressure.", "duration_seconds": 1.5},
+        {
+            "index": 1,
+            "narration": "Why do airplane windows need a tiny hole?",
+            "duration_seconds": 2.0,
+        },
+        {
+            "index": 2,
+            "narration": "They balance cabin pressure.",
+            "duration_seconds": 1.5,
+        },
     ]
 
     provider = AcousticSubtitleProvider()
-    res = provider.generate(scenes, storage_root=tmp_path, continuous_audio_path=cont_wav)
+    res = provider.generate(
+        scenes, storage_root=tmp_path, continuous_audio_path=cont_wav
+    )
 
     assert res.provider == "acoustic"
     assert res.timing_source == "forced_alignment"
@@ -168,7 +190,11 @@ def test_acoustic_subtitle_provider_rejects_missing_continuous_audio():
     from app.subtitles.base import SubtitleError
 
     scenes = [
-        {"index": 1, "narration": "Pockets on jeans tore completely off.", "duration_seconds": 2.4}
+        {
+            "index": 1,
+            "narration": "Pockets on jeans tore completely off.",
+            "duration_seconds": 2.4,
+        }
     ]
     provider = AcousticSubtitleProvider()
     with pytest.raises(SubtitleError) as exc_info:
@@ -179,6 +205,7 @@ def test_acoustic_subtitle_provider_rejects_missing_continuous_audio():
 # ==============================================================================
 # 3. Pipeline Step Preconditions & Failure Handling
 # ==============================================================================
+
 
 def test_subtitles_step_requires_render_step():
     video = DummyVideo(output_path=None)
@@ -198,9 +225,7 @@ def test_subtitles_step_requires_render_step():
 
 def test_subtitles_step_requires_voiceover_step():
     video = DummyVideo(output_path="/tmp/final.mp4")
-    prev = {
-        "render": {"video_path": "/tmp/final.mp4", "duration_seconds": 10.0}
-    }
+    prev = {"render": {"video_path": "/tmp/final.mp4", "duration_seconds": 10.0}}
     with pytest.raises(PipelineError) as exc_info:
         generate_subtitles_step(video, prev)
     assert "Voiceover step must be completed" in str(exc_info.value)
@@ -212,18 +237,28 @@ def test_subtitles_step_requires_continuous_audio_file():
         "render": {"video_path": "/tmp/final.mp4", "duration_seconds": 2.0},
         "voiceover": {
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "narration": "Missing audio_file", "duration_seconds": 2.0}]
+                "items": [
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "narration": "Missing audio_file",
+                        "duration_seconds": 2.0,
+                    }
+                ]
             }
         },
     }
     with pytest.raises(PipelineError) as exc_info:
         generate_subtitles_step(video, prev)
-    assert "Voiceover step must include continuous narration audio" in str(exc_info.value)
+    assert "Voiceover step must include continuous narration audio" in str(
+        exc_info.value
+    )
 
 
 # ==============================================================================
 # 4. Step Execution & Artifact Generation
 # ==============================================================================
+
 
 def test_generate_subtitles_step_full_execution(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
@@ -256,7 +291,9 @@ def test_generate_subtitles_step_full_execution(tmp_path, monkeypatch):
     }
 
     step = VideoStep(video_id=video_id, name="subtitles", position=5, status="running")
-    result = generate_subtitles_step(video, prev, step=step, subtitle_provider=MockSubtitleProvider())
+    result = generate_subtitles_step(
+        video, prev, step=step, subtitle_provider=MockSubtitleProvider()
+    )
 
     assert "subtitles" in result
     assert result["subtitles"]["total_words"] == 8
@@ -282,9 +319,17 @@ def test_generate_subtitles_step_full_execution(tmp_path, monkeypatch):
 # 5. Pipeline Ordering & Retry / Rerun Behavior
 # ==============================================================================
 
+
 def test_pipeline_steps_includes_subtitles_at_correct_position():
     assert "subtitles" in STEPS
-    assert STEPS == ["script", "storyboard", "images", "voiceover", "render", "subtitles"]
+    assert STEPS == [
+        "script",
+        "storyboard",
+        "images",
+        "voiceover",
+        "render",
+        "subtitles",
+    ]
     assert "subtitles" in HANDLERS
     assert "subtitle" in HANDLERS
 
@@ -325,7 +370,9 @@ def test_rerun_subtitles_preserves_video_output_path():
         session.commit()
 
         # Rerun subtitles step
-        rerun_step(session, video, "subtitles", prompt="Regenerate timing with high precision")
+        rerun_step(
+            session, video, "subtitles", prompt="Regenerate timing with high precision"
+        )
 
         # Check: subtitles is pending, upstream steps remain done, output_path is preserved!
         assert video.steps[5].status == "pending"
@@ -368,8 +415,10 @@ def test_rerun_render_invalidates_subtitles_and_video_output_path():
         rerun_step(session, video, "render", prompt=None)
 
         assert video.steps[4].status == "pending"  # render is pending
-        assert video.steps[5].status == "stale"    # subtitles becomes stale
-        assert video.output_path is None           # video output is invalidated because render is rerunning
+        assert video.steps[5].status == "stale"  # subtitles becomes stale
+        assert (
+            video.output_path is None
+        )  # video output is invalidated because render is rerunning
 
 
 def test_subtitle_result_ass_format():
@@ -404,6 +453,7 @@ def test_subtitle_result_ass_format():
 
 def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):
     import subprocess
+
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
     video_id = uuid.uuid4()
     video_dir = tmp_path / str(video_id)
@@ -412,15 +462,29 @@ def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):
 
     # Create a tiny 1-second silent MP4 test file using ffmpeg testsrc
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "testsrc=duration=1:size=1080x1920:rate=30",
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-        "-t", "1",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=duration=1:size=1080x1920:rate=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=44100:cl=stereo",
+        "-t",
+        "1",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
         str(raw_mp4),
     ]
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     assert raw_mp4.is_file()
 
     video = DummyVideo(video_id=video_id, output_path=str(raw_mp4))
@@ -450,7 +514,9 @@ def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):
     }
 
     step = VideoStep(video_id=video_id, name="subtitles", position=5, status="running")
-    result = generate_subtitles_step(video, prev, step=step, subtitle_provider=MockSubtitleProvider())
+    result = generate_subtitles_step(
+        video, prev, step=step, subtitle_provider=MockSubtitleProvider()
+    )
 
     # Captioned video must exist and be recorded in output
     captioned_mp4 = video_dir / "final_video_captioned.mp4"
@@ -497,7 +563,9 @@ def test_download_endpoint_captioned_and_original(tmp_path, monkeypatch):
     assert "not available yet" in str(exc_info.value.detail).lower()
 
 
-def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_path, monkeypatch):
+def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(
+    tmp_path, monkeypatch
+):
     """Ensure download(captioned=True) never serves a stale final_video_captioned.mp4 after narration or subtitle changes."""
     from fastapi import HTTPException
     from app.pipeline import update_step_content
@@ -516,7 +584,9 @@ def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_pa
         session.add(channel)
         session.flush()
 
-        video = Video(channel_id=channel.id, topic="Stale Caption Guard", status="completed")
+        video = Video(
+            channel_id=channel.id, topic="Stale Caption Guard", status="completed"
+        )
         session.add(video)
         session.flush()
 
@@ -534,7 +604,17 @@ def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_pa
             s.output = {"ok": True}
         video.steps[0].output = {"script": {"narration": "Original narration"}}
         video.steps[5].output = {
-            "subtitles": {"segments": [{"index": 1, "text": "Original narration", "start": 0.0, "end": 1.0, "words": []}]},
+            "subtitles": {
+                "segments": [
+                    {
+                        "index": 1,
+                        "text": "Original narration",
+                        "start": 0.0,
+                        "end": 1.0,
+                        "words": [],
+                    }
+                ]
+            },
             "captioned_video_path": str(captioned_mp4),
             "meta": {"captioned_burned": True},
         }
@@ -572,7 +652,19 @@ def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_pa
             session,
             video,
             "subtitles",
-            {"subtitles": {"segments": [{"index": 1, "text": "Edited subtitle text", "start": 0.0, "end": 1.0, "words": []}]}},
+            {
+                "subtitles": {
+                    "segments": [
+                        {
+                            "index": 1,
+                            "text": "Edited subtitle text",
+                            "start": 0.0,
+                            "end": 1.0,
+                            "words": [],
+                        }
+                    ]
+                }
+            },
             "Edit subtitle text",
         )
         assert video.steps[5].status == "stale"
@@ -595,15 +687,29 @@ def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(tmp_pa
 # 6. Continuous Narration Forced Alignment, Caching, & Caption Grouping Tests
 # ==============================================================================
 
+
 def test_word_alignment_output_and_monotonic_timestamps():
     """Verify map_recognized_words_to_script preserves exact punctuation and produces monotonic timestamps."""
-    from app.subtitles.acoustic import _extract_display_tokens, map_recognized_words_to_script
+    from app.subtitles.acoustic import (
+        _extract_display_tokens,
+        map_recognized_words_to_script,
+    )
 
     narration = "Why does watching someone yawn, make you yawn? It's a social cue!"
     tokens = _extract_display_tokens(narration)
     assert tokens == [
-        "Why", "does", "watching", "someone", "yawn,", "make", "you", "yawn?",
-        "It's", "a", "social", "cue!",
+        "Why",
+        "does",
+        "watching",
+        "someone",
+        "yawn,",
+        "make",
+        "you",
+        "yawn?",
+        "It's",
+        "a",
+        "social",
+        "cue!",
     ]
 
     # Simulate recognized words including a morphological diff ('yawn' vs 'yawns') and homophone ('queue' vs 'cue')
@@ -664,7 +770,9 @@ def test_caption_grouping_respects_sentence_boundaries_and_pauses():
         WordTimestamp("yawning.", 11.05, 11.55),
     ]
 
-    groups = _partition_words_into_captions(words, max_words=4, max_chars=28, pause_threshold=0.28)
+    groups = _partition_words_into_captions(
+        words, max_words=4, max_chars=28, pause_threshold=0.28
+    )
     group_texts = [" ".join(w.text for w in g) for g in groups]
 
     # Must break right after "way." so "way. The effect is" never happens!
@@ -672,9 +780,19 @@ def test_caption_grouping_respects_sentence_boundaries_and_pauses():
     assert not any("way. The" in gt for gt in group_texts)
 
     # Check ASS output never overlaps dialogue events
-    seg = SubtitleSegment(index=1, text=" ".join(w.text for w in words), start=8.0, end=11.6, words=words)
-    res = SubtitleResult(segments=[seg], total_words=len(words), total_duration_seconds=11.6, provider="acoustic", model="test")
-    ass_lines = [line for line in res.to_ass().splitlines() if line.startswith("Dialogue:")]
+    seg = SubtitleSegment(
+        index=1, text=" ".join(w.text for w in words), start=8.0, end=11.6, words=words
+    )
+    res = SubtitleResult(
+        segments=[seg],
+        total_words=len(words),
+        total_duration_seconds=11.6,
+        provider="acoustic",
+        model="test",
+    )
+    ass_lines = [
+        line for line in res.to_ass().splitlines() if line.startswith("Dialogue:")
+    ]
     assert len(ass_lines) == len(words)
 
 
@@ -701,11 +819,19 @@ def test_continuous_narration_forced_alignment_and_caching(tmp_path, monkeypatch
         t = 0.05
         step_dur = 2.8 / max(1, len(script_tokens))
         for tok in script_tokens:
-            words.append(WordTimestamp(text=tok, start=round(t, 3), end=round(t + step_dur * 0.85, 3), confidence=0.99))
+            words.append(
+                WordTimestamp(
+                    text=tok,
+                    start=round(t, 3),
+                    end=round(t + step_dur * 0.85, 3),
+                    confidence=0.99,
+                )
+            )
             t += step_dur
         return 3.0, words
 
     import app.subtitles.acoustic as acoustic_mod
+
     monkeypatch.setattr(acoustic_mod, "align_script_with_vosk", fake_vosk_align)
 
     prev = {
@@ -720,8 +846,18 @@ def test_continuous_narration_forced_alignment_and_caching(tmp_path, monkeypatch
                 "narration_script": "Why do we yawn? Because others yawn.",
                 "audio_hash": "abc12345",
                 "items": [
-                    {"index": 1, "status": "ok", "narration": "Why do we yawn?", "duration_seconds": 1.0},
-                    {"index": 2, "status": "ok", "narration": "Because others yawn.", "duration_seconds": 2.0},
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "narration": "Why do we yawn?",
+                        "duration_seconds": 1.0,
+                    },
+                    {
+                        "index": 2,
+                        "status": "ok",
+                        "narration": "Because others yawn.",
+                        "duration_seconds": 2.0,
+                    },
                 ],
             },
         },
@@ -760,25 +896,39 @@ def test_continuous_alignment_failure_handled_explicitly(tmp_path, monkeypatch):
         "voiceover": {
             "audio_file": f"{video_id}/audio/missing_narration.wav",
             "voiceover": {
-                "items": [{"index": 1, "status": "ok", "narration": "Hello world.", "duration_seconds": 3.0}]
+                "items": [
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "narration": "Hello world.",
+                        "duration_seconds": 3.0,
+                    }
+                ]
             },
         },
     }
 
     with pytest.raises(PipelineError) as exc_info:
-        generate_subtitles_step(video, prev, subtitle_provider=AcousticSubtitleProvider())
+        generate_subtitles_step(
+            video, prev, subtitle_provider=AcousticSubtitleProvider()
+        )
     assert "Continuous narration WAV" in str(exc_info.value)
 
 
 def test_real_continuous_wav_vosk_alignment_integration():
     """Integration test aligning the existing real Kokoro-generated continuous WAV with local Vosk."""
-    wav_path = Path("storage/032a2c95-0052-4efa-9423-fe7fbbfe5fc5/audio/narration_f1166385.wav")
+    wav_path = Path(
+        "storage/032a2c95-0052-4efa-9423-fe7fbbfe5fc5/audio/narration_f1166385.wav"
+    )
     if not wav_path.is_file():
         pytest.skip("Real continuous narration WAV not present in storage")
 
     scenes = [
         {"index": 1, "narration": "Why does watching someone yawn make you yawn?"},
-        {"index": 2, "narration": "Your brain can automatically copy a movement it sees, and yawning is one action"},
+        {
+            "index": 2,
+            "narration": "Your brain can automatically copy a movement it sees, and yawning is one action",
+        },
     ]
     provider = AcousticSubtitleProvider()
     res = provider.generate(scenes=scenes, continuous_audio_path=wav_path)
@@ -791,4 +941,3 @@ def test_real_continuous_wav_vosk_alignment_integration():
     # Scene 2 "Your" starts around 2.55s after the natural sentence pause
     s2_start = res.segments[1].words[0].start
     assert 2.4 <= s2_start <= 2.7
-

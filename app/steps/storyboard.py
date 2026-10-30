@@ -721,18 +721,22 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
 
     chunks = list(sentence_matches)
 
-    # Step 2: If fewer than 8 chunks, iteratively split long chunks at natural grammatical boundaries
-    while len(chunks) < 8:
+    # Step 2: If fewer than 8 chunks (or any chunk exceeds 17 words while < 12 chunks),
+    # iteratively split long chunks at natural grammatical clause/phrase boundaries
+    while len(chunks) < 8 or (len(chunks) < 12 and any(len(c.split()) > 17 for c in chunks)):
         best_idx = -1
         best_score = -1.0
         best_split_parts: tuple[str, str] | None = None
+        need_more_scenes = len(chunks) < 8
 
         for idx, chunk in enumerate(chunks):
             words = chunk.split()
-            if len(words) < 8:
+            min_words_to_split = 8 if need_more_scenes else 18
+            if len(words) < min_words_to_split:
                 continue
 
             candidates: list[tuple[float, str, str]] = []
+            # Primary candidates: explicit clause punctuation (, ; : — –)
             for match in re.finditer(r"([,;:—–])\s+", chunk):
                 split_pos = match.end()
                 p1 = chunk[:split_pos].strip()
@@ -749,12 +753,34 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
 
                 punct = match.group(1)
                 bonus = 10.0 if punct in (";", ":", "—", "–") else 0.0
-                if p2.lower().startswith(("and ", "but ", "while ", "because ", "so ", "though ")):
+                if p2.lower().startswith(("and ", "but ", "while ", "because ", "so ", "though ", "which ", "where ")):
                     bonus += 8.0
 
                 balance_penalty = abs(len(w1) - len(w2))
-                score = 50.0 + bonus - balance_penalty
+                length_bonus = max(0, len(words) - 16) * 2.0
+                score = 50.0 + bonus + length_bonus - balance_penalty
                 candidates.append((score, p1, p2))
+
+            # Secondary candidates: unpunctuated clause transitions (e.g. before "while", "because", "until")
+            if not candidates:
+                for match in re.finditer(
+                    r"\s+(?=(?:while|because|until|before|after|where|which|allowing|preventing)\b)",
+                    chunk,
+                    flags=re.IGNORECASE,
+                ):
+                    p1 = chunk[: match.start()].strip()
+                    p2 = chunk[match.end() :].strip()
+                    w1 = p1.split()
+                    w2 = p2.split()
+                    if len(w1) < 5 or len(w2) < 5:
+                        continue
+                    last_m = re.search(r"\b([a-zA-Z]+)[^\w\s]*$", p1)
+                    last_w = last_m.group(1).lower() if last_m else ""
+                    if last_w in DANGLING_BOUNDARY_WORDS:
+                        continue
+                    balance_penalty = abs(len(w1) - len(w2))
+                    score = 35.0 + max(0, len(words) - 16) * 2.0 - balance_penalty
+                    candidates.append((score, p1, p2))
 
             if candidates:
                 candidates.sort(key=lambda c: c[0], reverse=True)

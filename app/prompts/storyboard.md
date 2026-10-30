@@ -71,29 +71,32 @@ For educational, scientific, engineering, or curiosity-driven topics, construct 
 - NO TEXT, NO LOGOS, NO WATERMARKS: Do not describe text, words, letters, numbers, or subtitles. (AI image generators distort text; use visual cues like subtle arrows or indicators instead of written labels).
 - NO REAL PEOPLE: Focus on objects, environments, hands, or abstract representations.
 
-## 6. Scene Splitting & Natural Narration Boundaries
-- Divide the full script narration into exactly 8 to 12 consecutive scenes.
-- Each scene must represent one clear visual beat corresponding to approximately 2 to 7 seconds of spoken narration (roughly 5 to 18 words).
-- Joined scene narrations, in order, must reproduce the script narration EXACTLY: identical words, identical order, nothing added, removed, reordered, or reworded.
+## 6. Separating Narrative Flow from Visual Scene Structure
+The full script is written and synthesized as **one continuous spoken narrative**. Storyboard scenes are **visual moments** (camera cuts) placed along that continuous narration stream—NOT separate mini-scripts or standalone paragraphs.
 
-### Critical Voiceover Prosody & Natural Boundary Rules:
-The complete video narration is synthesized as a single continuous voiceover track while visual scenes and subtitle segments transition at each scene boundary. Mid-sentence or mid-phrase cuts disrupt visual-to-spoken alignment and subtitle phrasing. Therefore:
-1. **Preserve Complete Sentences**: Sentences between 5 and 18 words MUST be kept as a single self-contained scene. Do NOT break a standard sentence across two scenes unless it exceeds 18 words or consists of multiple distinct independent clauses.
-2. **Allowed Multi-Clause Splits**: When a long sentence must be split across scenes, split ONLY at major natural grammatical pause points:
-   - Independent clauses joined by a coordinating conjunction with a comma (`, and`, `, but`, `, while`, `, so`)
-   - Semicolons (`;`) or colons (`:`)
-   - Major subordinate or participial clauses preceded by a comma (`, which...`, `, because...`, `, allowing...`)
+- Divide the full script narration into 8 to 12 consecutive visual scenes.
+- Each scene represents one clear visual moment corresponding to approximately 2.0 to 7.0 seconds of spoken narration (roughly 5 to 17 words).
+- **Never Rewrite or Rearrange Narration**: Joined scene narrations, in order, must reproduce the script narration **EXACTLY**—identical words, identical order, nothing added, removed, reordered, or reworded.
+- **Do Not Force Standalone Scene Thoughts**: Do not expect or force each scene to begin with a new introduction or end with a self-contained conclusion. Ideas and multi-clause sentences should flow naturally across scene boundaries whenever the visual focus shifts (for example, cutting from an exterior shot on the setup clause to a cutaway diagram on the payoff clause).
+
+### Natural Phrase & Clause Boundary Rules:
+While ideas and sentences can span across visual scenes, the cut between two scenes must never chop a grammatical phrase in half:
+1. **Short & Medium Sentences (5 to 17 words)**: Keep a sentence together in a single scene when it describes one unified visual beat.
+2. **Flowing Across Scene Boundaries (Multi-Clause or Longer Sentences)**: When a sentence exceeds ~17 words or describes two distinct visual moments (e.g., cause -> effect, outside view -> inside mechanism), let it flow across two consecutive scenes by splitting at a natural spoken breath or clause boundary:
+   - Independent or subordinate clauses joined by punctuation (`, and`, `, but`, `, while`, `, so`, `, because`, `, which`, `, where`, `;`, `:`, `—`)
+   - Participial or explanatory result clauses (`, allowing...`, `, preventing...`, `, creating...`, `, turning...`)
+   - Clean clause transitions before `while`, `because`, `until`, `before`, `after`, or `so that` when each half is at least 5 words long.
 3. **Strictly Forbidden Split Points (NEVER split here)**:
-   - NEVER split inside a compound noun phrase (e.g. `changing oxygen` | `or carbon dioxide levels` is FORBIDDEN).
+   - NEVER split inside a noun phrase or compound object (e.g. `changing oxygen` | `or carbon dioxide levels` is FORBIDDEN).
    - NEVER split between a preposition and its object (e.g. `prevents the window` | `from cracking under pressure` is FORBIDDEN).
    - NEVER split between an auxiliary verb and its main verb (e.g. `has been` | `discovered` is FORBIDDEN).
-   - NEVER split between an adjective and the noun it modifies (e.g. `the extreme` | `cold temperature` is FORBIDDEN).
-   - NEVER split a relative clause immediately after the relative pronoun (e.g. `one action` | `that can spread this way` is FORBIDDEN).
-4. **Avoid Awkward Sentence Fragments & Unnatural Boundaries**:
-   - Never end a scene's narration on a dangling conjunction (`and`, `or`, `but`, `so`, `because`) or preposition (`of`, `to`, `in`, `from`, `with`, `for`, `at`, `by`).
-   - Avoid creating tiny 1-3 word fragments (e.g. "In fact," or "For example," must NEVER stand alone as an entire scene).
-   - Preserve natural sentence casing and punctuation from the script.
-5. **Visual-Narration Alignment**: Each scene's visual content, `image_prompt`, and focal point must strictly depict the specific concept, object, or mechanism being spoken in that exact scene's narration. Never pair an image with narration describing a different beat.
+   - NEVER split between an adjective/determiner and the noun it modifies (e.g. `the extreme` | `cold temperature` is FORBIDDEN).
+   - NEVER split immediately after a relative pronoun or subordinator (e.g. `one action` | `that can spread this way` is FORBIDDEN).
+4. **No Dangling Words or Micro-Fragments**:
+   - Never end a scene's narration on a dangling conjunction (`and`, `or`, `but`, `so`, `because`), preposition (`of`, `to`, `in`, `from`, `with`, `for`, `at`, `by`), relative pronoun (`that`, `which`), or article (`a`, `an`, `the`).
+   - Never create tiny 1–3 word fragments (e.g. `"In fact,"` or `"For example,"` must NEVER stand alone as an entire scene).
+   - Preserve exact capitalization and punctuation from the script.
+5. **Visual-Narration Alignment**: Each scene's visual content, `image_prompt`, and focal point must depict the specific concept, object, or action being spoken during that exact slice of the narration.
 
 ## 7. Opening Hook & Ending Closure
 - **Scene 1 (Opening Visual Hook)**: Must immediately visually anchor and amplify the script's opening hook with high visual intrigue, physical tension, or dramatic scale.

@@ -12,6 +12,78 @@ from .silence import trim_silence_samples
 # Module-level cache for the loaded Kokoro model instance so it persists in memory
 _KOKORO_CACHE: dict[tuple[str, str], Any] = {}
 
+# Spoken expansions for abbreviations and symbols that degrade Kokoro prosody/phonemization
+_ABBREVIATION_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bvs\.?(?=\s|$)", flags=re.IGNORECASE), "versus"),
+    (re.compile(r"\be\.g\.?(?=\s|,|$)", flags=re.IGNORECASE), "for example"),
+    (re.compile(r"\bi\.e\.?(?=\s|,|$)", flags=re.IGNORECASE), "that is"),
+    (re.compile(r"\betc\.?(?=\s|,|$)", flags=re.IGNORECASE), "et cetera"),
+    (re.compile(r"\bDr\.(?=\s+[A-Z])"), "Doctor"),
+    (re.compile(r"\bMr\.(?=\s+[A-Z])"), "Mister"),
+    (re.compile(r"\bMrs\.(?=\s+[A-Z])"), "Missus"),
+    (re.compile(r"\bMs\.(?=\s+[A-Z])"), "Miz"),
+    (re.compile(r"\bSt\.(?=\s+[A-Z])"), "Saint"),
+    (re.compile(r"°\s*F\b"), " degrees Fahrenheit"),
+    (re.compile(r"°\s*C\b"), " degrees Celsius"),
+    (re.compile(r"\bmph\b", flags=re.IGNORECASE), "miles per hour"),
+    (re.compile(r"\bkm/h\b", flags=re.IGNORECASE), "kilometers per hour"),
+    (re.compile(r"(?<=\d)\s*%"), " percent"),
+)
+
+
+def normalize_text_for_tts(text: str) -> str:
+    """Normalize punctuation, numbers, and abbreviations for natural Kokoro TTS prosody.
+
+    Specifically addresses Kokoro-82M / espeak-ng phonemization artifacts:
+    - Comma-separated digits (e.g. '30,000') are stripped of commas ('30000') so espeak
+      says 'thirty thousand' instead of 'thirty, zero zero zero'.
+    - Decimal numbers (e.g. '2.5') are expanded to '2 point 5' so the period does not
+      trigger a sentence-ending pause token.
+    - Curly/straight double quotation marks ('“...”') are stripped so Kokoro does not
+      insert a ~240ms prosodic stall on vocab quote tokens mid-sentence.
+    - Unspaced em-dashes, en-dashes, ellipses, colons, and semicolons are converted into
+      clean comma/period pauses so words are not stretched or clipped.
+    - Common abbreviations ('vs.', 'Dr.', 'mph', '°F') are expanded into spoken English.
+    """
+    if not text or not text.strip():
+        return ""
+
+    t = text.strip()
+
+    # 1. Normalize curly apostrophes to standard ASCII apostrophe so contractions stay intact
+    t = t.replace("’", "'").replace("‘", "'")
+
+    # 2. Strip double quotation marks (“ ” ") which cause unnatural ~240ms mid-phrase stalls in Kokoro
+    t = t.replace("“", "").replace("”", "").replace('"', "")
+
+    # 3. Strip commas inside formatted numbers (e.g., 30,000 -> 30000; 1,000,000 -> 1000000)
+    t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)
+
+    # 4. Expand decimal points between digits (e.g., 2.5 -> 2 point 5) so '.' doesn't split the sentence
+    t = re.sub(r"(?<=\d)\.(?=\d)", " point ", t)
+
+    # 5. Expand common abbreviations and unit symbols
+    for pattern, replacement in _ABBREVIATION_REPLACEMENTS:
+        t = pattern.sub(replacement, t)
+
+    # 6. Convert ellipses, em-dashes, en-dashes, and spaced hyphens into clean comma pauses
+    t = re.sub(r"\.{2,}|…", ", ", t)
+    t = re.sub(r"\s*[—–]\s*", ", ", t)
+    t = re.sub(r"\s+-\s+", ", ", t)
+
+    # 7. Convert semicolons and colons into natural spoken pauses
+    t = re.sub(r";\s*", ". ", t)
+    t = re.sub(r":\s*", ", ", t)
+
+    # 8. Clean up duplicate punctuation and collapse whitespace
+    t = re.sub(r",\s*,+", ", ", t)
+    t = re.sub(r"([.!?])\s*,", r"\1", t)
+    t = re.sub(r",\s*([.!?])", r"\1", t)
+    t = re.sub(r"\s+([,.!?])", r"\1", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    return t
+
 
 def resolve_kokoro_language(voice: str) -> str:
     """Infer the ISO language code expected by Kokoro from the voice prefix."""
@@ -104,21 +176,59 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
                 f"soundfile is not installed: {exc}. Run: pip install soundfile"
             ) from exc
 
+        tts_text = normalize_text_for_tts(text) or text.strip()
+        batches: list[str] = []
+
         try:
             # Measure how many internal ONNX inference calls/batches Kokoro will execute
-            phonemes = kokoro.tokenizer.phonemize(text, lang)
+            phonemes = kokoro.tokenizer.phonemize(tts_text, lang)
             batches = kokoro._split_phonemes(phonemes)
             self._last_inference_batches = max(1, len(batches))
         except Exception:
             self._last_inference_batches = 1
 
         try:
-            samples, sample_rate = kokoro.create(
-                text=text,
-                voice=voice,
-                speed=float(speed),
-                lang=lang,
-            )
+            import numpy as np
+
+            if len(batches) > 1 and hasattr(kokoro, "_create_audio") and hasattr(kokoro, "get_voice_style"):
+                # When a single call exceeds 510 phonemes, synthesize each phoneme batch with trim=False,
+                # apply our controlled silence trimming per batch, and insert a natural 240ms sentence breath.
+                voice_style = kokoro.get_voice_style(voice)
+                batch_parts: list[np.ndarray] = []
+                sample_rate = 24000
+                for b_idx, batch_phonemes in enumerate(batches):
+                    part_samples, sample_rate = kokoro._create_audio(
+                        batch_phonemes, voice_style, float(speed)
+                    )
+                    b_terminal = bool(re.search(r"[.!?]\s*$", batch_phonemes.strip()))
+                    trimmed_part = trim_silence_samples(
+                        part_samples, sample_rate, is_terminal=b_terminal
+                    )
+                    batch_parts.append(trimmed_part)
+                    if b_idx < len(batches) - 1:
+                        gap_sec = 0.24 if b_terminal else 0.09
+                        batch_parts.append(np.zeros(int(gap_sec * sample_rate), dtype=np.float32))
+                samples = np.concatenate(batch_parts) if batch_parts else np.array([], dtype=np.float32)
+            else:
+                # Pass trim=False so kokoro_onnx does not strip all trailing/leading silence via librosa.trim
+                # before our own trim_silence_samples preserves natural 35ms lead and 110ms/80ms trail pads.
+                try:
+                    samples, sample_rate = kokoro.create(
+                        text=tts_text,
+                        voice=voice,
+                        speed=float(speed),
+                        lang=lang,
+                        trim=False,
+                    )
+                except TypeError:
+                    samples, sample_rate = kokoro.create(
+                        text=tts_text,
+                        voice=voice,
+                        speed=float(speed),
+                        lang=lang,
+                    )
+                is_terminal = bool(re.search(r"[.!?]\s*$", tts_text.strip()))
+                samples = trim_silence_samples(samples, sample_rate, is_terminal=is_terminal)
         except Exception as exc:
             raise VoiceoverProviderError(
                 f"Kokoro audio generation failed for voice '{voice}': {exc}"
@@ -126,10 +236,6 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
 
         if len(samples) == 0 or sample_rate <= 0:
             raise VoiceoverProviderError("Kokoro produced empty audio samples")
-
-        # Trim excessive silence while preserving natural breath headroom and phrase pauses
-        is_terminal = bool(re.search(r"[.!?]\s*$", text.strip()))
-        samples = trim_silence_samples(samples, sample_rate, is_terminal=is_terminal)
 
         actual_duration = round(len(samples) / float(sample_rate), 3)
 

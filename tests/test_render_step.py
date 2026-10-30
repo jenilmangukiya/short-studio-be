@@ -48,9 +48,7 @@ def test_missing_voiceover_precondition():
     video = DummyVideo()
     prev = {
         "images": {
-            "images": {
-                "items": [{"index": 1, "status": "ok", "file": "dummy/img.png"}]
-            }
+            "images": {"items": [{"index": 1, "status": "ok", "file": "dummy/img.png"}]}
         }
     }
     with pytest.raises(PipelineError) as exc_info:
@@ -122,7 +120,9 @@ def test_ffmpeg_subprocess_error_cleanup(tmp_path, monkeypatch):
     prev = {
         "images": {
             "images": {
-                "items": [{"index": 1, "status": "ok", "file": f"{video.id}/scene_01.png"}]
+                "items": [
+                    {"index": 1, "status": "ok", "file": f"{video.id}/scene_01.png"}
+                ]
             }
         },
         "voiceover": {
@@ -135,7 +135,9 @@ def test_ffmpeg_subprocess_error_cleanup(tmp_path, monkeypatch):
 
     # Simulate FFmpeg failure
     def mock_run(*args, **kwargs):
-        raise subprocess.CalledProcessError(1, "ffmpeg", stderr="Simulated FFmpeg encoding failure")
+        raise subprocess.CalledProcessError(
+            1, "ffmpeg", stderr="Simulated FFmpeg encoding failure"
+        )
 
     with patch("subprocess.run", side_effect=mock_run):
         with pytest.raises(PipelineError) as exc_info:
@@ -169,9 +171,7 @@ def test_fast_real_render_synthetic_clip(tmp_path, monkeypatch):
 
     prev = {
         "images": {
-            "images": {
-                "items": [{"index": 1, "status": "ok", "file": img_rel}]
-            }
+            "images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}
         },
         "voiceover": {
             "audio_file": wav_rel,
@@ -273,20 +273,45 @@ def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
     anim2 = res["render"]["animations"][1]
     assert anim1["scene_index"] == 1
     assert anim2["scene_index"] == 2
-    assert anim1["animation_type"] in ("pan-right", "pan-left", "zoom-in", "subtle-drift")
+    assert anim1["animation_type"] in (
+        "pan-right",
+        "pan-left",
+        "zoom-in",
+        "subtle-drift",
+    )
     assert anim2["animation_type"] in ("zoom-out", "subtle-drift", "zoom-in")
 
     # Extract two frames from scene 1 at different timestamps (t=0.1s and t=0.45s)
     f1_path = tmp_path / "f1.png"
     f2_path = tmp_path / "f2.png"
     subprocess.run(
-        ["ffmpeg", "-y", "-ss", "0.1", "-i", str(final_video), "-frames:v", "1", str(f1_path)],
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "0.1",
+            "-i",
+            str(final_video),
+            "-frames:v",
+            "1",
+            str(f1_path),
+        ],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-ss", "0.45", "-i", str(final_video), "-frames:v", "1", str(f2_path)],
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "0.45",
+            "-i",
+            str(final_video),
+            "-frames:v",
+            "1",
+            str(f2_path),
+        ],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -301,7 +326,9 @@ def test_render_ken_burns_motion_validation(tmp_path, monkeypatch):
     # In a static video, im1 and im2 would have difference == 0.
     # With Ken Burns motion, the frame content has changed due to zoom:
     pixel_diff = float(np.mean(np.abs(im1.astype(float) - im2.astype(float))))
-    assert pixel_diff > 0.2, f"Expected Ken Burns motion between frames, got diff {pixel_diff}"
+    assert (
+        pixel_diff > 0.2
+    ), f"Expected Ken Burns motion between frames, got diff {pixel_diff}"
 
 
 def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
@@ -350,8 +377,20 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
                 "continuous": True,
                 "audio_file": cont_audio_rel,
                 "items": [
-                    {"index": 1, "status": "ok", "duration_seconds": 0.7, "start_time": 0.0, "end_time": 0.7},
-                    {"index": 2, "status": "ok", "duration_seconds": 0.8, "start_time": 0.7, "end_time": 1.5},
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "duration_seconds": 0.7,
+                        "start_time": 0.0,
+                        "end_time": 0.7,
+                    },
+                    {
+                        "index": 2,
+                        "status": "ok",
+                        "duration_seconds": 0.8,
+                        "start_time": 0.7,
+                        "end_time": 1.5,
+                    },
                 ],
             },
         },
@@ -373,14 +412,20 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
 
     # 3. Probe with ffprobe to verify video and audio streams
     probe_cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "stream=codec_name,codec_type,width,height,channels,sample_rate",
-        "-show_entries", "format=duration",
-        "-of", "json",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_name,codec_type,width,height,channels,sample_rate",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
         str(final_video),
     ]
     probe_out = subprocess.run(probe_cmd, stdout=subprocess.PIPE, text=True, check=True)
     import json
+
     info = json.loads(probe_out.stdout)
 
     v_stream = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
@@ -402,7 +447,9 @@ def test_continuous_audio_rendering_integration(tmp_path, monkeypatch):
     assert len(tmp_dirs) == 0
 
 
-def test_render_rejects_missing_continuous_audio_in_voiceover_output(tmp_path, monkeypatch):
+def test_render_rejects_missing_continuous_audio_in_voiceover_output(
+    tmp_path, monkeypatch
+):
     """Verify rendering raises PipelineError when voiceover output lacks continuous audio_file."""
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
     monkeypatch.setattr(settings, "render_fps", 30)
@@ -416,9 +463,7 @@ def test_render_rejects_missing_continuous_audio_in_voiceover_output(tmp_path, m
 
     prev = {
         "images": {
-            "images": {
-                "items": [{"index": 1, "status": "ok", "file": img_rel}]
-            }
+            "images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}
         },
         "voiceover": {
             "voiceover": {
@@ -444,9 +489,7 @@ def test_continuous_audio_missing_on_disk(tmp_path, monkeypatch):
 
     prev = {
         "images": {
-            "images": {
-                "items": [{"index": 1, "status": "ok", "file": img_rel}]
-            }
+            "images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}
         },
         "voiceover": {
             "audio_file": f"{video.id}/audio/missing_narration.wav",
@@ -474,13 +517,13 @@ def test_continuous_audio_corrupted_decoding_error(tmp_path, monkeypatch):
     audio_dir = video_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     corrupt_audio_rel = f"{video.id}/audio/corrupt.wav"
-    (tmp_path / corrupt_audio_rel).write_bytes(b"This is definitely not a valid WAV file header!")
+    (tmp_path / corrupt_audio_rel).write_bytes(
+        b"This is definitely not a valid WAV file header!"
+    )
 
     prev = {
         "images": {
-            "images": {
-                "items": [{"index": 1, "status": "ok", "file": img_rel}]
-            }
+            "images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}
         },
         "voiceover": {
             "audio_file": corrupt_audio_rel,
@@ -545,4 +588,3 @@ def test_audio_video_duration_alignment(tmp_path, monkeypatch):
     assert res["render"]["scenes_rendered"] == 3
     assert abs(res["duration_seconds"] - total_audio_dur) < 0.1
     assert Path(res["video_path"]).is_file()
-

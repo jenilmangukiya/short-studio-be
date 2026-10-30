@@ -403,3 +403,75 @@ def test_downstream_compatibility_subtitles_and_endpoints(tmp_path, monkeypatch)
         assert resp_sc1.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+# ==============================================================================
+# Requirement 9: Balanced chunking, inter-chunk breath gaps, and TTS normalization
+# ==============================================================================
+
+def test_balanced_chunking_avoids_orphan_tail_chunk():
+    """Verify split_script_into_chunks balances multi-chunk splits instead of leaving a tiny tail chunk."""
+    sentences = [
+        "Why do people yawn when someone else yawns?",
+        "Seeing a friend yawn can make your own jaw stretch within seconds.",
+        "For years people blamed low oxygen in the blood, but experiments proved extra oxygen does not stop it.",
+        "Instead, your brain automatically mirrors the facial actions of the people around you.",
+        "When you spot a yawn, social mirroring networks fire up before you even think about it.",
+        "That is why you are much more likely to catch a yawn from a close friend than a stranger.",
+        "Even dogs can catch a yawn from the person sitting beside them.",
+        "Next time you catch a yawn, your brain is quietly syncing with the room.",
+    ]
+    script = " ".join(sentences)
+    chunks = split_script_into_chunks(script, max_words=65, max_chars=380)
+
+    # 118 words / 685 chars should split into 2 balanced chunks (each ~50-65 words), not 3 with a tiny orphan
+    assert len(chunks) == 2
+    w_counts = [len(c.split()) for c in chunks]
+    assert all(40 <= wc <= 65 for wc in w_counts)
+    assert " ".join(chunks).split() == script.split()
+
+
+def test_compute_inter_chunk_gaps_and_multi_chunk_pause_insertion():
+    """Verify natural inter-chunk breath pauses are inserted when joining multiple chunks."""
+    from app.voiceover import compute_inter_chunk_gaps
+
+    chunks = [
+        "First sentence group ends with a period.",
+        "Second clause group ends with a comma,",
+        "Final sentence group finishes the story.",
+    ]
+    gaps = compute_inter_chunk_gaps(chunks)
+    assert gaps == [0.24, 0.09]
+
+    provider = MockContinuousProvider()
+    res, count = generate_continuous_audio(
+        " ".join(chunks), provider=provider, max_chunk_words=8
+    )
+    assert count == 3
+    # Sum of chunk durations (7/2.5=2.8 + 7/2.5=2.8 + 6/2.5=2.4 = 8.0s) + inter-chunk gaps (0.24 + 0.09 = 0.33s)
+    expected_unpadded = sum(round(len(c.split()) / 2.5, 3) for c in chunks)
+    assert res.duration_seconds > expected_unpadded
+    assert abs(res.duration_seconds - (expected_unpadded + 0.33)) < 0.02
+
+
+def test_normalize_text_for_tts():
+    """Verify Kokoro TTS text normalization handles comma numbers, decimals, quotes, dashes, and abbreviations."""
+    from app.voiceover import normalize_text_for_tts
+
+    raw = (
+        'At 30,000 feet—or 2.5 miles up—temperatures drop to 40°F vs. 70°C! '
+        'Scientists call it a “diamond planet”... traveling at 1,200 mph (100%).'
+    )
+    norm = normalize_text_for_tts(raw)
+
+    assert "30000" in norm
+    assert "30,000" not in norm
+    assert "2 point 5" in norm
+    assert "degrees Fahrenheit" in norm
+    assert "versus" in norm
+    assert "degrees Celsius" in norm
+    assert "“" not in norm and "”" not in norm and '"' not in norm
+    assert "—" not in norm and "..." not in norm
+    assert "1200 miles per hour" in norm
+    assert "100 percent" in norm
+

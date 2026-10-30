@@ -583,3 +583,71 @@ def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
     assert result["warnings"] == []
 
 
+# ==============================================================================
+# 8. Script Quality & Storytelling Checks (Phase 5)
+# ==============================================================================
+
+def test_evaluate_script_quality_detects_long_sentences_and_textbook_phrasing():
+    from app.steps.script import evaluate_script_quality
+
+    hook = "Why do people yawn when someone else yawns?"
+    # Includes a 32-word sentence, academic hedging ("no single explanation is settled"), and comma digits
+    narration = (
+        f"{hook} Seeing someone yawn can make your own jaw stretch within seconds, even across a room of 30,000 people. "
+        "Researchers link this contagious reflex to automatic social mirroring inside human brain networks that track the faces and emotions of people around us every single day without conscious effort or deliberate thought. "
+        "However, studies haven't shown that oxygen levels control it, and no single explanation is settled. "
+        "Your brain quietly mirrors the people around you before you even notice."
+    )
+    script = _make_sample_script(hook=hook, narration=narration)
+    issues = evaluate_script_quality(script)
+
+    assert any("overly long sentences" in i.lower() for i in issues)
+    assert any("textbook or academic phrasing" in i.lower() for i in issues)
+    assert any("comma-formatted digits" in i.lower() for i in issues)
+
+
+def test_evaluate_script_quality_detects_disconnected_fact_list_and_weak_ending():
+    from app.steps.script import evaluate_script_quality
+
+    hook = "What happens near a black hole's edge?"
+    narration = (
+        f"{hook} A black hole packs enormous mass into a tiny space, creating gravity so strong that light cannot escape. "
+        "Time also passes more slowly near a black hole than it does far away. "
+        "Furthermore, its edge is called the event horizon, and crossing it means never returning. "
+        "In addition, scientists first detected ripples in spacetime from colliding black holes. "
+        "Follow for more space facts."
+    )
+    script = _make_sample_script(hook=hook, narration=narration)
+    issues = evaluate_script_quality(script)
+
+    assert any("disconnected list of facts" in i.lower() for i in issues)
+    assert any("final sentence ends weakly" in i.lower() for i in issues)
+
+
+def test_evaluate_script_quality_detects_unexplained_jargon_and_repeated_phrases():
+    from app.steps.script import evaluate_script_quality
+
+    hook = "How do tardigrades survive extreme radiation?"
+    narration = (
+        f"{hook} Microscopic tardigrades endure extreme dehydration through cryptobiosis, anhydrobiosis, and osmobiosis in harsh environments. "
+        "Extreme radiation damages cellular structures, yet extreme radiation fails to destroy their resilient biological shields. "
+        "Extreme radiation triggers specialized proteins that bind directly to their genetic material and prevent shattering. "
+        "That microscopic shield keeps them alive even in the vacuum of space."
+    )
+    script = _make_sample_script(hook=hook, narration=narration)
+    issues = evaluate_script_quality(script)
+
+    assert any("unexplained technical vocabulary" in i.lower() for i in issues)
+    assert any("repeats the phrase" in i.lower() or "start with the identical phrase" in i.lower() for i in issues)
+
+
+def test_estimate_spoken_duration_seconds():
+    from app.steps.script import estimate_spoken_duration_seconds
+
+    script = _make_sample_script()
+    dur = estimate_spoken_duration_seconds(script.narration)
+    assert 40.0 <= dur <= 60.0
+    assert estimate_spoken_duration_seconds("") == 0.0
+
+
+
