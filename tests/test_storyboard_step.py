@@ -493,7 +493,7 @@ def test_full_storyboard_step_mock(monkeypatch):
     assert meta["provider"] == "mock"
     assert meta["task"] == "storyboard"
     assert meta["revision"] is False
-    assert "storyboard-v3:" in meta["prompt_version"]
+    assert "storyboard-v4:" in meta["prompt_version"]
 
 
 def test_full_storyboard_step_revision_mode(monkeypatch):

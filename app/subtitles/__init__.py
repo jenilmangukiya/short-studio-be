@@ -4,7 +4,9 @@ from .base import BaseSubtitleProvider, SubtitleConfigError, SubtitleError
 from .factory import get_subtitle_provider
 from .types import SubtitleResult, SubtitleSegment, WordTimestamp
 from .alignment import (
+    align_scene_visual_beats,
     alignment_cache_rel_path,
+    apply_aligned_beat_timings_to_storyboard,
     apply_aligned_timings_to_items,
     compute_aligned_scene_timings,
     compute_alignment_hash,
@@ -19,7 +21,9 @@ __all__ = [
     "SubtitleResult",
     "SubtitleSegment",
     "WordTimestamp",
+    "align_scene_visual_beats",
     "alignment_cache_rel_path",
+    "apply_aligned_beat_timings_to_storyboard",
     "apply_aligned_timings_to_items",
     "compute_aligned_scene_timings",
     "compute_alignment_hash",

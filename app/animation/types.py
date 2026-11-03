@@ -66,7 +66,11 @@ class AnimationPlan:
     duration_seconds: float = 2.5
     reasoning: str = ""
 
-    def validate_and_clamp(self) -> AnimationPlan:
+    def validate_and_clamp(
+        self,
+        max_scale: float = 1.15,
+        allow_static_scale: bool = False,
+    ) -> AnimationPlan:
         """Sanitize and clamp all parameters to safe operational bounds.
 
         Prevents extreme zoom, out-of-bounds crops, subtitle collisions, or invalid types.
@@ -76,13 +80,17 @@ class AnimationPlan:
         if anim_type not in ALLOWED_ANIMATION_TYPES:
             anim_type = "zoom-in"
 
-        # Clamp zoom scales to restrained [1.00, 1.15] range to preserve image clarity
-        s_start = max(1.00, min(1.15, float(self.start_scale)))
-        s_end = max(1.00, min(1.15, float(self.end_scale)))
+        # Clamp zoom scales to restrained range to preserve image clarity
+        limit = max(1.00, float(max_scale))
+        s_start = max(1.00, min(limit, float(self.start_scale)))
+        s_end = max(1.00, min(limit, float(self.end_scale)))
 
         if anim_type == "static":
-            s_start = 1.00
-            s_end = 1.00
+            if allow_static_scale:
+                s_end = s_start
+            else:
+                s_start = 1.00
+                s_end = 1.00
 
         # Clamp normalized coordinates to [0.0, 1.0]
         fx = max(0.05, min(0.95, float(self.focal_x)))

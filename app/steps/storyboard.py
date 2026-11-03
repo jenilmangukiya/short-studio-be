@@ -59,6 +59,19 @@ ShotType = Literal[
     "in-context",
 ]
 
+# Single source of truth for visual beat image sourcing strategies
+ALLOWED_IMAGE_STRATEGIES: tuple[str, ...] = (
+    "reuse_scene_image",
+    "reuse_previous_image",
+    "new_image",
+)
+
+ImageStrategy = Literal[
+    "reuse_scene_image",
+    "reuse_previous_image",
+    "new_image",
+]
+
 # Words per second speech constant for calculating estimated scene duration
 WORDS_PER_SECOND: float = 2.5
 
@@ -193,6 +206,85 @@ class AnimationPlanInput(BaseModel):
     )
 
 
+class VisualBeat(BaseModel):
+    """An individual visual moment or shot within a parent scene."""
+
+    id: str = Field(
+        default="",
+        description="Unique beat identifier, e.g. 'beat_1_1'",
+    )
+    scene_id: str = Field(
+        default="",
+        description="Reference identifier of parent scene, e.g. '1' or scene index",
+    )
+    order: int = Field(
+        default=1,
+        ge=1,
+        description="1-based position or sequence of this beat within the parent scene",
+    )
+    narration_text: str = Field(
+        default="",
+        description="The specific narration phrase or sentence slice spoken during this visual beat",
+    )
+    start_time: float | None = Field(
+        default=None,
+        description="Beat start timestamp in seconds on the continuous narration timeline",
+    )
+    end_time: float | None = Field(
+        default=None,
+        description="Beat end timestamp in seconds on the continuous narration timeline",
+    )
+    duration_seconds: float | None = Field(
+        default=None,
+        description="Duration of this visual beat in seconds (end_time - start_time)",
+    )
+    start_word_index: int | None = Field(
+        default=None,
+        ge=0,
+        description="0-based index of the first aligned narration word assigned to this beat within parent scene (inclusive)",
+    )
+    end_word_index: int | None = Field(
+        default=None,
+        ge=0,
+        description="0-based index of the last aligned narration word assigned to this beat within parent scene (inclusive)",
+    )
+    timing_type: str = Field(
+        default="unassigned",
+        description="Source of beat timing: 'aligned', 'fallback', or 'unassigned'",
+    )
+    visual_description: str = Field(
+        description="Clear description of what should be visually visible during this moment",
+    )
+    visual_purpose: str = Field(
+        default="",
+        description="Why this visual moment exists in the story (e.g. establish subject, direct focus, reveal detail, show reaction)",
+    )
+    shot_type: ShotType = Field(
+        default="medium",
+        description="Camera framing / shot type for this visual beat",
+    )
+    camera_angle: str = Field(
+        default="eye-level",
+        description="Camera angle or perspective (e.g. eye-level, low-angle, isometric, top-down)",
+    )
+    focal_point: str = Field(
+        default="",
+        description="The primary subject or detail viewers should notice in this moment",
+    )
+    visual_technique: str = Field(
+        default="cinematic-photo",
+        description="Visual technique (e.g. cinematic-photo, macro-photo, technical-illustration, cutaway-diagram)",
+    )
+    image_strategy: ImageStrategy = Field(
+        default="reuse_scene_image",
+        description="Image strategy planning hint: 'reuse_scene_image', 'reuse_previous_image', or 'new_image'",
+    )
+    source_image_id: str | None = Field(
+        default=None,
+        description="Optional reference to an existing image if reusing a specific image asset",
+    )
+
+
 class SceneInput(BaseModel):
     """Raw scene produced by the LLM."""
 
@@ -233,6 +325,160 @@ class SceneInput(BaseModel):
         default=None,
         description="Structured camera animation instructions for this scene",
     )
+    visual_beats: list[VisualBeat] = Field(
+        default_factory=list,
+        description="Ordered list of visual beats (visual moments) within this scene",
+    )
+
+
+def normalize_scene_visual_beats(
+    raw_beats: list[VisualBeat | dict[str, Any]] | None,
+    scene_index: int,
+    fallback_scene: SceneInput | dict[str, Any] | None = None,
+) -> list[VisualBeat]:
+    """Ensure a scene always has a valid, non-empty, sequentially ordered list of VisualBeats.
+
+    If raw_beats is empty or invalid, synthesizes a 1-to-1 default VisualBeat matching the parent scene.
+    If raw_beats has items, sanitizes and clamps fields, guaranteeing stable sequential order (1..N).
+    """
+
+    def _extract_sc(field: str, default: Any = "") -> Any:
+        if fallback_scene is None:
+            return default
+        if isinstance(fallback_scene, dict):
+            return fallback_scene.get(field, default)
+        return getattr(fallback_scene, field, default)
+
+    sc_shot = _extract_sc("shot_type", "medium")
+    fallback_shot: ShotType = sc_shot if sc_shot in ALLOWED_SHOT_TYPES else "medium"
+    fallback_angle = str(_extract_sc("camera_angle", "eye-level") or "eye-level").strip()
+    fallback_focal = str(_extract_sc("focal_point", "") or "").strip()
+    fallback_tech = str(_extract_sc("visual_technique", "cinematic-photo") or "cinematic-photo").strip()
+    fallback_purpose = str(_extract_sc("visual_purpose", "") or "").strip()
+    fallback_prompt = str(_extract_sc("image_prompt", "") or "").strip()
+    fallback_narration = str(_extract_sc("narration", "") or "").strip()
+    fallback_desc = fallback_purpose or fallback_prompt or f"Scene {scene_index} visual moment"
+
+    if not raw_beats:
+        return [
+            VisualBeat(
+                id=f"beat_{scene_index}_1",
+                scene_id=str(scene_index),
+                order=1,
+                narration_text=fallback_narration,
+                visual_description=fallback_desc,
+                visual_purpose=fallback_purpose or "Establish scene visual beat",
+                shot_type=fallback_shot,
+                camera_angle=fallback_angle or "eye-level",
+                focal_point=fallback_focal,
+                visual_technique=fallback_tech or "cinematic-photo",
+                image_strategy="new_image",
+                source_image_id=str(scene_index),
+            )
+        ]
+
+    normalized: list[VisualBeat] = []
+    for item in raw_beats:
+        if isinstance(item, VisualBeat):
+            b_dict = item.model_dump()
+        elif isinstance(item, dict):
+            b_dict = dict(item)
+        else:
+            continue
+
+        seq_order = len(normalized) + 1
+        b_id = str(b_dict.get("id") or "").strip() or f"beat_{scene_index}_{seq_order}"
+        b_desc = str(b_dict.get("visual_description") or "").strip() or fallback_desc
+        b_purpose = str(b_dict.get("visual_purpose") or "").strip() or fallback_purpose
+        b_narr = str(b_dict.get("narration_text") or "").strip()
+        if not b_narr and len(raw_beats) == 1:
+            b_narr = fallback_narration
+
+        b_start_time = float(b_dict["start_time"]) if b_dict.get("start_time") is not None else None
+        b_end_time = float(b_dict["end_time"]) if b_dict.get("end_time") is not None else None
+        b_duration = float(b_dict["duration_seconds"]) if b_dict.get("duration_seconds") is not None else None
+        b_start_word = int(b_dict["start_word_index"]) if b_dict.get("start_word_index") is not None else None
+        b_end_word = int(b_dict["end_word_index"]) if b_dict.get("end_word_index") is not None else None
+        b_timing_type = str(b_dict.get("timing_type") or "unassigned")
+
+        b_shot_raw = b_dict.get("shot_type")
+        b_shot: ShotType = b_shot_raw if b_shot_raw in ALLOWED_SHOT_TYPES else fallback_shot
+
+        b_angle = str(b_dict.get("camera_angle") or "").strip() or fallback_angle or "eye-level"
+        b_focal = str(b_dict.get("focal_point") or "").strip() or fallback_focal
+        b_tech = str(b_dict.get("visual_technique") or "").strip() or fallback_tech or "cinematic-photo"
+
+        b_strat_raw = b_dict.get("image_strategy")
+        if b_strat_raw in ALLOWED_IMAGE_STRATEGIES:
+            b_strat: ImageStrategy = b_strat_raw
+        else:
+            b_strat = "new_image" if seq_order == 1 else "reuse_scene_image"
+
+        b_source_raw = b_dict.get("source_image_id")
+        b_source_id = str(b_source_raw).strip() if b_source_raw is not None and str(b_source_raw).strip() else None
+        if b_strat == "reuse_scene_image" and not b_source_id:
+            b_source_id = str(scene_index)
+        elif b_strat == "reuse_previous_image" and not b_source_id:
+            try:
+                sc_idx_int = int(scene_index)
+            except (ValueError, TypeError):
+                sc_idx_int = 1
+
+            if seq_order == 1:
+                if sc_idx_int > 1:
+                    b_source_id = str(sc_idx_int - 1)
+                else:
+                    b_source_id = None
+            else:
+                prev_beat = normalized[-1] if normalized else None
+                b_source_id = (
+                    prev_beat.source_image_id
+                    if prev_beat and prev_beat.source_image_id
+                    else str(scene_index)
+                )
+
+        normalized.append(
+            VisualBeat(
+                id=b_id,
+                scene_id=str(scene_index),
+                order=seq_order,
+                narration_text=b_narr,
+                start_time=b_start_time,
+                end_time=b_end_time,
+                duration_seconds=b_duration,
+                start_word_index=b_start_word,
+                end_word_index=b_end_word,
+                timing_type=b_timing_type,
+                visual_description=b_desc,
+                visual_purpose=b_purpose,
+                shot_type=b_shot,
+                camera_angle=b_angle,
+                focal_point=b_focal,
+                visual_technique=b_tech,
+                image_strategy=b_strat,
+                source_image_id=b_source_id,
+            )
+        )
+
+    if not normalized:
+        return [
+            VisualBeat(
+                id=f"beat_{scene_index}_1",
+                scene_id=str(scene_index),
+                order=1,
+                narration_text=fallback_narration,
+                visual_description=fallback_desc,
+                visual_purpose=fallback_purpose or "Establish scene visual beat",
+                shot_type=fallback_shot,
+                camera_angle=fallback_angle or "eye-level",
+                focal_point=fallback_focal,
+                visual_technique=fallback_tech or "cinematic-photo",
+                image_strategy="new_image",
+                source_image_id=str(scene_index),
+            )
+        ]
+
+    return normalized
 
 
 class StoryboardLLMOutput(BaseModel):
@@ -537,6 +783,28 @@ def validate_storyboard_soft_checks(
             warnings.append(
                 f"Scene {idx} final prompt length is {len(str(resolved_final_prompt))} chars (target: at most {MAX_FINAL_PROMPT_LENGTH} chars)."
             )
+
+        # Visual beats checks (if present)
+        beats = get_field(s, "visual_beats")
+        if isinstance(beats, list) and len(beats) > 0:
+            if len(beats) > 4:
+                warnings.append(
+                    f"Scene {idx} contains {len(beats)} visual beats (target: 1-3 beats per scene)."
+                )
+            for b_idx, b in enumerate(beats, start=1):
+                b_order = b.get("order") if isinstance(b, dict) else getattr(b, "order", b_idx)
+                if b_order != b_idx:
+                    warnings.append(
+                        f"Scene {idx} visual beat {b_idx} has non-sequential order {b_order} (expected {b_idx})."
+                    )
+                b_desc = b.get("visual_description") if isinstance(b, dict) else getattr(b, "visual_description", "")
+                if not b_desc or not str(b_desc).strip():
+                    warnings.append(f"Scene {idx} visual beat {b_idx} has an empty visual_description.")
+                b_strat = b.get("image_strategy") if isinstance(b, dict) else getattr(b, "image_strategy", "")
+                if b_strat and b_strat not in ALLOWED_IMAGE_STRATEGIES:
+                    warnings.append(
+                        f"Scene {idx} visual beat {b_idx} has invalid image_strategy '{b_strat}'."
+                    )
 
     return warnings
 
@@ -851,6 +1119,60 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         uses_anchor = scene_idx not in (2, 5)
         anim_data = beat.get("animation")
         anim_obj = AnimationPlanInput(**anim_data) if anim_data else None
+
+        words_in_chunk = chunk.split()
+        if len(words_in_chunk) >= 12:
+            mid = len(words_in_chunk) // 2
+            p1 = " ".join(words_in_chunk[:mid])
+            p2 = " ".join(words_in_chunk[mid:])
+            mock_beats: list[VisualBeat] = [
+                VisualBeat(
+                    id=f"beat_{scene_idx}_1",
+                    scene_id=str(scene_idx),
+                    order=1,
+                    narration_text=p1,
+                    visual_description=beat["prompt"],
+                    visual_purpose=beat["purpose"],
+                    shot_type=beat["shot_type"],
+                    camera_angle=beat["camera_angle"],
+                    focal_point=beat["focal_point"],
+                    visual_technique=beat["technique"],
+                    image_strategy="new_image",
+                    source_image_id=str(scene_idx),
+                ),
+                VisualBeat(
+                    id=f"beat_{scene_idx}_2",
+                    scene_id=str(scene_idx),
+                    order=2,
+                    narration_text=p2,
+                    visual_description=f"Detailed close-up emphasizing {beat['focal_point']}",
+                    visual_purpose=f"Direct attention to {beat['focal_point']}",
+                    shot_type="close-up",
+                    camera_angle="eye-level",
+                    focal_point=beat["focal_point"],
+                    visual_technique=beat["technique"],
+                    image_strategy="reuse_scene_image",
+                    source_image_id=str(scene_idx),
+                ),
+            ]
+        else:
+            mock_beats = [
+                VisualBeat(
+                    id=f"beat_{scene_idx}_1",
+                    scene_id=str(scene_idx),
+                    order=1,
+                    narration_text=chunk,
+                    visual_description=beat["prompt"],
+                    visual_purpose=beat["purpose"],
+                    shot_type=beat["shot_type"],
+                    camera_angle=beat["camera_angle"],
+                    focal_point=beat["focal_point"],
+                    visual_technique=beat["technique"],
+                    image_strategy="new_image",
+                    source_image_id=str(scene_idx),
+                )
+            ]
+
         scenes.append(
             SceneInput(
                 narration=chunk,
@@ -863,6 +1185,7 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
                 image_prompt=beat["prompt"],
                 uses_anchor=uses_anchor,
                 animation=anim_obj,
+                visual_beats=mock_beats,
             )
         )
 
@@ -1135,6 +1458,14 @@ def generate_storyboard_step(
                 duration_seconds=est_sec,
             ).to_dict()
 
+        # Extract and normalize visual beats for this scene
+        raw_beats = getattr(s, "visual_beats", None) or []
+        normalized_beats = normalize_scene_visual_beats(
+            raw_beats=raw_beats,
+            scene_index=idx,
+            fallback_scene=s,
+        )
+
         final_scenes.append(
             {
                 "index": idx,
@@ -1150,9 +1481,11 @@ def generate_storyboard_step(
                 "final_prompt": final_prompt,
                 "est_seconds": est_sec,
                 "animation": anim_plan,
+                "visual_beats": [b.model_dump() for b in normalized_beats],
             }
         )
     total_seconds = round(accumulated_seconds, 1)
+    total_visual_beats = sum(len(sc["visual_beats"]) for sc in final_scenes)
 
     # 9. Return structured payload
     return {
@@ -1163,6 +1496,7 @@ def generate_storyboard_step(
             "environment_anchor": environment_anchor,
             "scenes": final_scenes,
             "total_seconds": total_seconds,
+            "total_visual_beats": total_visual_beats,
         },
         "warnings": warnings,
         "meta": {

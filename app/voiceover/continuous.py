@@ -61,14 +61,15 @@ def collect_narration_script(
         if not narration:
             raise ValueError(f"Scene {scene_idx} narration text is empty or missing")
 
-        validated_scenes.append(
-            {
-                "index": scene_idx,
-                "id": sc.get("id") or sc.get("scene_id") or scene_idx,
-                "narration": narration,
-                "est_seconds": sc.get("est_seconds"),
-            }
-        )
+        sc_entry: dict[str, Any] = {
+            "index": scene_idx,
+            "id": sc.get("id") or sc.get("scene_id") or scene_idx,
+            "narration": narration,
+            "est_seconds": sc.get("est_seconds"),
+        }
+        if "visual_beats" in sc:
+            sc_entry["visual_beats"] = sc["visual_beats"]
+        validated_scenes.append(sc_entry)
 
     full_script = " ".join(s["narration"] for s in validated_scenes).strip()
     if not full_script:

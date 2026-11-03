@@ -435,6 +435,8 @@ def generate_voiceover_step(
         if "speech_start_time" in timing:
             item["speech_start_time"] = timing["speech_start_time"]
             item["speech_end_time"] = timing["speech_end_time"]
+        if "visual_beats" in timing:
+            item["visual_beats"] = timing["visual_beats"]
         items.append(item)
 
     # 11. Complete standardized payload

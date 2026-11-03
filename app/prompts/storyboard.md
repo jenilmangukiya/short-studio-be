@@ -1,4 +1,4 @@
-version: storyboard-v3
+version: storyboard-v4
 
 # Storyboard Creation Rules: Faceless Vertical Short Videos
 
@@ -124,7 +124,26 @@ Each scene must feature its own tailored camera animation plan (`animation`) ref
   - `focal_x`, `focal_y`: Normalized coordinates [0.0, 1.0]. Keep focal Y in the upper-middle area (0.30 - 0.55), keeping the lower third (Y > 0.68) clear for subtitles.
 - **Restrained Scales**: Keep zoom scales between 1.00 and 1.08 to prevent digital pixelation and extreme cropping.
 
-## 9. Structured Output
+## 9. Visual Beats Planning (Multiple Visual Moments Per Scene)
+A Scene represents a complete narrative unit (approx 2.0 to 7.0 seconds of spoken narration).
+Within each scene, divide the visual presentation into 1 to 3 ordered `visual_beats`, which represent individual visual moments, camera framings, or shot transitions:
+- **Meaningful Visual Changes**: Each visual beat must represent a meaningful visual progression, not an arbitrary split:
+  - Moving from an establishing or medium shot to a close-up of an important component or object.
+  - Showing a different action, stage of a process, or physical interaction.
+  - Revealing a hidden detail, texture, or miniature opening.
+  - Changing visual scale or perspective to emphasize a key point.
+  - Illustrating a physical consequence or result.
+- **Anti-Triviality Rule**: Avoid generating multiple beats that describe essentially the same image without a meaningful visual reason. If a scene is short (<2.5 seconds) or covers a single straightforward concept, 1 visual beat is sufficient.
+- **Image Strategy Planning**:
+  - `new_image`: Use for the primary establishing moment of the scene, or when the visual moment introduces a completely new physical subject or environment that cannot be derived from existing imagery.
+  - `reuse_scene_image`: Use when the visual moment focuses on an object, detail, or framing that can be achieved by reframing, cropping in, or panning across the scene's primary master image.
+  - `reuse_previous_image`: Use when continuing the visual setup of the immediately preceding beat.
+- **Narration Synchronization (`narration_text`)**:
+  - Each visual beat must specify `narration_text`: the exact phrase or clause from this scene's narration spoken during this visual beat.
+  - Slices across all beats in a scene must together cover the scene's narration verbatim, in order.
+- **Natural Pacing Reference**: Across a ~50-second Short, the storyboard will naturally contain roughly 18 to 26 total visual beats. Do not force an arbitrary beat count; align beats to the natural ideas and rhythm of the narration.
+
+## 10. Structured Output
 Return structured JSON matching the StoryboardLLMOutput schema:
 - `subject_anchor`: Core recurring object description (or empty).
 - `environment_anchor`: Core recurring environment/setting description (or empty).
@@ -151,3 +170,16 @@ Return structured JSON matching the StoryboardLLMOutput schema:
     - `end_y`: Float (0.0 to 1.0).
     - `intensity`: String ('subtle', 'moderate', or 'restrained').
     - `reasoning`: Brief explanation of why this motion suits the scene.
+  - `visual_beats`: Ordered list of 1 to 3 visual beats within this scene, each containing:
+    - `id`: Unique beat identifier, e.g. "beat_1_1", "beat_1_2".
+    - `scene_id`: Parent scene index or identifier, e.g. "1".
+    - `order`: 1-based sequential position within the scene (1, 2, 3).
+    - `narration_text`: Exact spoken words or phrase from this scene's narration corresponding to this visual beat.
+    - `visual_description`: What should be visible during this moment.
+    - `visual_purpose`: Why this visual moment exists in the story.
+    - `shot_type`: Framing from allowed list (e.g. wide, medium, close-up, macro, cutaway).
+    - `camera_angle`: Perspective or angle (e.g. eye-level, low-angle, isometric).
+    - `focal_point`: Specific focal detail or subject for this beat.
+    - `visual_technique`: Technique (e.g. cinematic-photo, macro-photo, technical-illustration).
+    - `image_strategy`: One of ('reuse_scene_image', 'reuse_previous_image', 'new_image').
+    - `source_image_id`: Optional reference string (e.g. parent scene index or null).

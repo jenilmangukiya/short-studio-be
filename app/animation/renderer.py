@@ -105,7 +105,11 @@ def build_ffmpeg_zoompan_filter(
             )
             return z, x, y, fc, {"animation_type": "fallback-ken-burns"}
     elif isinstance(plan, AnimationPlan):
-        valid_plan = plan.validate_and_clamp()
+        plan_max = min(2.0, max(1.15, plan.start_scale, plan.end_scale))
+        valid_plan = plan.validate_and_clamp(
+            max_scale=plan_max,
+            allow_static_scale=(plan.animation_type == "static" and plan.start_scale > 1.0),
+        )
     else:
         z, x, y, fc = build_fallback_ken_burns_filter(
             shot_type=fallback_shot_type,
