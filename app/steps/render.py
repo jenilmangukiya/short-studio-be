@@ -438,10 +438,171 @@ def _calculate_beat_frame_allocations(
     return allocations
 
 
+SUPPORTED_MUSIC_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".wav"})
+
+
+def resolve_and_validate_music_track(
+    music_path: str | Path | None = None,
+    music_enabled: bool | None = None,
+    channel_settings: dict[str, Any] | None = None,
+    storage_root: Path | None = None,
+) -> Path | None:
+    """Resolve and validate an optional user-provided background music track.
+
+    Precedence order:
+    1. Explicit `music_path` and `music_enabled` arguments.
+    2. Channel settings (`channel_settings["background_music"]` or `channel_settings["music_path"]`,
+       with `channel_settings["music_enabled"]`).
+    3. Global settings (`settings.render_music_path` and `settings.render_music_enabled`).
+
+    Returns:
+        Resolved absolute Path to the music track if enabled and valid, or None if disabled.
+
+    Raises:
+        PipelineError: If music is requested/enabled but the configured file is missing,
+            empty, or has an unsupported format (only .mp3 and .wav are supported).
+    """
+    # 1. Check explicit disablement
+    if music_enabled is False:
+        return None
+
+    ch_settings = channel_settings if isinstance(channel_settings, dict) else {}
+    if music_enabled is None and ch_settings.get("music_enabled") is False:
+        return None
+
+    # 2. Resolve candidate path and whether music is explicitly enabled
+    candidate: str | Path | None = music_path
+    explicitly_enabled: bool = (music_enabled is True) or bool(ch_settings.get("music_enabled") is True)
+
+    if candidate is None:
+        candidate = ch_settings.get("background_music") or ch_settings.get("music_path")
+
+    if candidate is None:
+        global_enabled = bool(getattr(settings, "render_music_enabled", False))
+        if global_enabled or explicitly_enabled:
+            candidate = getattr(settings, "render_music_path", None)
+            if global_enabled:
+                explicitly_enabled = True
+
+    # 3. If music is not enabled and no path was provided, it remains disabled
+    if not explicitly_enabled and not candidate:
+        return None
+
+    # 4. If music was explicitly enabled but no track path is provided/configured:
+    if explicitly_enabled and (candidate is None or (isinstance(candidate, str) and not candidate.strip())):
+        raise PipelineError("Background music is enabled, but no music track path is configured")
+
+    if candidate is None:
+        return None
+
+    raw_path_str = str(candidate).strip()
+    if not raw_path_str:
+        return None
+
+    p = Path(raw_path_str)
+
+    # 5. Validate file extension (.mp3 and .wav only)
+    if p.suffix.lower() not in SUPPORTED_MUSIC_EXTENSIONS:
+        raise PipelineError(
+            f"Unsupported audio format for background music: '{p.suffix}'. Only .mp3 and .wav are supported."
+        )
+
+    # 6. Resolve relative paths
+    if not p.is_absolute():
+        root = storage_root or getattr(settings, "resolved_storage_dir", Path(settings.storage_dir).resolve())
+        candidate_rel_root = (root / p).resolve()
+        if candidate_rel_root.is_file():
+            p = candidate_rel_root
+        else:
+            p = p.resolve()
+
+    # 7. Validate file existence
+    if not p.is_file():
+        raise PipelineError(f"Background music file not found at '{p}'")
+
+    # 8. Validate file size > 0
+    if p.stat().st_size == 0:
+        raise PipelineError(f"Background music file is empty: '{p}'")
+
+    return p
+
+
+def build_audio_mux_command(
+    temp_video_mp4: Path,
+    continuous_audio_abs: Path,
+    temp_final_mp4: Path,
+    music_file_abs: Path | None = None,
+    idle_volume: float = 0.18,
+    duck_ratio: float = 4.0,
+    duck_threshold: float = 0.03,
+    attack_ms: float = 150.0,
+    release_ms: float = 350.0,
+) -> list[str]:
+    """Construct FFmpeg command for audio multiplexing with optional sidechain-ducked background music.
+
+    Signal flow when music is provided:
+    1. Input 0: Concatenated silent video (temp_video_mp4).
+    2. Input 1: Canonical continuous narration audio (continuous_audio_abs).
+    3. Input 2: Looped background music track (-stream_loop -1 -i music_file_abs).
+    4. Audio filter graph:
+       - [2:a]volume=<idle_vol>[bg]: scale music to baseline idle level during pauses (~ -15 dB).
+       - [bg][1:a]sidechaincompress=...[ducked]: downward compression of music using narration as control signal.
+       - [1:a][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]: mix narration and ducked music without reducing narration volume.
+       - [mixed]alimiter=limit=0.95[aout]: peak lookahead limiter preventing digital clipping overshoots.
+    """
+    if music_file_abs is None:
+        return [
+            "ffmpeg",
+            "-y",
+            "-i", str(temp_video_mp4),
+            "-i", str(continuous_audio_abs),
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:v", "copy",
+            "-af", "apad",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(temp_final_mp4),
+        ]
+
+    filter_complex = (
+        f"[2:a]volume={idle_volume:.2f}[bg];"
+        f"[bg][1:a]sidechaincompress=threshold={duck_threshold:.3f}:ratio={duck_ratio:.1f}:attack={attack_ms:.0f}:release={release_ms:.0f}[ducked];"
+        f"[1:a][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed];"
+        f"[mixed]alimiter=limit=0.95[aout]"
+    )
+
+    return [
+        "ffmpeg",
+        "-y",
+        "-i", str(temp_video_mp4),
+        "-i", str(continuous_audio_abs),
+        "-stream_loop", "-1",
+        "-i", str(music_file_abs),
+        "-filter_complex", filter_complex,
+        "-map", "0:v",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "44100",
+        "-ac", "2",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(temp_final_mp4),
+    ]
+
+
 def generate_render_step(
     video: Video,
     prev: dict[str, Any],
     step: VideoStep | None = None,
+    music_path: str | Path | None = None,
+    music_enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the video rendering step using FFmpeg.
 
@@ -511,6 +672,23 @@ def generate_render_step(
     temp_dir = video_dir / f"tmp_render_{uuid.uuid4().hex[:8]}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_final_mp4 = temp_dir / "temp_final.mp4"
+
+    # Extract channel settings if available
+    channel = getattr(video, "channel", None)
+    channel_settings = getattr(channel, "settings", None) if channel else None
+
+    # Resolve and validate optional background music track
+    try:
+        resolved_music = resolve_and_validate_music_track(
+            music_path=music_path,
+            music_enabled=music_enabled,
+            channel_settings=channel_settings,
+            storage_root=storage_root,
+        )
+    except PipelineError:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
     # 5. Detect and validate continuous narration audio asset
     cont_audio_rel: str | None = None
@@ -722,6 +900,16 @@ def generate_render_step(
                     fallback_applied: str | None = None
                     fallback_reason_item: str | None = None
 
+                    # Extract any explicit camera plan movement from the beat or parent scene
+                    explicit_anim = None
+                    cam_p = beat.get("camera_plan") if isinstance(beat, dict) else getattr(beat, "camera_plan", None)
+                    if isinstance(cam_p, dict) and cam_p.get("movement"):
+                        explicit_anim = str(cam_p["movement"]).lower().replace("_", "-").strip()
+                    elif isinstance(cam_p, str) and cam_p.strip():
+                        explicit_anim = cam_p.lower().replace("_", "-").strip()
+                    elif hasattr(cam_p, "movement") and getattr(cam_p, "movement"):
+                        explicit_anim = str(getattr(cam_p, "movement")).lower().replace("_", "-").strip()
+
                     if status == "safe_reuse":
                         crop_reg = feasibility.proposed_crop or calculate_portrait_crop(
                             source_width=src_w,
@@ -736,6 +924,7 @@ def generate_render_step(
                             focal_x=crop_reg.center_x,
                             focal_y=crop_reg.center_y,
                             duration_seconds=b_dur,
+                            preferred_animation=explicit_anim,
                             prev_anim_type=prev_anim_type,
                         )
                         anim_plan = camera_plan.to_animation_plan(
@@ -761,7 +950,7 @@ def generate_render_step(
                             focal_x=conservative_crop.center_x,
                             focal_y=conservative_crop.center_y,
                             duration_seconds=b_dur,
-                            preferred_animation="static" if b_dur < 2.0 else None,
+                            preferred_animation=explicit_anim,
                             prev_anim_type=prev_anim_type,
                         )
                         anim_plan = camera_plan.to_animation_plan(
@@ -786,6 +975,7 @@ def generate_render_step(
                                 focal_x=0.5,
                                 focal_y=DEFAULT_SUBJECT_Y,
                                 duration_seconds=b_dur,
+                                preferred_animation=explicit_anim,
                                 prev_anim_type=prev_anim_type,
                             )
                             anim_plan = camera_plan.to_animation_plan(
@@ -806,7 +996,7 @@ def generate_render_step(
                                 focal_x=0.5,
                                 focal_y=DEFAULT_SUBJECT_Y,
                                 duration_seconds=b_dur,
-                                preferred_animation="static",
+                                preferred_animation=explicit_anim,
                                 prev_anim_type=prev_anim_type,
                             )
                             anim_plan = camera_plan.to_animation_plan(
@@ -999,26 +1189,24 @@ def generate_render_step(
         if not temp_video_mp4.is_file() or temp_video_mp4.stat().st_size == 0:
             raise PipelineError("FFmpeg produced empty concatenated video")
 
-        # Mux continuous narration audio WAV into final MP4.
-        # Pad audio stream with silence (-af apad) so FFmpeg -shortest terminates on the final video
-        # frame boundary and never truncates the canonical narration audio.
-        mux_cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(temp_video_mp4),
-            "-i", str(continuous_audio_abs),
-            "-map", "0:v",
-            "-map", "1:a",
-            "-c:v", "copy",
-            "-af", "apad",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ar", "44100",
-            "-ac", "2",
-            "-shortest",
-            "-movflags", "+faststart",
-            str(temp_final_mp4),
-        ]
+        # Mux continuous narration audio WAV into final MP4 (with optional ducked background music).
+        idle_vol = float(getattr(settings, "render_music_idle_volume", 0.18))
+        duck_ratio = float(getattr(settings, "render_music_duck_ratio", 4.0))
+        duck_thresh = float(getattr(settings, "render_music_duck_threshold", 0.03))
+        attack_ms = float(getattr(settings, "render_music_attack_ms", 150.0))
+        release_ms = float(getattr(settings, "render_music_release_ms", 350.0))
+
+        mux_cmd = build_audio_mux_command(
+            temp_video_mp4=temp_video_mp4,
+            continuous_audio_abs=continuous_audio_abs,
+            temp_final_mp4=temp_final_mp4,
+            music_file_abs=resolved_music,
+            idle_volume=idle_vol,
+            duck_ratio=duck_ratio,
+            duck_threshold=duck_thresh,
+            attack_ms=attack_ms,
+            release_ms=release_ms,
+        )
         try:
             subprocess.run(
                 mux_cmd,
@@ -1134,6 +1322,10 @@ def generate_render_step(
                 "audio_file": cont_audio_rel,
                 "timing_source": timing_source,
                 "alignment_hash": alignment_hash,
+                "music": {
+                    "enabled": resolved_music is not None,
+                    "file": str(resolved_music) if resolved_music else None,
+                },
             },
             # Top-level video_path and duration_seconds for backward compatibility
             "video_path": str(final_mp4_path),
@@ -1153,6 +1345,8 @@ def generate_render_step(
                 "timing_source": timing_source,
                 "alignment_hash": alignment_hash,
                 "alignment_reused": alignment_reused,
+                "music_enabled": resolved_music is not None,
+                "music_file": str(resolved_music) if resolved_music else None,
             },
         }
 

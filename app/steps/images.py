@@ -178,7 +178,39 @@ def generate_images_step(
 
     items: list[dict[str, Any]] = []
 
-    # 8. Sequential generation loop
+    # 8. Pre-flight budget check: verify estimated cost against configurable budget
+    unique_indices = set()
+    for sc in scenes:
+        sid = sc.get("source_image_id")
+        if not sid:
+            beats = sc.get("visual_beats") or []
+            if beats and all(b.get("image_strategy") in ("reuse_previous_image", "reuse_scene_image") and b.get("source_image_id") for b in beats):
+                sid = beats[0].get("source_image_id")
+        if not sid or str(sid).strip() == str(sc.get("index")):
+            unique_indices.add(str(sc.get("index")))
+        else:
+            unique_indices.add(str(sid).strip())
+
+    unit_cost = (
+        provider.est_cost_usd
+        if provider.est_cost_usd is not None
+        else getattr(settings, "openai_image_est_cost_usd", None) or 0.04
+    )
+    planned_est_cost = len(unique_indices) * unit_cost
+
+    channel = getattr(video, "channel", None)
+    channel_settings = getattr(channel, "settings", {}) or {}
+    budget_limit = channel_settings.get("image_budget_usd") if isinstance(channel_settings, dict) else None
+    if budget_limit is None:
+        budget_limit = getattr(settings, "image_budget_usd", 0.50)
+
+    if budget_limit is not None and planned_est_cost > float(budget_limit):
+        raise PipelineError(
+            f"Estimated image generation cost (${planned_est_cost:.2f} for {len(unique_indices)} unique images) "
+            f"exceeds configured budget limit of ${float(budget_limit):.2f}. Stop and request approval."
+        )
+
+    # 9. Sequential generation loop
     for idx, scene in enumerate(scenes):
         scene_idx = int(scene.get("index", len(items) + 1))
         prev_scene = scenes[idx - 1] if idx > 0 else None
@@ -203,6 +235,43 @@ def generate_images_step(
 
         file_rel_path = f"{video.id}/images/scene_{scene_idx:02d}_{hash8}.png"
         file_abs_path = storage_root / file_rel_path
+
+        # Check cross-scene image reuse criteria (e.g. scene explicitly reuses an earlier scene's generated image)
+        source_id = scene.get("source_image_id")
+        if not source_id:
+            beats = scene.get("visual_beats") or []
+            if beats and all(b.get("image_strategy") in ("reuse_previous_image", "reuse_scene_image") and b.get("source_image_id") for b in beats):
+                source_id = beats[0].get("source_image_id")
+
+        if source_id and str(source_id).strip() != str(scene_idx):
+            sid_str = str(source_id).strip()
+            ref_item = next(
+                (it for it in items if str(it.get("index")) == sid_str and it.get("status") == "ok" and it.get("file")),
+                None,
+            )
+            if ref_item:
+                items.append(
+                    {
+                        "index": scene_idx,
+                        "status": "ok",
+                        "file": ref_item["file"],
+                        "prompt": ref_item["prompt"],
+                        "prompt_hash": ref_item["prompt_hash"],
+                        "reused": True,
+                        "source_image_id": sid_str,
+                        "model": ref_item.get("model", provider.model),
+                        "size": ref_item.get("size", size),
+                        "quality": ref_item.get("quality", quality),
+                        "latency_seconds": 0.0,
+                        "est_cost_usd": 0.0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                        "error": None,
+                    }
+                )
+                _persist_partial(step, _build_output_payload(items, warnings, provider, len(scenes), is_complete=False))
+                continue
 
         # Check reuse criteria: previous item for same scene, status ok, prompt_hash matches, file exists
         prev_item = existing_by_scene.get(scene_idx)

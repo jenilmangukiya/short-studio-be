@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = 4096
     llm_temperature: float = 0.7
 
+    # Script generation settings
+    script_speaking_rate_wps: float = 2.4
+    script_default_target_duration: float | None = None
+
     # Gemini settings
     gemini_api_key: str | None = None
     gemini_model: str | None = None
@@ -44,6 +48,7 @@ class Settings(BaseSettings):
     openai_image_size: str = "1024x1536"
     openai_image_quality: str = "low"
     openai_image_est_cost_usd: float | None = None
+    image_budget_usd: float = 0.50
     image_max_per_video: int = 12
     image_timeout_seconds: float = 120.0
 
@@ -60,6 +65,15 @@ class Settings(BaseSettings):
     render_width: int = 1080
     render_height: int = 1920
     render_timeout_seconds: float = 300.0
+
+    # Background music settings (optional, disabled by default)
+    render_music_enabled: bool = False
+    render_music_path: str | None = None
+    render_music_idle_volume: float = 0.18
+    render_music_duck_ratio: float = 4.0
+    render_music_duck_threshold: float = 0.03
+    render_music_attack_ms: float = 150.0
+    render_music_release_ms: float = 350.0
 
     # Subtitles generation settings
     subtitles_provider: str = "acoustic"  # acoustic | vosk | mock

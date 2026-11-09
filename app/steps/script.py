@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
+from app.config import settings
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
 
@@ -121,6 +123,19 @@ DELAYED_PAYOFF_PATTERNS: tuple[str, ...] = (
 
 DELAYED_PAYOFF_REGEX = re.compile(
     r"(?:" + "|".join(DELAYED_PAYOFF_PATTERNS) + r")",
+    flags=re.IGNORECASE,
+)
+
+# Redundant meta-summary sentences that repeat earlier mechanisms without adding new insight
+REDUNDANT_SUMMARY_PATTERNS: tuple[str, ...] = (
+    r"^together,\s+these\s+(?:defenses|factors|features|elements|reasons)\b",
+    r"^all\s+(?:these|of\s+these)\s+(?:factors|defenses|elements|features)\s+combine\b",
+    r"^these\s+(?:factors|elements|defenses)\s+work\s+together\b",
+    r"^when\s+you\s+combine\s+all\s+these\b",
+)
+
+REDUNDANT_SUMMARY_REGEX = re.compile(
+    r"(?:" + "|".join(REDUNDANT_SUMMARY_PATTERNS) + r")",
     flags=re.IGNORECASE,
 )
 
@@ -235,7 +250,8 @@ class ScriptOutput(BaseModel):
     )
     narration: str = Field(
         description=(
-            "The full spoken narration text, 110-150 words, plain conversational spoken text only, "
+            "The full spoken narration text, plain conversational spoken text only, "
+            "scaled to the target word count and duration specified in instructions, "
             "must begin verbatim with the hook sentence and unfold as one connected cause-and-effect story"
         )
     )
@@ -300,23 +316,151 @@ def _count_syllables(word: str) -> int:
     return max(1, len(vowels))
 
 
-def estimate_spoken_duration_seconds(narration: str, words_per_second: float = 2.5) -> float:
+def parse_duration_from_text(text: str | None) -> tuple[float, float] | float | None:
+    """Extract requested duration in seconds from topic, description, or revision instructions.
+
+    Supports formats like:
+    - '35-42 seconds', '35–42s', '35 to 42 seconds' -> (35.0, 42.0)
+    - 'duration: 30s', 'target duration: 40 seconds' -> 40.0
+    - '30s', '45 seconds' -> 45.0
+    """
+    if not text:
+        return None
+    range_match = re.search(
+        r"(?:target\s+)?(?:duration[:\s]+)?(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds)?\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if range_match:
+        d1, d2 = float(range_match.group(1)), float(range_match.group(2))
+        return (min(d1, d2), max(d1, d2))
+
+    single_match = re.search(
+        r"(?:target\s+)?duration[:\s]+(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds)?\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if single_match:
+        return float(single_match.group(1))
+
+    single_sec_match = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if single_sec_match:
+        return float(single_sec_match.group(1))
+
+    return None
+
+
+def resolve_requested_duration(
+    video: Any = None,
+    step: Any = None,
+    channel_settings: dict | None = None,
+    explicit_duration: float | tuple[float, float] | None = None,
+) -> tuple[float, float]:
+    """Resolve the requested video duration range in seconds from available contexts.
+
+    Checks in priority order:
+    1. Explicit duration argument
+    2. video.target_duration (if set)
+    3. Parsed from step.user_prompt (revision instruction)
+    4. Parsed from video.description
+    5. Parsed from video.topic
+    6. channel_settings ('target_duration', 'target_duration_seconds', 'duration')
+    7. Configured default settings.script_default_target_duration (default 40.0s)
+
+    Returns:
+        tuple of (min_duration_seconds, max_duration_seconds)
+    """
+    raw_dur = explicit_duration
+    if raw_dur is None and video is not None:
+        raw_dur = getattr(video, "target_duration", None)
+    if raw_dur is None and step is not None:
+        raw_dur = parse_duration_from_text(getattr(step, "user_prompt", None))
+    if raw_dur is None and video is not None:
+        raw_dur = parse_duration_from_text(getattr(video, "description", None))
+    if raw_dur is None and video is not None:
+        raw_dur = parse_duration_from_text(getattr(video, "topic", None))
+    if raw_dur is None and channel_settings:
+        raw_dur = (
+            channel_settings.get("target_duration")
+            or channel_settings.get("target_duration_seconds")
+            or channel_settings.get("duration")
+        )
+    if raw_dur is None:
+        def_dur = getattr(settings, "script_default_target_duration", None)
+        if def_dur is not None:
+            raw_dur = def_dur
+        else:
+            return (36.0, 60.0)
+
+    if isinstance(raw_dur, (list, tuple)) and len(raw_dur) >= 2:
+        d1, d2 = float(raw_dur[0]), float(raw_dur[1])
+        return (min(d1, d2), max(d1, d2))
+    elif isinstance(raw_dur, (int, float)):
+        d = float(raw_dur)
+        return (round(max(10.0, d * 0.9), 1), round(d * 1.1, 1))
+
+    return (36.0, 60.0)
+
+
+def calculate_target_word_count_range(
+    target_duration: float | tuple[float, float] | None = None,
+    words_per_second: float | None = None,
+) -> tuple[int, int]:
+    """Derive target word count range (min_words, max_words) for a given duration.
+
+    Accounts for realistic spoken speaking rate (~2.4 words/second) and inter-sentence
+    breath pauses (~0.35s per sentence boundary).
+    """
+    if target_duration is None:
+        return (75, 150)
+
+    wps = words_per_second or getattr(settings, "script_speaking_rate_wps", 2.4)
+    if isinstance(target_duration, (list, tuple)):
+        d_min = float(target_duration[0])
+        d_max = float(target_duration[1])
+    else:
+        d = float(target_duration)
+        d_min = max(10.0, d * 0.9)
+        d_max = d * 1.1
+
+    breaks_min = max(0.0, (d_min / 6.5) - 1.0)
+    breaks_max = max(0.0, (d_max / 6.5) - 1.0)
+    net_speech_min = max(5.0, d_min - (breaks_min * 0.35))
+    net_speech_max = max(8.0, d_max - (breaks_max * 0.35))
+
+    raw_min = net_speech_min * wps
+    raw_max = net_speech_max * wps
+
+    w_min = max(20, int(math.floor(raw_min * 0.92)))
+    w_max = max(w_min + 15, int(math.ceil(raw_max * 1.08)))
+    return (w_min, w_max)
+
+
+def estimate_spoken_duration_seconds(
+    narration: str, words_per_second: float | None = None
+) -> float:
     """Estimate natural spoken duration in seconds using word count and syllable density."""
     tokens = re.findall(r"\b[\w'-]+\b", narration)
     if not tokens:
         return 0.0
+    wps = words_per_second or getattr(settings, "script_speaking_rate_wps", 2.4)
     total_syllables = sum(_count_syllables(t) for t in tokens)
-    # Blend standard 2.5 wps with syllable rate (~3.75 syllables/sec) + sentence pause allowance
+    # Blend standard wps with syllable rate (~3.75 syllables/sec) + sentence pause allowance
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration.strip()) if s.strip()]
     pause_seconds = max(0, len(sentences) - 1) * 0.35
-    word_dur = len(tokens) / words_per_second
+    word_dur = len(tokens) / wps
     syll_dur = (total_syllables / 3.9) + pause_seconds
     return round((word_dur * 0.6 + syll_dur * 0.4), 1)
 
 
 def evaluate_script_quality(
     script: ScriptOutput,
-    target_duration_range: tuple[float, float] = (36.0, 65.0),
+    target_duration_range: tuple[float, float] | None = None,
+    target_word_range: tuple[int, int] | None = None,
 ) -> list[str]:
     """Evaluate storytelling, conversational clarity, sentence rhythm, and narrative progression.
 
@@ -324,7 +468,7 @@ def evaluate_script_quality(
     1. Excessively complex or long sentences.
     2. Unexplained technical vocabulary or stiff textbook/encyclopedic phrasing.
     3. Abrupt transitions or disconnected fact-list writing.
-    4. Repeated phrases or redundant information.
+    4. Repeated phrases, redundant information, or repetitive sentence subjects.
     5. Weak or missing narrative progression (delayed payoff, missing cause-and-effect, weak ending).
     6. Estimated spoken duration relative to target short-form video length and TTS-unfriendly formatting.
 
@@ -351,8 +495,9 @@ def evaluate_script_quality(
 
     # 1. Estimated spoken duration & TTS-unfriendly number formatting
     est_duration = estimate_spoken_duration_seconds(narration)
-    min_dur, max_dur = target_duration_range
-    if len(words) >= 110 and len(words) <= 150 and (est_duration < min_dur or est_duration > max_dur):
+    min_dur, max_dur = target_duration_range or (35.0, 65.0)
+    min_w, max_w = target_word_range or (75, 150)
+    if len(words) >= min_w and len(words) <= max_w and (est_duration < min_dur or est_duration > max_dur):
         issues.append(
             f"Estimated spoken duration is {est_duration}s (target: {min_dur:.0f}-{max_dur:.0f}s for a natural short-form pace)."
         )
@@ -520,22 +665,57 @@ def evaluate_script_quality(
                 f"End with a crisp, memorable insight or reveal."
             )
 
+    # 7. Redundant meta-summary check
+    for sent in sentences:
+        if REDUNDANT_SUMMARY_REGEX.search(sent):
+            issues.append(
+                f"Narration contains redundant summary filler ('{sent[:45]}...'). "
+                "Explain each mechanism once and keep the narrative moving forward."
+            )
+            break
+
+    # 8. Repetitive leading sentence subject check
+    leading_nouns: list[str] = []
+    for sent in sentences:
+        first_tokens = re.findall(r"\b[a-zA-Z]{4,}\b", sent)
+        if first_tokens:
+            w_low = first_tokens[0].lower()
+            if w_low not in STOPWORDS and w_low not in SENTENCE_COHESION_MARKERS:
+                leading_nouns.append(w_low)
+    if len(leading_nouns) >= 3:
+        for noun in set(leading_nouns):
+            if leading_nouns.count(noun) >= 3:
+                issues.append(
+                    f"Narration repeatedly begins sentences with '{noun}'. "
+                    "Vary sentence openings, use pronouns, and emphasize dynamic actions."
+                )
+                break
+
     return issues
 
 
-def validate_script_soft_checks(script: ScriptOutput) -> list[str]:
+def validate_script_soft_checks(
+    script: ScriptOutput,
+    target_duration: float | tuple[float, float] | None = None,
+    target_word_range: tuple[int, int] | None = None,
+) -> list[str]:
     """Execute code-side soft checks and storytelling quality checks on the generated script output.
 
     Returns a list of warning messages for any failed checks.
     """
     warnings: list[str] = []
 
-    # 1. Narration word count (110 - 150 words)
+    # 1. Narration word count
     words = script.narration.split()
     word_count = len(words)
-    if word_count < 110 or word_count > 150:
+    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration)
+    if word_count < min_w:
         warnings.append(
-            f"Narration word count is {word_count} words (target: 110-150 words)."
+            f"Narration word count is too short ({word_count} words; target: {min_w}-{max_w} words for the requested duration)."
+        )
+    elif word_count > max_w:
+        warnings.append(
+            f"Narration word count is too long ({word_count} words; target: {min_w}-{max_w} words for the requested duration)."
         )
 
     # 2. Hook length (target: 4-10 words, soft warning > 10, limit <= 15) and narration start
@@ -600,7 +780,17 @@ def validate_script_soft_checks(script: ScriptOutput) -> list[str]:
         )
 
     # 10. Storytelling, conversational flow, and narrative progression checks
-    quality_issues = evaluate_script_quality(script)
+    target_dur_range = None
+    if isinstance(target_duration, (list, tuple)) and len(target_duration) >= 2:
+        target_dur_range = (float(target_duration[0]), float(target_duration[1]))
+    elif isinstance(target_duration, (int, float)):
+        target_dur_range = (round(target_duration * 0.9, 1), round(target_duration * 1.1, 1))
+
+    quality_issues = evaluate_script_quality(
+        script,
+        target_duration_range=target_dur_range,
+        target_word_range=(min_w, max_w),
+    )
     warnings.extend(quality_issues)
 
     return warnings
@@ -651,6 +841,8 @@ def build_script_prompt(
     recent_angles: list[str] | None = None,
     previous_script: dict | None = None,
     revision_instruction: str | None = None,
+    target_duration_range: tuple[float, float] | None = None,
+    target_word_range: tuple[int, int] | None = None,
 ) -> str:
     """Assemble the comprehensive prompt including channel context, constraints, and revision details."""
     sections: list[str] = [rules_text.strip(), "\n## Video Project Details"]
@@ -658,6 +850,17 @@ def build_script_prompt(
     sections.append(f"- **Video Topic**: {topic}")
     if description:
         sections.append(f"- **Topic Description / Context**: {description}")
+
+    if target_duration_range or target_word_range:
+        min_d, max_d = target_duration_range or (35.0, 45.0)
+        min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration_range)
+        sections.append("\n### Target Duration & Word Count Guidance")
+        sections.append(f"- **Requested Duration**: {min_d:.0f} to {max_d:.0f} seconds")
+        sections.append(
+            f"- **Target Spoken Word Count**: {min_w} to {max_w} words "
+            f"(strictly enforced; do NOT write filler or repeat facts to exceed {max_w} words, "
+            f"and do not truncate below {min_w} words)."
+        )
 
     if channel_name or channel_niche or channel_settings:
         sections.append("\n### Channel Context")
@@ -685,10 +888,13 @@ def build_script_prompt(
         sections.append(f"- **Revision Instruction**: {revision_instruction}")
         sections.append(f"- **Previous Script**: {json.dumps(previous_script, indent=2)}")
 
+    min_w_str = f"between {target_word_range[0]} and {target_word_range[1]} words" if target_word_range else "within the target word count"
     sections.append(
         "\n## Instructions\n"
         "Plan one connected story arc (hook -> immediate answer -> progressive cause-and-effect -> memorable payoff) "
-        "and generate a structured script that strictly conforms to the ScriptOutput schema."
+        f"and generate a structured script whose narration is strictly {min_w_str}, "
+        "avoiding redundant summary lines, repetitive sentence openings, or circular explanations, "
+        "and conforming to the ScriptOutput schema."
     )
 
     return "\n".join(sections)
@@ -698,6 +904,7 @@ def generate_script_step(
     video: Video,
     prev: dict[str, Any],
     step: VideoStep,
+    target_duration: float | tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Pipeline step handler for generating video scripts.
 
@@ -732,6 +939,15 @@ def generate_script_step(
     # 5. Load writing prompt template
     rules_text, prompt_version = load_prompt_template()
 
+    # 5b. Resolve target duration and word count constraints
+    target_duration_range = resolve_requested_duration(
+        video=video,
+        step=step,
+        channel_settings=channel_settings,
+        explicit_duration=target_duration,
+    )
+    target_word_range = calculate_target_word_count_range(target_duration_range)
+
     # 6. Build prompt
     prompt = build_script_prompt(
         rules_text=rules_text,
@@ -743,6 +959,8 @@ def generate_script_step(
         recent_angles=recent_angles,
         previous_script=previous_script,
         revision_instruction=step.user_prompt,
+        target_duration_range=target_duration_range,
+        target_word_range=target_word_range,
     )
 
     # 7. Call LLM with task routing
@@ -771,7 +989,11 @@ def generate_script_step(
     total_latency += result.latency_seconds
 
     # 8. Soft-checks and storytelling quality validation
-    warnings = validate_script_soft_checks(script_output)
+    warnings = validate_script_soft_checks(
+        script_output,
+        target_duration=target_duration_range,
+        target_word_range=target_word_range,
+    )
 
     # 9. Targeted rewrite (once max) if soft checks or quality checks fail and not in mock mode
     if warnings and llm.provider_name != "mock":
@@ -782,9 +1004,12 @@ def generate_script_step(
             + "\n".join(f"- {w}" for w in warnings)
             + "\n\nPreviously generated draft:\n"
             + json.dumps(script_output.model_dump(), indent=2)
-            + "\n\nPlease perform a targeted rewrite that fixes every listed issue while keeping verified facts accurate, "
-            "using natural conversational language, connecting sentences into one smooth cause-and-effect narrative, "
-            "and strictly conforming to the ScriptOutput schema.]"
+            + f"\n\nPlease perform a targeted rewrite that fixes every listed issue while keeping verified facts accurate. "
+            f"Specifically ensure narration word count is strictly between {target_word_range[0]} and {target_word_range[1]} words "
+            f"(targeting {target_duration_range[0]:.0f}–{target_duration_range[1]:.0f}s duration), "
+            "eliminate redundant summary filler, use distinct visual progression, "
+            "connect sentences into one smooth cause-and-effect narrative, "
+            "and strictly conforms to the ScriptOutput schema.]"
         )
         try:
             retry_result = llm.generate_structured(
@@ -799,7 +1024,11 @@ def generate_script_step(
                 total_think_tokens = (total_think_tokens or 0) + retry_result.thinking_tokens
             total_latency += retry_result.latency_seconds
             # Re-evaluate warnings for Attempt 2
-            warnings = validate_script_soft_checks(script_output)
+            warnings = validate_script_soft_checks(
+                script_output,
+                target_duration=target_duration_range,
+                target_word_range=target_word_range,
+            )
         except Exception:
             # If retry call fails, retain original output and its warnings
             pass
@@ -821,6 +1050,8 @@ def generate_script_step(
             "latency_seconds": round(total_latency, 4),
             "attempts": attempts,
             "revision": is_revision,
+            "target_duration_seconds": list(target_duration_range),
+            "target_word_count_range": list(target_word_range),
             "estimated_duration_seconds": est_spoken_seconds,
         },
     }

@@ -492,3 +492,173 @@ def test_evaluate_scene_beats_crop_plan_multi_beat_evaluation():
     assert len(dumped) == 2
     assert dumped[0]["feasibility"]["status"] == "safe_reuse"
     assert dumped[1]["camera_plan"]["animation_type"] == "zoom-out"
+
+
+# ===========================================================================
+# 5. Stage 4.5 Duration-Aware Camera Motion Policy Tests
+# ===========================================================================
+
+
+def test_plan_beat_camera_motion_duration_policy_under_two_seconds():
+    """Beats < 2.0s receive static hold to prevent rapid flutter and give viewer time to focus."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.0)
+    
+    # 1.4s beat
+    plan_short = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=1.4,
+    )
+    assert plan_short.animation_type == "static"
+    assert plan_short.start_scale == plan_short.end_scale == 1.0
+    assert "Short beat" in plan_short.reasoning
+
+    # 1.9s beat
+    plan_med_short = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=1.9,
+    )
+    assert plan_med_short.animation_type == "static"
+    assert plan_med_short.start_scale == plan_med_short.end_scale == 1.0
+
+
+def test_plan_beat_camera_motion_duration_policy_two_to_four_seconds():
+    """Beats 2.0s-4.0s receive subtle continuous zoom (5% scale change)."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.0)
+    plan = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.2,
+    )
+    assert plan.animation_type == "zoom-in"
+    assert plan.start_scale == 1.0
+    assert plan.end_scale == 1.05  # 5% zoom
+    assert plan.end_scale > plan.start_scale
+
+
+def test_plan_beat_camera_motion_duration_policy_over_four_seconds():
+    """Beats > 4.0s receive meaningful continuous zoom (7% scale change) across long hold."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.0)
+    plan = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=5.0,
+    )
+    assert plan.animation_type == "zoom-in"
+    assert plan.start_scale == 1.0
+    assert plan.end_scale == 1.07  # 7% zoom for > 4s
+    assert plan.end_scale > plan.start_scale
+
+
+def test_plan_beat_camera_motion_alternating_directions():
+    """Verify camera directions alternate (zoom-in -> zoom-out -> zoom-in) across beats."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.0)
+
+    # Beat 1 (3.0s): starts with zoom-in
+    b1 = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.0,
+        prev_anim_type=None,
+    )
+    assert b1.animation_type == "zoom-in"
+    assert b1.end_scale == 1.05
+
+    # Beat 2 (3.0s): after zoom-in, alternates to zoom-out (NOT static!)
+    b2 = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.0,
+        prev_anim_type=b1.animation_type,
+    )
+    assert b2.animation_type == "zoom-out"
+    assert b2.start_scale == 1.05
+    assert b2.end_scale == 1.00
+
+    # Beat 3 (3.0s): after zoom-out, alternates back to zoom-in
+    b3 = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.0,
+        prev_anim_type=b2.animation_type,
+    )
+    assert b3.animation_type == "zoom-in"
+
+    # Beat 4 (1.5s): short beat (< 2.0s) stays static
+    b4 = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=1.5,
+        prev_anim_type=b3.animation_type,
+    )
+    assert b4.animation_type == "static"
+
+    # Beat 5 (3.0s): after static, resumes active zoom-in
+    b5 = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.0,
+        prev_anim_type=b4.animation_type,
+    )
+    assert b5.animation_type == "zoom-in"
+
+
+def test_plan_beat_camera_motion_explicit_static_honored():
+    """Explicitly requested static movement is honored regardless of duration."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.0)
+    
+    # Via preferred_animation
+    plan = plan_beat_camera_motion(
+        beat={"shot_type": "medium"},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=4.5,
+        preferred_animation="static",
+    )
+    assert plan.animation_type == "static"
+    assert plan.start_scale == plan.end_scale == 1.0
+    assert "explicitly requested" in plan.reasoning
+
+    # Via beat model camera_plan dict
+    plan_dict = plan_beat_camera_motion(
+        beat={"shot_type": "medium", "camera_plan": {"movement": "static"}},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=4.5,
+    )
+    assert plan_dict.animation_type == "static"
+
+
+def test_plan_beat_camera_motion_explicit_movement_from_beat():
+    """Explicitly specified camera movement in beat is honored."""
+    crop = calculate_portrait_crop(1024, 1536, scale_factor=1.1)
+    plan = plan_beat_camera_motion(
+        beat={"shot_type": "medium", "camera_plan": {"movement": "pan-left"}},
+        crop_region=crop,
+        source_width=1024,
+        source_height=1536,
+        duration_seconds=3.0,
+    )
+    assert plan.animation_type == "pan-left"
+

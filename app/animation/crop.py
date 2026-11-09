@@ -559,28 +559,61 @@ def plan_beat_camera_motion(
         except (ValueError, TypeError):
             pass
 
-    # 2. Select conservative animation type
-    if preferred_animation:
-        anim_type: AnimationType = preferred_animation
-    elif dur < 1.6:
-        # Avoid rapid motion on short beats; static hold gives viewers time to focus
+    # 2. Resolve animation type
+    explicit_anim: AnimationType | None = None
+    if preferred_animation in ("static", "zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down", "subtle-drift"):
+        explicit_anim = preferred_animation
+    else:
+        cam_p = beat.get("camera_plan") if isinstance(beat, dict) else getattr(beat, "camera_plan", None)
+        raw_mv = None
+        if isinstance(cam_p, dict) and cam_p.get("movement"):
+            raw_mv = cam_p.get("movement")
+        elif isinstance(cam_p, str) and cam_p.strip():
+            raw_mv = cam_p.strip()
+        elif hasattr(cam_p, "movement") and getattr(cam_p, "movement"):
+            raw_mv = getattr(cam_p, "movement")
+
+        if raw_mv:
+            norm_mv = str(raw_mv).lower().replace("_", "-").strip()
+            if norm_mv in ("static", "zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down", "subtle-drift"):
+                explicit_anim = norm_mv  # type: ignore[assignment]
+
+    if explicit_anim:
+        anim_type: AnimationType = explicit_anim
+    elif dur < 2.0:
+        # Under 2 seconds: movement is optional; static hold gives viewers time to focus without visual flutter
         anim_type = "static"
-    elif beat_shot_type in ("diagram", "cutaway", "cross-section", "blueprint", "schematic"):
-        anim_type = "static"
-    elif prev_anim_type == "zoom-in":
-        # Avoid repeated consecutive push-ins across beats to prevent visual fatigue
-        if beat_shot_type in ("close-up", "extreme-close-up", "macro"):
-            anim_type = "zoom-out"
+    elif beat_shot_type in ("diagram", "blueprint", "schematic"):
+        # Technical schematics hold still for line legibility unless long (> 3.5s)
+        if dur > 3.5:
+            anim_type = "zoom-out" if prev_anim_type == "zoom-in" else "zoom-in"
         else:
             anim_type = "static"
-    elif beat_shot_type in ("close-up", "extreme-close-up", "macro"):
-        anim_type = "zoom-out"
     else:
-        anim_type = "zoom-in"
+        # Visual beats >= 2.0s: active continuous camera movement with alternating directions
+        if prev_anim_type == "zoom-in":
+            # Avoid repeated consecutive push-ins; alternate to gentle pull-out
+            anim_type = "zoom-out"
+        elif prev_anim_type == "zoom-out":
+            # Alternate back to gentle push-in
+            anim_type = "zoom-in"
+        elif prev_anim_type in ("pan-left", "pan-right", "pan-up", "pan-down", "subtle-drift"):
+            anim_type = "zoom-out" if beat_shot_type in ("close-up", "extreme-close-up", "macro") else "zoom-in"
+        else:
+            # First beat or previous was static: start with shot-appropriate movement
+            if beat_shot_type in ("close-up", "extreme-close-up", "macro"):
+                anim_type = "zoom-out"
+            else:
+                anim_type = "zoom-in"
 
     base_scale = max(1.0, crop_region.scale_factor)
     fx = max(0.05, min(0.95, focal_x))
     fy = max(0.10, min(SUBTITLE_SAFETY_MAX_Y, focal_y))
+
+    # Determine zoom intensity based on duration:
+    # Over 4s: 1.07x (7%) provides meaningful, continuous motion across longer holds without visual stopping.
+    # 2.0s - 4.0s: 1.05x (5%) provides smooth, subtle cinematic motion.
+    zoom_delta = 1.07 if dur > 4.0 else 1.05
 
     # 3. Calculate start_crop and end_crop based on animation motion
     if anim_type == "static":
@@ -588,11 +621,16 @@ def plan_beat_camera_motion(
         end_scale = base_scale
         start_crop = crop_region
         end_crop = crop_region
-        reasoning = "Static hold maintains crisp legibility of details."
+        if explicit_anim == "static":
+            reasoning = "Static hold maintained as explicitly requested in beat planning."
+        elif dur < 2.0:
+            reasoning = f"Short beat ({dur:.1f}s < 2.0s): static hold gives viewers time to focus without visual flutter."
+        else:
+            reasoning = "Static hold maintains crisp legibility of details."
 
     elif anim_type == "zoom-in":
         start_scale = base_scale
-        end_scale = round(base_scale * 1.05, 3)
+        end_scale = round(base_scale * zoom_delta, 3)
         start_crop = crop_region
         end_crop = calculate_portrait_crop(
             source_width=source_width,
@@ -601,10 +639,10 @@ def plan_beat_camera_motion(
             focal_y=fy,
             scale_factor=end_scale,
         )
-        reasoning = f"Gentle push-in from {start_scale:.2f}x to {end_scale:.2f}x draws viewer focus."
+        reasoning = f"Continuous push-in from {start_scale:.2f}x to {end_scale:.2f}x draws viewer focus over {dur:.1f}s."
 
     elif anim_type == "zoom-out":
-        start_scale = round(base_scale * 1.05, 3)
+        start_scale = round(base_scale * zoom_delta, 3)
         end_scale = base_scale
         start_crop = calculate_portrait_crop(
             source_width=source_width,
@@ -614,7 +652,7 @@ def plan_beat_camera_motion(
             scale_factor=start_scale,
         )
         end_crop = crop_region
-        reasoning = f"Gentle pull-out from {start_scale:.2f}x to {end_scale:.2f}x reveals surrounding detail."
+        reasoning = f"Continuous pull-out from {start_scale:.2f}x to {end_scale:.2f}x reveals surrounding detail over {dur:.1f}s."
 
     elif anim_type == "pan-left":
         start_scale = max(1.02, base_scale)
