@@ -650,4 +650,274 @@ def test_estimate_spoken_duration_seconds():
     assert estimate_spoken_duration_seconds("") == 0.0
 
 
+# ==============================================================================
+# 5. Stage 4.6 Duration-Aware Script Pacing & Storytelling Tests
+# ==============================================================================
+
+def test_calculate_target_word_count_range_scales_with_duration():
+    """Verify target word counts scale with requested duration across short, medium, and long formats."""
+    from app.steps.script import calculate_target_word_count_range
+
+    r_20 = calculate_target_word_count_range(20.0)
+    r_30 = calculate_target_word_count_range(30.0)
+    r_35_42 = calculate_target_word_count_range((35.0, 42.0))
+    r_45 = calculate_target_word_count_range(45.0)
+    r_60 = calculate_target_word_count_range(60.0)
+    r_90 = calculate_target_word_count_range(90.0)
+
+    # All ranges have valid bounds
+    for w_min, w_max in [r_20, r_30, r_35_42, r_45, r_60, r_90]:
+        assert w_min < w_max
+        assert w_min >= 20
+
+    # Specifically for the 35-42s window (Stage 4.3 benchmark), target is ~73-104 words
+    assert 70 <= r_35_42[0] <= 76
+    assert 100 <= r_35_42[1] <= 110
+
+    # Word counts scale monotonically with duration
+    assert r_20[0] < r_30[0] < r_35_42[0] < r_45[0] < r_60[0] < r_90[0]
+    assert r_20[1] < r_30[1] < r_35_42[1] < r_45[1] < r_60[1] < r_90[1]
+
+
+def test_parse_duration_from_text():
+    """Verify parsing duration hints from prompts, descriptions, and user inputs."""
+    from app.steps.script import parse_duration_from_text
+
+    # Range targets with hyphens, en-dashes, em-dashes, and 'to'
+    assert parse_duration_from_text("Why honey never spoils. Target duration: 35-42 seconds.") == (35.0, 42.0)
+    assert parse_duration_from_text("Target duration: 35–42s") == (35.0, 42.0)
+    assert parse_duration_from_text("Why honey never spoils in 35–42 seconds") == (35.0, 42.0)
+    assert parse_duration_from_text("Make it 35 to 42 seconds please") == (35.0, 42.0)
+
+    # Single duration targets
+    assert parse_duration_from_text("around 30 seconds") == 30.0
+    assert parse_duration_from_text("Target duration: 40 seconds") == 40.0
+    assert parse_duration_from_text("duration: 40s") == 40.0
+    assert parse_duration_from_text("How batteries store power in 40 seconds") == 40.0
+    assert parse_duration_from_text("duration: 45s") == 45.0
+
+    # No duration present
+    assert parse_duration_from_text("Topic without duration") is None
+    assert parse_duration_from_text("") is None
+    assert parse_duration_from_text(None) is None
+
+
+def test_resolve_requested_duration_priority():
+    """Verify priority hierarchy for resolving requested duration:
+    explicit args -> video.target_duration -> step.user_prompt -> video.description -> video.topic -> channel.settings -> default.
+    """
+    from app.steps.script import resolve_requested_duration
+
+    class MockVideo:
+        def __init__(self, target_duration=None, description=None, topic="Topic"):
+            self.target_duration = target_duration
+            self.description = description
+            self.topic = topic
+
+    class MockStep:
+        def __init__(self, user_prompt=None):
+            self.user_prompt = user_prompt
+
+    s_empty = MockStep(user_prompt=None)
+    ch_settings = {"target_duration": [50, 60]}
+
+    # 1. Explicit argument overrides everything
+    v1 = MockVideo(target_duration=30.0, description="duration: 50s", topic="Topic in 45s")
+    s1 = MockStep(user_prompt="duration: 40s")
+    assert resolve_requested_duration(video=v1, step=s1, channel_settings=ch_settings, explicit_duration=(35.0, 42.0)) == (35.0, 42.0)
+
+    # 2. video.target_duration overrides step.user_prompt, description, topic, channel_settings
+    assert resolve_requested_duration(video=v1, step=s1, channel_settings=ch_settings) == (27.0, 33.0)
+
+    # 3. step.user_prompt overrides description, topic, channel_settings
+    v2 = MockVideo(target_duration=None, description="duration: 50s", topic="Topic in 45s")
+    assert resolve_requested_duration(video=v2, step=s1, channel_settings=ch_settings) == (36.0, 44.0)
+
+    # 4. video.description overrides topic, channel_settings
+    assert resolve_requested_duration(video=v2, step=s_empty, channel_settings=ch_settings) == (45.0, 55.0)
+
+    # 5. video.topic overrides channel_settings
+    v3 = MockVideo(target_duration=None, description=None, topic="Ancient pyramids explained in 35–42 seconds")
+    assert resolve_requested_duration(video=v3, step=s_empty, channel_settings=ch_settings) == (35.0, 42.0)
+
+    # 5b. video.topic with single target overrides channel_settings
+    v3_single = MockVideo(target_duration=None, description=None, topic="Why airplanes fly in 40 seconds")
+    assert resolve_requested_duration(video=v3_single, step=s_empty, channel_settings=ch_settings) == (36.0, 44.0)
+
+    # 6. channel_settings used when video.topic has no duration hint
+    v4 = MockVideo(target_duration=None, description=None, topic="Topic without duration hint")
+    assert resolve_requested_duration(video=v4, step=s_empty, channel_settings=ch_settings) == (50.0, 60.0)
+
+    # 7. Default fallback when no duration is specified anywhere
+    assert resolve_requested_duration(video=v4, step=s_empty, channel_settings={}) == (36.0, 60.0)
+
+
+def test_resolve_requested_duration_topic_fallback_over_channel_settings():
+    """Specifically verify that video.topic is checked as a fallback before channel.settings."""
+    from app.steps.script import resolve_requested_duration
+
+    class MockVideo:
+        def __init__(self, topic, description=None, target_duration=None):
+            self.topic = topic
+            self.description = description
+            self.target_duration = target_duration
+
+    class MockStep:
+        user_prompt = None
+
+    step = MockStep()
+    channel_settings = {"target_duration": 60.0}
+
+    # Case A: video.topic specifies range (35–42s), channel has 60.0s -> topic wins
+    v_range = MockVideo(topic="The science of lightning in 35–42 seconds")
+    assert resolve_requested_duration(video=v_range, step=step, channel_settings=channel_settings) == (35.0, 42.0)
+
+    # Case B: video.topic specifies single target (40s), channel has 60.0s -> topic wins (expanded to ±10%)
+    v_single = MockVideo(topic="How microchips work in 40 seconds")
+    assert resolve_requested_duration(video=v_single, step=step, channel_settings=channel_settings) == (36.0, 44.0)
+
+    # Case C: video.topic has no duration -> channel_settings wins
+    v_none = MockVideo(topic="How microchips work")
+    assert resolve_requested_duration(video=v_none, step=step, channel_settings=channel_settings) == (54.0, 66.0)
+
+
+def test_validator_with_duration_aware_targets():
+    """Verify script validation against specific duration targets."""
+    from app.steps.script import validate_script_soft_checks
+
+    target = (35.0, 42.0)
+
+    # 1. Within tolerance: 88 words fits 35-42s perfectly
+    hook = "Why can sealed honey stay edible for thousands of years?"
+    concise_narration = (
+        f"{hook} Ripe honey has almost zero moisture, creating an intensely dry environment where microbes "
+        "cannot survive. Honey is also naturally acidic, and bees add an enzyme that produces trace hydrogen peroxide, "
+        "shutting down bacterial growth. Because of these combined physical and chemical shields, uncontaminated honey "
+        "stored in a dry, sealed jar stays stable indefinitely. But if water leaks in, wild yeast ferments the sugars "
+        "and spoils the batch. Honey lasts forever only when kept completely sealed."
+    )
+    assert 80 <= len(concise_narration.split()) <= 95
+    script_valid = _make_sample_script(hook=hook, narration=concise_narration)
+    warnings = validate_script_soft_checks(script_valid, target_duration=target)
+    assert not any("word count" in w.lower() for w in warnings)
+
+    # 2. Too long: The Stage 4.3 137-word script fails validation when target is 35-42s
+    long_narration = f"{hook} " + "word " * 136
+    script_long = _make_sample_script(hook=hook, narration=long_narration)
+    warnings_long = validate_script_soft_checks(script_long, target_duration=target)
+    assert any("too long" in w.lower() and "target: 73-104 words" in w.lower() for w in warnings_long)
+
+    # 3. Too short: 50 words fails validation when target is 35-42s
+    short_narration = f"{hook} " + "word " * 49
+    script_short = _make_sample_script(hook=hook, narration=short_narration)
+    warnings_short = validate_script_soft_checks(script_short, target_duration=target)
+    assert any("too short" in w.lower() and "target: 73-104 words" in w.lower() for w in warnings_short)
+
+
+def test_build_script_prompt_injects_duration_and_word_count():
+    """Verify prompt assembly injects target duration and word count constraints."""
+    from app.steps.script import build_script_prompt
+
+    prompt = build_script_prompt(
+        rules_text="Rules",
+        topic="Honey preservation",
+        description="Target duration: 35-42 seconds",
+        target_duration_range=(35.0, 42.0),
+        target_word_range=(73, 104),
+    )
+    assert "**Requested Duration**: 35 to 42 seconds" in prompt
+    assert "**Target Spoken Word Count**: 73 to 104 words" in prompt
+    assert "strictly between 73 and 104 words" in prompt
+
+
+def test_generate_script_step_retries_on_duration_aware_word_count_failure(monkeypatch):
+    """Verify that a script exceeding the duration-aware target triggers a retry with exact target feedback."""
+    from unittest.mock import MagicMock
+    from app.llm.types import LLMResult
+    from app.steps.script import generate_script_step
+
+    hook = "Why does sealed honey never spoil?"
+    # Draft 1: 137 words (too long for 35-42s)
+    long_narr = f"{hook} " + "word " * 136
+    script_long = _make_sample_script(hook=hook, narration=long_narr)
+
+    # Draft 2: 88 words (ideal concise narration for 35-42s)
+    concise_narr = (
+        f"{hook} Ripe honey has almost zero moisture, creating an intensely dry environment where microbes "
+        "cannot survive. Honey is also naturally acidic, and bees add an enzyme that produces trace hydrogen peroxide, "
+        "shutting down bacterial growth. Because of these combined physical and chemical shields, uncontaminated honey "
+        "stored in a dry, sealed jar stays stable indefinitely. But if water leaks in, wild yeast ferments the sugars "
+        "and spoils the batch. Honey lasts forever only when kept completely sealed."
+    )
+    script_concise = _make_sample_script(hook=hook, narration=concise_narr)
+
+    mock_llm = MagicMock()
+    mock_llm.provider_name = "openai"
+    mock_llm.model = "gpt-mock"
+
+    res1 = LLMResult(
+        output=script_long,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=100,
+        output_tokens=50,
+        latency_seconds=1.0,
+    )
+    res2 = LLMResult(
+        output=script_concise,
+        provider="openai",
+        model="gpt-mock",
+        input_tokens=120,
+        output_tokens=50,
+        latency_seconds=1.1,
+    )
+    mock_llm.generate_structured.side_effect = [res1, res2]
+
+    monkeypatch.setattr("app.steps.script.get_llm", lambda task: mock_llm)
+
+    class DummyVideo:
+        id = uuid.uuid4()
+        topic = "Honey preservation"
+        description = "Target duration: 35-42 seconds"
+        channel = None
+        channel_id = None
+
+    class DummyStep:
+        name = "script"
+        user_prompt = None
+        output = None
+
+    result = generate_script_step(DummyVideo(), {}, DummyStep())
+
+    assert mock_llm.generate_structured.call_count == 2
+    retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
+    assert "Narration word count is too long" in retry_prompt
+    assert "target: 73-104 words" in retry_prompt
+    assert result["meta"]["attempts"] == 2
+    assert result["meta"]["target_duration_seconds"] == [35.0, 42.0]
+    assert result["meta"]["target_word_count_range"] == [73, 104]
+    assert result["warnings"] == []
+
+
+def test_evaluate_script_quality_detects_redundant_summary_and_repetitive_subjects():
+    """Verify soft-checks detect meta-summary filler and repetitive sentence openings."""
+    from app.steps.script import evaluate_script_quality
+
+    hook = "Why does ancient honey never spoil in tombs?"
+    # Script with redundant meta-summary and repetitive "Honey" openings
+    narration_with_filler = (
+        f"{hook} Honey has very little moisture for bacteria to grow. "
+        "Honey is also naturally acidic, creating another barrier. "
+        "Honey can stop microbes with small amounts of hydrogen peroxide. "
+        "Together, these defenses help properly stored honey stay stable for a very long time. "
+        "Tombs keep jars sealed and dry."
+    )
+    script = _make_sample_script(hook=hook, narration=narration_with_filler)
+    issues = evaluate_script_quality(script, target_duration_range=(35.0, 45.0), target_word_range=(60, 100))
+
+    assert any("redundant summary filler" in i.lower() for i in issues)
+    assert any("repeatedly begins sentences with 'honey'" in i.lower() for i in issues)
+
+
+
 

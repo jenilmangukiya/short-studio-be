@@ -32,6 +32,7 @@ from app.voiceover import (
     estimate_scene_timings,
     generate_continuous_audio,
     get_voiceover_provider,
+    validate_voiceover_speed,
 )
 
 
@@ -79,6 +80,7 @@ def _build_output_payload(
             "total_duration_seconds": round(total_duration, 3),
             "timing_type": timing_type,
             "alignment_hash": alignment_hash,
+            "speed": speed,
         },
         # Top-level fields for downstream rendering, subtitle alignment, and compatibility
         "audio_file": continuous_file_rel,
@@ -254,22 +256,29 @@ def generate_voiceover_step(
     channel = getattr(video, "channel", None)
     channel_settings = getattr(channel, "settings", None) if channel else None
 
+    raw_default_speed = getattr(settings, "voiceover_default_speed", 1.0)
+    default_speed = validate_voiceover_speed(raw_default_speed, fallback=1.0) or 1.0
+
     default_voice = getattr(settings, "voiceover_default_voice", "af_heart") or "af_heart"
-    default_speed = float(getattr(settings, "voiceover_default_speed", 1.0) or 1.0)
 
     voice = default_voice
     speed = default_speed
+    warnings: list[str] = []
+
     if isinstance(channel_settings, dict):
         if channel_settings.get("voice") and isinstance(channel_settings["voice"], str):
             voice = channel_settings["voice"].strip()
-        if channel_settings.get("voice_speed") is not None:
-            try:
-                speed = float(channel_settings["voice_speed"])
-            except (ValueError, TypeError):
-                pass
+        if "voice_speed" in channel_settings and channel_settings["voice_speed"] is not None:
+            raw_channel_speed = channel_settings["voice_speed"]
+            validated_speed = validate_voiceover_speed(raw_channel_speed, fallback=None)
+            if validated_speed is not None:
+                speed = validated_speed
+            else:
+                warnings.append(
+                    f"Invalid voice_speed '{raw_channel_speed}' ignored; falling back to {default_speed}x."
+                )
 
     # 4. Check for user revision prompt on this step
-    warnings: list[str] = []
     if step and step.user_prompt:
         warnings.append(
             "Instructions are not used by the voiceover step. Edit the script or storyboard to change narration text."

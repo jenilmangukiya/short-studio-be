@@ -1225,3 +1225,302 @@ def test_beat_frame_allocations_insufficient_frames_guard():
     assert allocations == []
 
 
+# ===========================================================================
+# 10. Stage 4.5 Camera Movement & Visual Motion Fix Tests
+# ===========================================================================
+
+
+def _create_test_image(storage_root, video_id, idx):
+    img_bytes = create_solid_png(1024, 1536, 30, 60, 120)
+    rel = f"{video_id}/scene_{idx:02d}.png"
+    p = storage_root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(img_bytes)
+    return rel
+
+
+def _create_test_wav(storage_root, video_id, duration_sec):
+    wav_bytes = create_mock_wav(duration_sec, 24000)
+    rel = f"{video_id}/narration.wav"
+    p = storage_root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(wav_bytes)
+    return rel, duration_sec
+
+
+def test_render_new_image_beats_receive_duration_aware_movement(tmp_path, monkeypatch):
+    """Beats > 2.0s with image_strategy='new_image' receive active camera movement instead of static."""
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_dir", str(storage_root))
+
+    video = DummyVideo()
+    img_rel = _create_test_image(storage_root, video.id, 1)
+    wav_rel, total_dur = _create_test_wav(storage_root, video.id, duration_sec=4.5)
+
+    # 1 scene with 1 beat of 4.5s duration
+    sb_beats = [
+        {
+            "id": "beat_1_1",
+            "order": 1,
+            "narration_text": "A long establishing scene.",
+            "shot_type": "medium",
+            "image_strategy": "new_image",
+        }
+    ]
+    vo_beats = [
+        {
+            "id": "beat_1_1",
+            "order": 1,
+            "start_time": 0.0,
+            "end_time": 4.5,
+            "duration_seconds": 4.5,
+            "timing_type": "aligned",
+        }
+    ]
+
+    prev = {
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "shot_type": "medium",
+                        "visual_beats": sb_beats,
+                    }
+                ]
+            }
+        },
+        "images": {"images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}},
+        "voiceover": {
+            "audio_file": wav_rel,
+            "voiceover": {
+                "items": [
+                    {"index": 1, "status": "ok", "duration_seconds": 4.5, "visual_beats": vo_beats}
+                ]
+            },
+        },
+    }
+
+    res = generate_render_step(video, prev)
+    anims = res["render"]["animations"]
+    assert len(anims) == 1
+    assert anims[0]["render_mode"] == "visual_beat"
+    # Stage 4.5 fix: Must NOT be static! Must have active zoom motion for 4.5s hold!
+    assert anims[0]["animation_type"] == "zoom-in"
+    assert anims[0]["start_scale"] == 1.0
+    assert anims[0]["end_scale"] == 1.07  # 7% zoom for > 4.0s
+
+
+def test_render_beat_explicit_static_honored(tmp_path, monkeypatch):
+    """Beats > 2.0s with explicit camera_plan.movement='static' remain static as requested."""
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_dir", str(storage_root))
+
+    video = DummyVideo()
+    img_rel = _create_test_image(storage_root, video.id, 1)
+    wav_rel, total_dur = _create_test_wav(storage_root, video.id, duration_sec=3.5)
+
+    sb_beats = [
+        {
+            "id": "beat_1_1",
+            "order": 1,
+            "narration_text": "A static diagram shot.",
+            "shot_type": "medium",
+            "image_strategy": "new_image",
+            "camera_plan": {"movement": "static"},
+        }
+    ]
+    vo_beats = [
+        {
+            "id": "beat_1_1",
+            "order": 1,
+            "start_time": 0.0,
+            "end_time": 3.5,
+            "duration_seconds": 3.5,
+            "timing_type": "aligned",
+        }
+    ]
+
+    prev = {
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "shot_type": "medium",
+                        "visual_beats": sb_beats,
+                    }
+                ]
+            }
+        },
+        "images": {"images": {"items": [{"index": 1, "status": "ok", "file": img_rel}]}},
+        "voiceover": {
+            "audio_file": wav_rel,
+            "voiceover": {
+                "items": [
+                    {"index": 1, "status": "ok", "duration_seconds": 3.5, "visual_beats": vo_beats}
+                ]
+            },
+        },
+    }
+
+    res = generate_render_step(video, prev)
+    anims = res["render"]["animations"]
+    assert len(anims) == 1
+    assert anims[0]["animation_type"] == "static"
+    assert anims[0]["start_scale"] == anims[0]["end_scale"] == 1.0
+
+
+def test_render_alternating_zoom_directions_across_scenes(tmp_path, monkeypatch):
+    """Verify camera movement alternates directions (zoom-in -> zoom-out) across consecutive scenes."""
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_dir", str(storage_root))
+
+    video = DummyVideo()
+    img1_rel = _create_test_image(storage_root, video.id, 1)
+    img2_rel = _create_test_image(storage_root, video.id, 2)
+    wav_rel, total_dur = _create_test_wav(storage_root, video.id, duration_sec=6.0)
+
+    prev = {
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "shot_type": "medium",
+                        "visual_beats": [
+                            {"id": "b1_1", "order": 1, "shot_type": "medium", "image_strategy": "new_image"}
+                        ],
+                    },
+                    {
+                        "index": 2,
+                        "shot_type": "medium",
+                        "visual_beats": [
+                            {"id": "b2_1", "order": 1, "shot_type": "medium", "image_strategy": "new_image"}
+                        ],
+                    },
+                ]
+            }
+        },
+        "images": {
+            "images": {
+                "items": [
+                    {"index": 1, "status": "ok", "file": img1_rel},
+                    {"index": 2, "status": "ok", "file": img2_rel},
+                ]
+            }
+        },
+        "voiceover": {
+            "audio_file": wav_rel,
+            "voiceover": {
+                "items": [
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "duration_seconds": 3.0,
+                        "visual_beats": [{"id": "b1_1", "order": 1, "start_time": 0.0, "end_time": 3.0, "duration_seconds": 3.0}],
+                    },
+                    {
+                        "index": 2,
+                        "status": "ok",
+                        "duration_seconds": 3.0,
+                        "visual_beats": [{"id": "b2_1", "order": 1, "start_time": 3.0, "end_time": 6.0, "duration_seconds": 3.0}],
+                    },
+                ]
+            },
+        },
+    }
+
+    res = generate_render_step(video, prev)
+    anims = res["render"]["animations"]
+    assert len(anims) == 2
+    # Beat 1 starts with zoom-in
+    assert anims[0]["animation_type"] == "zoom-in"
+    assert anims[0]["end_scale"] == 1.05
+    # Beat 2 alternates to zoom-out (pull-out)
+    assert anims[1]["animation_type"] == "zoom-out"
+    assert anims[1]["start_scale"] == 1.05
+    assert anims[1]["end_scale"] == 1.00
+
+
+def test_render_cross_scene_reuse_receives_active_movement(tmp_path, monkeypatch):
+    """Verify cross-scene reused image beat > 2.0s receives active camera movement."""
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_dir", str(storage_root))
+
+    video = DummyVideo()
+    img1_rel = _create_test_image(storage_root, video.id, 1)
+    img2_rel = _create_test_image(storage_root, video.id, 2)
+    wav_rel, total_dur = _create_test_wav(storage_root, video.id, duration_sec=6.0)
+
+    prev = {
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "shot_type": "medium",
+                        "visual_beats": [
+                            {"id": "b1_1", "order": 1, "shot_type": "medium", "image_strategy": "new_image"}
+                        ],
+                    },
+                    {
+                        "index": 2,
+                        "shot_type": "medium",
+                        "visual_beats": [
+                            {
+                                "id": "b2_1",
+                                "order": 1,
+                                "shot_type": "medium",
+                                "image_strategy": "reuse_previous_image",
+                                "source_image_id": "1",
+                            }
+                        ],
+                    },
+                ]
+            }
+        },
+        "images": {
+            "images": {
+                "items": [
+                    {"index": 1, "status": "ok", "file": img1_rel},
+                    {"index": 2, "status": "ok", "file": img2_rel},
+                ]
+            }
+        },
+        "voiceover": {
+            "audio_file": wav_rel,
+            "voiceover": {
+                "items": [
+                    {
+                        "index": 1,
+                        "status": "ok",
+                        "duration_seconds": 3.0,
+                        "visual_beats": [{"id": "b1_1", "order": 1, "start_time": 0.0, "end_time": 3.0, "duration_seconds": 3.0}],
+                    },
+                    {
+                        "index": 2,
+                        "status": "ok",
+                        "duration_seconds": 3.0,
+                        "visual_beats": [{"id": "b2_1", "order": 1, "start_time": 3.0, "end_time": 6.0, "duration_seconds": 3.0}],
+                    },
+                ]
+            },
+        },
+    }
+
+    res = generate_render_step(video, prev)
+    anims = res["render"]["animations"]
+    assert len(anims) == 2
+    # Beat 2 resolved to Scene 1's image asset
+    assert anims[1]["image_file"] == img1_rel
+    # And received active camera movement
+    assert anims[1]["animation_type"] == "zoom-out"
+    assert anims[1]["render_mode"] == "visual_beat"
+
+
+

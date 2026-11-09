@@ -17,7 +17,7 @@ from .continuous import (
     split_script_into_chunks,
 )
 from .factory import get_voiceover_provider
-from .kokoro import KokoroVoiceoverProvider, normalize_text_for_tts
+from .kokoro import KokoroVoiceoverProvider, normalize_text_for_tts, validate_voiceover_speed
 from .mock import MockVoiceoverProvider, create_mock_wav
 from .silence import trim_silence_samples, trim_silence_wav
 from .types import VoiceoverResult
@@ -43,4 +43,5 @@ __all__ = [
     "split_script_into_chunks",
     "trim_silence_samples",
     "trim_silence_wav",
+    "validate_voiceover_speed",
 ]

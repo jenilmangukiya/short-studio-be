@@ -1,6 +1,7 @@
 """Kokoro-82M ONNX voiceover generation provider."""
 
 import io
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -105,6 +106,25 @@ def resolve_kokoro_language(voice: str) -> str:
     return "en-us"
 
 
+def validate_voiceover_speed(speed: Any, fallback: float | None = 1.0) -> float | None:
+    """Validate and sanitize a voiceover speed multiplier.
+
+    Accepts values within [0.5, 2.0]. Returns `fallback` if speed is None,
+    not a finite float, or outside [0.5, 2.0].
+    """
+    if speed is None:
+        return fallback
+    try:
+        val = float(speed)
+        if math.isnan(val) or math.isinf(val):
+            return fallback
+        if 0.5 <= val <= 2.0:
+            return round(val, 4)
+        return fallback
+    except (ValueError, TypeError):
+        return fallback
+
+
 class KokoroVoiceoverProvider(BaseVoiceoverProvider):
     """Voiceover provider running Kokoro-82M locally via ONNX Runtime."""
 
@@ -168,6 +188,7 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
     ) -> tuple[bytes, int, float]:
         kokoro = self._get_kokoro_instance()
         lang = resolve_kokoro_language(voice)
+        validated_speed = validate_voiceover_speed(speed, fallback=1.0) or 1.0
 
         try:
             import soundfile as sf
@@ -198,7 +219,7 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
                 sample_rate = 24000
                 for b_idx, batch_phonemes in enumerate(batches):
                     part_samples, sample_rate = kokoro._create_audio(
-                        batch_phonemes, voice_style, float(speed)
+                        batch_phonemes, voice_style, float(validated_speed)
                     )
                     b_terminal = bool(re.search(r"[.!?]\s*$", batch_phonemes.strip()))
                     trimmed_part = trim_silence_samples(
@@ -216,7 +237,7 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
                     samples, sample_rate = kokoro.create(
                         text=tts_text,
                         voice=voice,
-                        speed=float(speed),
+                        speed=float(validated_speed),
                         lang=lang,
                         trim=False,
                     )
@@ -224,7 +245,7 @@ class KokoroVoiceoverProvider(BaseVoiceoverProvider):
                     samples, sample_rate = kokoro.create(
                         text=tts_text,
                         voice=voice,
-                        speed=float(speed),
+                        speed=float(validated_speed),
                         lang=lang,
                     )
                 is_terminal = bool(re.search(r"[.!?]\s*$", tts_text.strip()))
