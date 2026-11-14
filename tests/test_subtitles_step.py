@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import Base
 from app.models import Channel, User, Video, VideoStep
-from app.pipeline import STEPS, HANDLERS, init_steps, rerun_step
+from app.pipeline import LEGACY_STEPS, STEPS, HANDLERS, init_steps, rerun_step
 from app.steps.subtitles import PipelineError, generate_subtitles_step
 from app.subtitles import (
     BaseSubtitleProvider,
@@ -322,14 +322,7 @@ def test_generate_subtitles_step_full_execution(tmp_path, monkeypatch):
 
 def test_pipeline_steps_includes_subtitles_at_correct_position():
     assert "subtitles" in STEPS
-    assert STEPS == [
-        "script",
-        "storyboard",
-        "images",
-        "voiceover",
-        "render",
-        "subtitles",
-    ]
+    assert STEPS[-1] == "subtitles"
     assert "subtitles" in HANDLERS
     assert "subtitle" in HANDLERS
 
@@ -357,8 +350,8 @@ def test_rerun_subtitles_preserves_video_output_path():
         session.add(video)
         session.flush()
 
-        # Initialize all 6 steps
-        init_steps(session, video)
+        # Initialize all 6 legacy steps
+        init_steps(session, video, steps=LEGACY_STEPS)
         assert len(video.steps) == 6
         assert video.steps[4].name == "render"
         assert video.steps[5].name == "subtitles"
@@ -405,7 +398,7 @@ def test_rerun_render_invalidates_subtitles_and_video_output_path():
         session.add(video)
         session.flush()
 
-        init_steps(session, video)
+        init_steps(session, video, steps=LEGACY_STEPS)
         for s in video.steps:
             s.status = "done"
         video.output_path = "/storage/test_airplane.mp4"
@@ -598,7 +591,7 @@ def test_download_endpoint_rejects_stale_or_regenerating_captioned_output(
         captioned_mp4.write_bytes(b"OLD_CAPTIONED_MP4_CONTENT")
         video.output_path = str(raw_mp4)
 
-        init_steps(session, video)
+        init_steps(session, video, steps=LEGACY_STEPS)
         for s in video.steps:
             s.status = "done"
             s.output = {"ok": True}

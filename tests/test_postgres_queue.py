@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, engine
 from app.models import Channel, PipelineJob, User, Video, VideoStep
-from app.pipeline import init_steps
+from app.pipeline import LEGACY_STEPS, init_steps
 from app.queue.engine import (
     JobConflictError,
     QueueError,
@@ -80,7 +80,7 @@ def _create_pg_video(db: Session, pg_cleanup, require_approval: bool = True) -> 
     )
     db.add(video)
     db.flush()
-    init_steps(db, video)
+    init_steps(db, video, steps=LEGACY_STEPS)
     db.commit()
     db.refresh(video)
     return video

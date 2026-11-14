@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import Channel, PipelineJob, User, Video, VideoStep
-from app.pipeline import init_steps
+from app.pipeline import LEGACY_STEPS, init_steps
 from app.queue.engine import (
     JobConflictError,
     PipelineError,
@@ -52,7 +52,7 @@ def _create_test_video(session: Session, require_approval: bool = True) -> Video
     session.add(video)
     session.flush()
 
-    init_steps(session, video)
+    init_steps(session, video, steps=LEGACY_STEPS)
     return video
 
 

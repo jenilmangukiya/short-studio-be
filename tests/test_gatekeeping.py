@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import Channel, User, Video, VideoStep, VideoStepRevision
 from app.pipeline import (
+    LEGACY_STEPS,
     STEPS,
     PipelineError,
     approve_step,
@@ -51,7 +52,7 @@ def _create_test_video(session: Session, require_approval: bool = True) -> Video
     session.add(video)
     session.flush()
 
-    init_steps(session, video)
+    init_steps(session, video, steps=LEGACY_STEPS)
     return video
 
 
