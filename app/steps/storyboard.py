@@ -19,12 +19,20 @@ from sqlalchemy.orm import Session, object_session
 from app.animation import plan_scene_animation
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
+from app.schemas import (
+    CameraDirection,
+    CharacterState,
+    EntityBindings,
+    FoleyCue,
+    StoryboardBeat,
+)
 from app.steps.prompt_compose import (
     COMPOSITION_RULES,
     MAX_FINAL_PROMPT_LENGTH,
     compose_final_prompt,
     recompute_final_prompts,
 )
+from app.steps.storyboard_validation import validate_connected_storyboard
 
 # Single source of truth for allowed shot framing types
 ALLOWED_SHOT_TYPES: tuple[str, ...] = (
@@ -283,6 +291,34 @@ class VisualBeat(BaseModel):
         default=None,
         description="Optional reference to an existing image if reusing a specific image asset",
     )
+    entity_bindings: EntityBindings | None = Field(
+        default=None,
+        description="Bound entity IDs from Video Bible",
+    )
+    camera: CameraDirection | None = Field(
+        default=None,
+        description="Camera shot type, angle, and movement",
+    )
+    character_state: CharacterState | None = Field(
+        default=None,
+        description="Character pose, expression, and action in progress",
+    )
+    environment_state_override: str | None = Field(
+        default=None,
+        description="Environment lighting or state override for this moment",
+    )
+    transition_from_previous: str = Field(
+        default="same_scene_reframe",
+        description="Transition type from previous beat",
+    )
+    continuity_intent: str = Field(
+        default="",
+        description="Directorial intent for visual continuity",
+    )
+    foley_cues: list[FoleyCue] = Field(
+        default_factory=list,
+        description="Foley audio cues for this beat",
+    )
 
     @property
     def image_id(self) -> str:
@@ -322,11 +358,40 @@ class SceneInput(BaseModel):
         description="The specific environment or background setting for this shot (e.g. data center server hall, passenger cabin, outer space, minimal technical void)",
     )
     image_prompt: str = Field(
-        description="Rich scene-specific visual description specifying subject, environment, lighting, composition, and focal point. No text, logos, or watermarks."
+        default="",
+        description="Rich visual description. Optional when Video Bible is active, as application code composes the final prompt.",
     )
     uses_anchor: bool = Field(
         default=False,
         description="True ONLY if the recurring anchor object is the central physical subject of this specific shot. Set to false for establishing shots, interior POV, diagrams, cutaways, etc.",
+    )
+    entity_bindings: EntityBindings | None = Field(
+        default=None,
+        description="Bound entity IDs from Video Bible (character, environment, objects, concept)",
+    )
+    camera: CameraDirection | None = Field(
+        default=None,
+        description="Camera shot type, angle, focal point, and movement",
+    )
+    character_state: CharacterState | None = Field(
+        default=None,
+        description="Character pose, expression, and action in progress if character appears",
+    )
+    environment_state_override: str | None = Field(
+        default=None,
+        description="Environment lighting or state override for this moment",
+    )
+    transition_from_previous: str = Field(
+        default="establishing",
+        description="Transition type from previous scene",
+    )
+    continuity_intent: str = Field(
+        default="",
+        description="Directorial intent for visual continuity",
+    )
+    foley_cues: list[FoleyCue] = Field(
+        default_factory=list,
+        description="Foley sound design cues for this scene",
     )
     animation: AnimationPlanInput | None = Field(
         default=None,
@@ -366,6 +431,14 @@ def normalize_scene_visual_beats(
     fallback_narration = str(_extract_sc("narration", "") or "").strip()
     fallback_desc = fallback_purpose or fallback_prompt or f"Scene {scene_index} visual moment"
 
+    fallback_bindings = _extract_sc("entity_bindings", None)
+    fallback_camera = _extract_sc("camera", None)
+    fallback_char_state = _extract_sc("character_state", None)
+    fallback_env_override = _extract_sc("environment_state_override", None)
+    fallback_transition = _extract_sc("transition_from_previous", "same_scene_reframe")
+    fallback_continuity = _extract_sc("continuity_intent", "")
+    fallback_foley = _extract_sc("foley_cues", [])
+
     if not raw_beats:
         return [
             VisualBeat(
@@ -381,6 +454,13 @@ def normalize_scene_visual_beats(
                 visual_technique=fallback_tech or "cinematic-photo",
                 image_strategy="new_image",
                 source_image_id=str(scene_index),
+                entity_bindings=fallback_bindings,
+                camera=fallback_camera,
+                character_state=fallback_char_state,
+                environment_state_override=fallback_env_override,
+                transition_from_previous=fallback_transition or "same_scene_reframe",
+                continuity_intent=fallback_continuity or "",
+                foley_cues=fallback_foley or [],
             )
         ]
 
@@ -449,6 +529,13 @@ def normalize_scene_visual_beats(
                 visual_technique=b_tech,
                 image_strategy=b_strat,
                 source_image_id=b_source_id,
+                entity_bindings=b_dict.get("entity_bindings") or fallback_bindings,
+                camera=b_dict.get("camera") or fallback_camera,
+                character_state=b_dict.get("character_state") or fallback_char_state,
+                environment_state_override=b_dict.get("environment_state_override") or fallback_env_override,
+                transition_from_previous=b_dict.get("transition_from_previous") or fallback_transition or "same_scene_reframe",
+                continuity_intent=b_dict.get("continuity_intent") or fallback_continuity or "",
+                foley_cues=b_dict.get("foley_cues") or fallback_foley or [],
             )
         )
 
@@ -1273,13 +1360,19 @@ def _generate_mock_visual_beats_for_scene(
     return beats_out
 
 
-def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
+def split_script_for_mock(
+    narration: str,
+    video_bible_data: dict[str, Any] | None = None,
+    creative_direction_data: dict[str, Any] | None = None,
+) -> tuple[list[SceneInput], str]:
     """Deterministically split script narration into scenes along sentence/clause boundaries.
 
     Aims for 8-12 scenes. If fewer than 8 sentences, splits long sentences at commas.
     If the text is too short (<8), produces as many valid scenes as possible without crashing.
     Assigns rotating shot types, clean placeholder image prompts, and sets uses_anchor by scene index
     membership (false for scenes 2 and 5, true for all others).
+
+    When video_bible_data is provided, binds entities, camera directions, and character states.
 
     Returns:
         tuple of (scenes, subject_anchor)
@@ -1386,6 +1479,37 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         merged = f"{chunks[best_idx]} {chunks[best_idx + 1]}"
         chunks = chunks[:best_idx] + [merged] + chunks[best_idx + 2:]
 
+    # Resolve Video Bible entities if available
+    char_id = None
+    env_id = None
+    obj_id = None
+    concept_id = None
+    if video_bible_data:
+        entities = video_bible_data.get("entities") or {}
+        if hasattr(entities, "model_dump"):
+            entities = entities.model_dump()
+        chars = entities.get("characters") or []
+        envs = entities.get("environments") or []
+        objs = entities.get("objects_and_props") or []
+        concepts = entities.get("concepts_and_diagrams") or []
+
+        allow_char = True
+        if creative_direction_data:
+            p_cfg = creative_direction_data.get("protagonist_config") or {}
+            if hasattr(p_cfg, "model_dump"):
+                p_cfg = p_cfg.model_dump()
+            if p_cfg.get("character_count") == "none":
+                allow_char = False
+
+        if allow_char and chars:
+            char_id = str(chars[0].get("id"))
+        if envs:
+            env_id = str(envs[0].get("id"))
+        if objs:
+            obj_id = str(objs[0].get("id"))
+        if concepts:
+            concept_id = str(concepts[0].get("id"))
+
     # Step 4: Construct scenes with rotating story beats, shot types, and distinct visual purposes
     scenes: list[SceneInput] = []
     for i, chunk in enumerate(chunks):
@@ -1396,6 +1520,75 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         anim_obj = AnimationPlanInput(**anim_data) if anim_data else None
 
         mock_beats = _generate_mock_visual_beats_for_scene(chunk, scene_idx, beat)
+
+        # Entity and Camera binding
+        scene_bindings: EntityBindings | None = None
+        scene_cam: CameraDirection | None = None
+        scene_char_state: CharacterState | None = None
+        scene_trans: str = "establishing" if scene_idx == 1 else "same_scene_reframe"
+
+        if video_bible_data:
+            if concept_id and scene_idx == 4:
+                # Scene 4 represents a standalone conceptual diagram beat
+                scene_bindings = EntityBindings(
+                    character_id=None,
+                    environment_id=None,
+                    object_ids=[],
+                    concept_id=concept_id,
+                )
+                scene_cam = CameraDirection(
+                    shot_type="medium",
+                    camera_angle="eye_level",
+                    focal_point_description="Central schematic diagram flow",
+                    movement_type="static",
+                )
+                scene_char_state = None
+                scene_trans = "explanatory_cutaway"
+            else:
+                bound_objs = [obj_id] if (obj_id and scene_idx % 2 == 1) else []
+                scene_bindings = EntityBindings(
+                    character_id=char_id,
+                    environment_id=env_id,
+                    object_ids=bound_objs,
+                    concept_id=None,
+                )
+                valid_shots = ("extreme_close_up", "close_up", "medium_close_up", "medium", "wide", "extreme_wide")
+                raw_shot = beat["shot_type"].replace("-", "_")
+                shot_for_cam = raw_shot if raw_shot in valid_shots else "medium"
+
+                valid_angles = ("eye_level", "low_angle", "high_angle", "top_down", "side_profile", "dutch_angle")
+                raw_angle = beat["camera_angle"].replace("-", "_")
+                angle_for_cam = raw_angle if raw_angle in valid_angles else "eye_level"
+
+                scene_cam = CameraDirection(
+                    shot_type=shot_for_cam,
+                    camera_angle=angle_for_cam,
+                    focal_point_description=beat["focal_point"],
+                    movement_type="push_in" if scene_idx % 2 == 1 else "static",
+                )
+                scene_char_state = (
+                    CharacterState(
+                        pose_description="Resting in bed with eyes half-closed",
+                        expression_description="Drowsy and relaxed",
+                        action_in_progress="Drifting off to sleep",
+                    )
+                    if char_id
+                    else None
+                )
+                if scene_idx == 1:
+                    scene_trans = "establishing"
+                elif scene_idx == 5 and concept_id:
+                    scene_trans = "resolution_return"
+                elif scene_idx % 2 == 0:
+                    scene_trans = "action_reaction"
+                else:
+                    scene_trans = "same_scene_reframe"
+
+            for mb in mock_beats:
+                mb.entity_bindings = scene_bindings
+                mb.camera = scene_cam
+                mb.character_state = scene_char_state
+                mb.transition_from_previous = scene_trans
 
         scenes.append(
             SceneInput(
@@ -1410,6 +1603,10 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
                 uses_anchor=uses_anchor,
                 animation=anim_obj,
                 visual_beats=mock_beats,
+                entity_bindings=scene_bindings,
+                camera=scene_cam,
+                character_state=scene_char_state,
+                transition_from_previous=scene_trans,
             )
         )
 
@@ -1425,8 +1622,10 @@ def build_storyboard_prompt(
     channel_niche: str | None = None,
     previous_storyboard: dict[str, Any] | None = None,
     revision_instruction: str | None = None,
+    creative_direction_data: dict[str, Any] | None = None,
+    video_bible_data: dict[str, Any] | None = None,
 ) -> str:
-    """Assemble the comprehensive prompt including script context, visual style, and revision details."""
+    """Assemble the comprehensive prompt including script context, visual style, Video Bible, and revision details."""
     sections: list[str] = [rules_text.strip(), "\n## Video Script to Storyboard"]
 
     sections.append(f"- **Video Topic**: {topic}")
@@ -1443,6 +1642,95 @@ def build_storyboard_prompt(
     narration = script_data.get("narration", "")
     sections.append(f"\n### Spoken Script Narration to Split (Reproduce Verbatim):\n{narration}")
 
+    if creative_direction_data:
+        sections.append("\n### Approved Creative Direction")
+        sections.append(f"- **Format Archetype**: {creative_direction_data.get('format_archetype', '')}")
+        sections.append(f"- **Narrative Angle**: {creative_direction_data.get('storytelling_angle', '')}")
+        sections.append(f"- **Central Thesis**: {creative_direction_data.get('central_thesis', '')}")
+        sections.append(f"- **Tone**: {creative_direction_data.get('tone', '')}")
+        protagonist = creative_direction_data.get("protagonist_config", {})
+        if isinstance(protagonist, dict):
+            sections.append(f"- **Protagonist Configuration**: {protagonist.get('character_count', 'none')}")
+            if protagonist.get("archetype_summary"):
+                sections.append(f"- **Character Archetype**: {protagonist.get('archetype_summary')}")
+        constraints = creative_direction_data.get("creative_constraints", [])
+        if constraints:
+            sections.append("- **Creative Constraints**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
+
+    if video_bible_data:
+        sections.append("\n### Approved Video Bible (Single Source of Truth)")
+        entities = video_bible_data.get("entities") or {}
+        if hasattr(entities, "model_dump"):
+            entities = entities.model_dump()
+        art_dir = video_bible_data.get("art_direction") or {}
+        if hasattr(art_dir, "model_dump"):
+            art_dir = art_dir.model_dump()
+
+        chars = entities.get("characters") or []
+        envs = entities.get("environments") or []
+        objs = entities.get("objects_and_props") or []
+        concepts = entities.get("concepts_and_diagrams") or []
+
+        sections.append("#### Available Entity Catalog:")
+        if chars:
+            sections.append("- **Characters**:")
+            for c in chars:
+                sections.append(f"  - `{c.get('id')}`: {c.get('name')} ({c.get('visual_summary')})")
+        else:
+            sections.append("- **Characters**: None (character_count is none)")
+
+        if envs:
+            sections.append("- **Environments**:")
+            for e in envs:
+                sections.append(f"  - `{e.get('id')}`: {e.get('name')} - {e.get('description')}")
+
+        if objs:
+            sections.append("- **Objects & Props**:")
+            for o in objs:
+                sections.append(f"  - `{o.get('id')}`: {o.get('name')} ({o.get('visual_details')})")
+
+        if concepts:
+            sections.append("- **Concepts & Diagrams**:")
+            for cp in concepts:
+                sections.append(f"  - `{cp.get('id')}`: {cp.get('name')} ({cp.get('diagram_style')})")
+
+        sections.append("\n#### Art Direction:")
+        sections.append(f"- **Visual Genre**: {art_dir.get('visual_genre')}")
+        sections.append(f"- **Lighting Philosophy**: {art_dir.get('lighting_philosophy')}")
+        sections.append(f"- **Rendering Texture**: {art_dir.get('rendering_texture')}")
+        sections.append(f"- **Color Palette**: {', '.join(str(p) for p in (art_dir.get('primary_palette_hex') or []))}")
+        sections.append(f"- **Negative Anchors**: {', '.join(str(n) for n in (art_dir.get('negative_anchors') or []))}")
+
+        sections.append(
+            "\n#### Directorial Intent Instructions:\n"
+            "- Bind entities using exact catalog IDs in `entity_bindings`.\n"
+            "- Set `camera` framing, angle, and focal point.\n"
+            "- If characters exist, specify `character_state` (pose, expression, action).\n"
+            "- Motivate transitions using `transition_from_previous`.\n"
+            "- For standalone conceptual diagrams, set `concept_id` and leave `character_id` and `environment_id` as null.\n"
+            "- You do NOT need to write an `image_prompt`. Application code composes the final prompt from the Video Bible."
+        )
+
+        cd_char_count = (
+            creative_direction_data.get("protagonist_config", {}).get("character_count")
+            if creative_direction_data and isinstance(creative_direction_data.get("protagonist_config"), dict)
+            else None
+        )
+        if (not chars) or (str(cd_char_count).lower() == "none"):
+            sections.append(
+                "\n> **CRITICAL CHARACTER RULE:** Character count is NONE. No characters exist in the Video Bible.\n"
+                "> You MUST NOT introduce, invent, or name any protagonist, person, or character.\n"
+                "> `character_id` and `character_state` must be `null` across all beats.\n"
+                "> Use other visual approaches instead: first-person POV, environment details, object close-ups, macro photography, physical phenomena, or conceptual diagrams."
+            )
+
+        sections.append(
+            "\n> **SCIENTIFIC ACCURACY & UNCERTAINTY RULE:**\n"
+            "> Preserve scientific uncertainty from the approved script.\n"
+            "> If the script frames an explanation as a hypothesis, leading theory, or possibility (e.g. 'one leading theory', 'scientists believe', 'might be', 'could be', 'we don't fully know yet'), "
+            "> DO NOT turn it into an established, absolute fact. Keep visual metaphors and diagram descriptions aligned with the script's epistemic status (e.g. theoretical model, illustrative hypothesis)."
+        )
+
     if channel_name or channel_niche:
         sections.append("\n### Channel Context")
         if channel_name:
@@ -1450,12 +1738,13 @@ def build_storyboard_prompt(
         if channel_niche:
             sections.append(f"- **Niche**: {channel_niche}")
 
-    sections.append("\n### Target Visual Style (Context Only)")
-    sections.append(
-        f"The visual style applied during rendering will be:\n\"{visual_style}\"\n"
-        "IMPORTANT: Do NOT include these style descriptors in your image prompts. "
-        "Describe ONLY the physical subject, mechanism, or action."
-    )
+    if not video_bible_data:
+        sections.append("\n### Target Visual Style (Context Only)")
+        sections.append(
+            f"The visual style applied during rendering will be:\n\"{visual_style}\"\n"
+            "IMPORTANT: Do NOT include these style descriptors in your image prompts. "
+            "Describe ONLY the physical subject, mechanism, or action."
+        )
 
     if previous_storyboard and revision_instruction:
         sections.append("\n## REVISION MODE")
@@ -1503,6 +1792,13 @@ def generate_storyboard_step(
 
     script_narration: str = script_data["narration"]
 
+    # Extract upstream creative direction and video bible (present in 8-step pipeline)
+    cd_step = prev.get("creative_direction")
+    cd_data = cd_step.get("creative_direction") if isinstance(cd_step, dict) else None
+
+    vb_step = prev.get("video_bible")
+    vb_data = vb_step.get("video_bible") if isinstance(vb_step, dict) else None
+
     # 3. Resolve Visual Style & Style Source
     channel = getattr(video, "channel", None)
     channel_settings = getattr(channel, "settings", None) if channel else None
@@ -1542,6 +1838,8 @@ def generate_storyboard_step(
         channel_niche=channel_niche,
         previous_storyboard=previous_storyboard,
         revision_instruction=step.user_prompt,
+        creative_direction_data=cd_data,
+        video_bible_data=vb_data,
     )
 
     # 7. Route LLM
@@ -1558,7 +1856,11 @@ def generate_storyboard_step(
 
     if llm.provider_name == "mock":
         # Deterministic local splitter for mock provider with zero AI cost
-        raw_scenes, subject_anchor = split_script_for_mock(script_narration)
+        raw_scenes, subject_anchor = split_script_for_mock(
+            script_narration,
+            video_bible_data=vb_data,
+            creative_direction_data=cd_data,
+        )
         environment_anchor = DEFAULT_MOCK_ENVIRONMENT_ANCHOR
         total_in_tokens = max(1, len(prompt.split()))
         total_out_tokens = max(25, 20 * len(raw_scenes))
@@ -1658,6 +1960,8 @@ def generate_storyboard_step(
             video_title=getattr(video, "title", None),
             prev_scene=prev_s,
             next_scene=next_s,
+            video_bible=vb_data,
+            creative_direction=cd_data,
         )
 
         # Extract or resolve animation plan for this scene
@@ -1690,6 +1994,19 @@ def generate_storyboard_step(
             fallback_scene=s,
         )
 
+        # Extract directorial intent fields
+        raw_eb = getattr(s, "entity_bindings", None)
+        eb_dict = raw_eb.model_dump() if hasattr(raw_eb, "model_dump") else (dict(raw_eb) if isinstance(raw_eb, dict) else None)
+
+        raw_cam = getattr(s, "camera", None)
+        cam_dict = raw_cam.model_dump() if hasattr(raw_cam, "model_dump") else (dict(raw_cam) if isinstance(raw_cam, dict) else None)
+
+        raw_cs = getattr(s, "character_state", None)
+        cs_dict = raw_cs.model_dump() if hasattr(raw_cs, "model_dump") else (dict(raw_cs) if isinstance(raw_cs, dict) else None)
+
+        raw_fc = getattr(s, "foley_cues", []) or []
+        fc_list = [f.model_dump() if hasattr(f, "model_dump") else dict(f) for f in raw_fc]
+
         final_scenes.append(
             {
                 "index": idx,
@@ -1700,16 +2017,85 @@ def generate_storyboard_step(
                 "focal_point": getattr(s, "focal_point", "") or "",
                 "visual_technique": getattr(s, "visual_technique", "cinematic-photo") or "cinematic-photo",
                 "environment": getattr(s, "environment", "") or "",
-                "image_prompt": s.image_prompt,
+                "image_prompt": getattr(s, "image_prompt", "") or final_prompt,
                 "uses_anchor": bool(s.uses_anchor),
                 "final_prompt": final_prompt,
                 "est_seconds": est_sec,
                 "animation": anim_plan,
                 "visual_beats": [b.model_dump() for b in normalized_beats],
+                "entity_bindings": eb_dict,
+                "camera": cam_dict,
+                "character_state": cs_dict,
+                "environment_state_override": getattr(s, "environment_state_override", None),
+                "transition_from_previous": getattr(s, "transition_from_previous", "establishing") or "establishing",
+                "continuity_intent": getattr(s, "continuity_intent", "") or "",
+                "foley_cues": fc_list,
             }
         )
     total_seconds = round(accumulated_seconds, 1)
     total_visual_beats = sum(len(sc["visual_beats"]) for sc in final_scenes)
+
+    # 8b. Construct flat typed StoryboardBeat models for connected storyboard
+    flat_beats: list[dict[str, Any]] = []
+    for sc in final_scenes:
+        for b in sc.get("visual_beats", []):
+            eb_raw = b.get("entity_bindings") or sc.get("entity_bindings") or {}
+            eb_obj = EntityBindings.model_validate(eb_raw) if eb_raw else EntityBindings()
+
+            valid_cam_shots = ("extreme_close_up", "close_up", "medium_close_up", "medium", "wide", "extreme_wide")
+            valid_cam_angles = ("eye_level", "low_angle", "high_angle", "top_down", "side_profile", "dutch_angle")
+            cam_raw = b.get("camera") or sc.get("camera") or {}
+            if cam_raw:
+                cam_obj = CameraDirection.model_validate(cam_raw)
+            else:
+                raw_st = str(sc.get("shot_type", "medium")).replace("-", "_")
+                raw_ca = str(sc.get("camera_angle", "eye_level")).replace("-", "_")
+                cam_obj = CameraDirection(
+                    shot_type=raw_st if raw_st in valid_cam_shots else "medium",
+                    camera_angle=raw_ca if raw_ca in valid_cam_angles else "eye_level",
+                    focal_point_description=str(sc.get("focal_point", "")),
+                )
+
+            cs_raw = b.get("character_state") or sc.get("character_state")
+            cs_obj = CharacterState.model_validate(cs_raw) if cs_raw else None
+
+            valid_transitions = (
+                "establishing",
+                "same_scene_reframe",
+                "action_reaction",
+                "spatial_cutaway",
+                "location_change",
+                "explanatory_cutaway",
+                "surreal_metaphor",
+                "resolution_return",
+            )
+            raw_trans = str(b.get("transition_from_previous") or sc.get("transition_from_previous") or "same_scene_reframe")
+            trans_clean = raw_trans if raw_trans in valid_transitions else "same_scene_reframe"
+
+            sb_beat = StoryboardBeat(
+                beat_id=b.get("id") or f"beat_{sc['index']}_{b.get('order', 1)}",
+                scene_index=sc["index"],
+                order=b.get("order", 1),
+                narration_slice=b.get("narration_text") or sc.get("narration", ""),
+                duration_est_seconds=float(b.get("duration_seconds") or sc.get("est_seconds", 3.0)),
+                entity_bindings=eb_obj,
+                transition_from_previous=trans_clean,
+                continuity_intent=b.get("continuity_intent") or sc.get("continuity_intent", ""),
+                camera=cam_obj,
+                character_state=cs_obj,
+                environment_state_override=b.get("environment_state_override") or sc.get("environment_state_override"),
+                foley_cues=[FoleyCue.model_validate(fc) for fc in b.get("foley_cues", [])],
+            )
+            flat_beats.append(sb_beat.model_dump())
+
+    # 8c. Run Pre-Image Connected Continuity & Progression Validation
+    if vb_data:
+        continuity_warnings = validate_connected_storyboard(
+            scenes=final_scenes,
+            video_bible=vb_data,
+            creative_direction=cd_data,
+        )
+        warnings.extend(continuity_warnings)
 
     # 9. Return structured payload
     return {
@@ -1719,6 +2105,8 @@ def generate_storyboard_step(
             "subject_anchor": subject_anchor,
             "environment_anchor": environment_anchor,
             "scenes": final_scenes,
+            "beats": flat_beats,
+            "video_bible": vb_data,
             "total_seconds": total_seconds,
             "total_visual_beats": total_visual_beats,
         },

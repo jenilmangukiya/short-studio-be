@@ -142,72 +142,62 @@ Within each scene, divide the visual presentation into 1 to 3 ordered `visual_be
 - **Expected Beat Count**:
   - For a typical 40 to 45-second Short, the storyboard will naturally contain roughly **12 to 18 total visual beats** (~2 to 5 seconds each), giving viewers an engaging, high-retention visual cadence.
 
-## 10. Structured Output
+## 10. Connected Storyboard & Video Bible Directorial Intent
+When Creative Direction and Video Bible are active in the project:
+1. **Entity Bindings (`entity_bindings`)**:
+   - Reference ONLY exact entity IDs defined in the Video Bible:
+     - `character_id`: string ID from characters (e.g. `char_alex`) or null if no character is featured.
+     - `environment_id`: string ID from environments (e.g. `env_bedroom_night`) or null for standalone conceptual diagrams.
+     - `object_ids`: array of string IDs from objects_and_props (e.g. `["obj_bedside_clock"]`).
+     - `concept_id`: string ID from concepts_and_diagrams (e.g. `cpt_sleep_signal_diagram`) for schematic/explanatory beats.
+   - Do NOT invent imaginary IDs not present in the Video Bible. The storyboard CANNOT introduce or reference any character not defined in the Video Bible.
+   - STRICT CHARACTER CONSTRAINT: If Creative Direction specified `character_count: "none"` or no characters are defined in the Video Bible:
+     - You MUST NOT introduce, invent, or name any protagonist, person, or character.
+     - `character_id` MUST be null on ALL scenes and beats.
+     - `character_state` MUST be null on ALL scenes and beats.
+     - Use other visual approaches: first-person POV, environment details, object close-ups, macro photography, physical phenomena, or conceptual diagrams.
+   - Do NOT bind bedroom environments or physical props to standalone conceptual diagrams.
+2. **Camera Direction (`camera`)**:
+   - `shot_type`: 'extreme_close_up', 'close_up', 'medium_close_up', 'medium', 'wide', 'extreme_wide'.
+   - `camera_angle`: 'eye_level', 'low_angle', 'high_angle', 'top_down', 'side_profile', 'dutch_angle'.
+   - `focal_point_description`: The specific visual element viewers notice first.
+   - `movement_type`: 'static', 'push_in', 'pull_out', 'pan_left', 'pan_right', 'drift'.
+3. **Character State (`character_state`)**:
+   - When an approved character is bound, specify:
+     - `pose_description`: Physical body position.
+     - `expression_description`: Micro-expression / facial cues.
+     - `action_in_progress`: Action taking place during this moment.
+   - Set to null when no character is bound or when `character_count: "none"`.
+4. **Motivated Transitions (`transition_from_previous`)**:
+   - Choose from: 'establishing', 'same_scene_reframe', 'action_reaction', 'spatial_cutaway', 'location_change', 'explanatory_cutaway', 'surreal_metaphor', 'resolution_return'.
+   - Never declare 'same_scene_reframe' or 'action_reaction' if the environment changes.
+5. **Preserving Scientific Uncertainty**:
+   - Preserve scientific uncertainty from the approved script:
+     - If the script frames an explanation as a hypothesis, leading theory, possibility, or scientific puzzle (e.g. 'one leading theory', 'scientists believe', 'might be', 'could be', 'we don't fully know yet', 'one explanation is'), the visual storytelling, visual purpose, and conceptual diagrams MUST preserve that uncertainty.
+     - Do NOT turn hypotheses or simplified models into established, absolute facts.
+     - Visual diagram descriptions and metaphors must reflect theoretical or illustrative modeling (e.g. 'theoretical model of neural misfire', 'visualizing the leading hypothesis') rather than asserting undeniable physical truth.
+6. **Prompt Composition Hand-off**:
+   - The application code will compose the final image prompts using your entity bindings, camera instructions, and the Video Bible. You do NOT need to write a standalone `image_prompt`.
+
+## 11. Structured Output
 Return structured JSON matching the StoryboardLLMOutput schema:
 - `subject_anchor`: Core recurring object description (or empty).
 - `environment_anchor`: Core recurring environment/setting description (or empty).
 - `scenes`: Array of 8 to 12 scenes, each containing:
   - `narration`: Exact spoken words for this beat.
-  - `visual_purpose`: The visual story beat or viewer takeaway (e.g. curiosity hook, direct attention, macro detail, character reaction, structural cutaway, mechanism diagram, proof, closure).
+  - `visual_purpose`: The visual story beat or viewer takeaway.
   - `shot_type`: Chosen framing from the allowed list.
-  - `camera_angle`: Camera angle or perspective (e.g. high-angle aerial, exterior 45-degree, extreme macro 90-degree, top-down flat lay, isometric cutaway, cross-section schematic).
+  - `camera_angle`: Camera angle or perspective.
   - `focal_point`: Primary visual focal element of the image.
-  - `visual_technique`: Visual technique (e.g. cinematic-photo, macro-photo, technical-illustration, cutaway-diagram, schematic).
+  - `visual_technique`: Visual technique.
   - `environment`: Specific physical setting and background for this scene.
-  - `image_prompt`: Rich scene-specific description (max 500 chars).
   - `uses_anchor`: Boolean (true ONLY when the recurring anchor object is the primary focus of this shot).
-  - `animation`: Object containing:
-    - `animation_type`: One of ('zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'subtle-drift', 'static').
-    - `focal_point`: Description of focal point.
-    - `focal_x`: Float (0.0 to 1.0).
-    - `focal_y`: Float (0.0 to 1.0, avoiding lower-third >0.68).
-    - `start_scale`: Float (1.00 to 1.08).
-    - `end_scale`: Float (1.00 to 1.08).
-    - `start_x`: Float (0.0 to 1.0).
-    - `start_y`: Float (0.0 to 1.0).
-    - `end_x`: Float (0.0 to 1.0).
-    - `end_y`: Float (0.0 to 1.0).
-    - `intensity`: String ('subtle', 'moderate', or 'restrained').
-    - `reasoning`: Brief explanation of why this motion suits the scene.
-  - `visual_beats`: Ordered list of 1 to 3 visual beats within this scene, each containing:
-    - `id`: Unique beat identifier, e.g. "beat_1_1", "beat_1_2".
-    - `scene_id`: Parent scene index or identifier, e.g. "1".
-    - `order`: 1-based sequential position within the scene (1, 2, 3).
-    - `narration_text`: Exact spoken words or phrase from this scene's narration corresponding to this visual beat.
-    - `visual_description`: What should be visible during this moment, reflecting the emotional tone and meaning.
-    - `visual_purpose`: Why this visual moment exists in the story (e.g. question curiosity, surprise reaction, misconception contrast, discovery reveal, hazard warning, mechanism demonstration).
-    - `shot_type`: Framing from allowed list (e.g. wide, medium, close-up, macro, cutaway).
-    - `camera_angle`: Perspective or angle (e.g. eye-level, low-angle, isometric, top-down).
-    - `focal_point`: Specific focal detail or subject for this beat.
-    - `visual_technique`: Technique (e.g. cinematic-photo, macro-photo, technical-illustration).
-    - `image_strategy`: One of ('reuse_scene_image', 'reuse_previous_image', 'new_image').
-    - `source_image_id`: Optional reference string (or null).
-  - `environment`: Specific physical setting and background for this scene.
-  - `image_prompt`: Rich scene-specific description (max 500 chars).
-  - `uses_anchor`: Boolean (true ONLY when the recurring anchor object is the primary focus of this shot).
-  - `animation`: Object containing:
-    - `animation_type`: One of ('zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'subtle-drift', 'static').
-    - `focal_point`: Description of focal point.
-    - `focal_x`: Float (0.0 to 1.0).
-    - `focal_y`: Float (0.0 to 1.0, avoiding lower-third >0.68).
-    - `start_scale`: Float (1.00 to 1.08).
-    - `end_scale`: Float (1.00 to 1.08).
-    - `start_x`: Float (0.0 to 1.0).
-    - `start_y`: Float (0.0 to 1.0).
-    - `end_x`: Float (0.0 to 1.0).
-    - `end_y`: Float (0.0 to 1.0).
-    - `intensity`: String ('subtle', 'moderate', or 'restrained').
-    - `reasoning`: Brief explanation of why this motion suits the scene.
-  - `visual_beats`: Ordered list of 1 to 3 visual beats within this scene, each containing:
-    - `id`: Unique beat identifier, e.g. "beat_1_1", "beat_1_2".
-    - `scene_id`: Parent scene index or identifier, e.g. "1".
-    - `order`: 1-based sequential position within the scene (1, 2, 3).
-    - `narration_text`: Exact spoken words or phrase from this scene's narration corresponding to this visual beat.
-    - `visual_description`: What should be visible during this moment.
-    - `visual_purpose`: Why this visual moment exists in the story.
-    - `shot_type`: Framing from allowed list (e.g. wide, medium, close-up, macro, cutaway).
-    - `camera_angle`: Perspective or angle (e.g. eye-level, low-angle, isometric).
-    - `focal_point`: Specific focal detail or subject for this beat.
-    - `visual_technique`: Technique (e.g. cinematic-photo, macro-photo, technical-illustration).
-    - `image_strategy`: One of ('reuse_scene_image', 'reuse_previous_image', 'new_image').
-    - `source_image_id`: Optional reference string (e.g. parent scene index or null).
+  - `entity_bindings`: Bound entity IDs from Video Bible (optional / when Video Bible is active).
+  - `camera`: Camera Direction (optional / when Video Bible is active).
+  - `character_state`: Character State (optional / when character is bound).
+  - `environment_state_override`: Environment condition override (optional).
+  - `transition_from_previous`: Transition from previous scene.
+  - `continuity_intent`: Directorial intent for visual continuity.
+  - `foley_cues`: List of Foley audio cues.
+  - `animation`: Animation plan object (animation_type, focal coordinates, scale, reasoning).
+  - `visual_beats`: Ordered list of 1 to 3 visual beats within this scene.

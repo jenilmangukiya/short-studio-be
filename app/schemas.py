@@ -202,6 +202,10 @@ class ArtDirection(BaseModel):
     rendering_engine_flavor: str = "default"
     primary_palette_hex: list[str] = Field(default_factory=list)
     negative_prompt_tokens: str = ""
+    visual_genre: str = "photorealistic_cinematic"
+    lighting_philosophy: str = ""
+    rendering_texture: str = ""
+    negative_anchors: list[str] = Field(default_factory=list)
 
 
 class CinematographyProfile(BaseModel):
@@ -245,7 +249,7 @@ class VideoBibleOutput(BaseModel):
 
 class EntityBindings(BaseModel):
     character_id: str | None = None
-    environment_id: str
+    environment_id: str | None = None
     object_ids: list[str] = Field(default_factory=list)
     concept_id: str | None = None
 
@@ -312,5 +316,10 @@ class StoryboardBeat(BaseModel):
     character_state: CharacterState | None = None
     environment_state_override: str | None = None
     foley_cues: list[FoleyCue] = Field(default_factory=list)
+
+
+class StoryboardOutput(BaseModel):
+    beats: list[StoryboardBeat] = Field(default_factory=list)
+
 
 
