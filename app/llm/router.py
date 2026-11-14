@@ -11,7 +11,14 @@ from .openai import OpenAILLM
 
 # Single place where allowed tasks are defined.
 # To add a new task, just add it here and optionally add override fields to app/config.py
-ALLOWED_TASKS: tuple[str, ...] = ("script", "storyboard", "metadata", "factcheck")
+ALLOWED_TASKS: tuple[str, ...] = (
+    "script",
+    "storyboard",
+    "metadata",
+    "factcheck",
+    "creative_direction",
+    "video_bible",
+)
 
 
 def resolve_task_routing(task: str) -> tuple[str, str]:

@@ -542,6 +542,18 @@ def evaluate_script_quality(
             f"Rewrite in warm, conversational plain English as if explaining to a friend."
         )
 
+    # 3b. Epistemic calibration: avoid dogmatic overclaiming on unverified theories
+    dogmatic_match = re.search(
+        r"\b(?:proven fact that|scientists have proven that|undeniably proven that|settled beyond all doubt that)\b",
+        narration,
+        re.IGNORECASE,
+    )
+    if dogmatic_match:
+        issues.append(
+            f"Narration uses dogmatic assertion ('{dogmatic_match.group(0)}'). "
+            "Use measured framing (e.g. 'one leading theory is', 'evidence suggests') to distinguish hypotheses from established consensus."
+        )
+
     # Check for unexplained complex/polysyllabic jargon (>= 4 syllables not in everyday allowlist)
     unexplained_jargon: list[str] = []
     for idx, sent in enumerate(sentences):
@@ -843,6 +855,7 @@ def build_script_prompt(
     revision_instruction: str | None = None,
     target_duration_range: tuple[float, float] | None = None,
     target_word_range: tuple[int, int] | None = None,
+    creative_direction_data: dict | None = None,
 ) -> str:
     """Assemble the comprehensive prompt including channel context, constraints, and revision details."""
     sections: list[str] = [rules_text.strip(), "\n## Video Project Details"]
@@ -850,6 +863,19 @@ def build_script_prompt(
     sections.append(f"- **Video Topic**: {topic}")
     if description:
         sections.append(f"- **Topic Description / Context**: {description}")
+
+    if creative_direction_data:
+        sections.append("\n### Approved Creative Direction")
+        sections.append(f"- **Format Archetype**: {creative_direction_data.get('format_archetype', '')}")
+        sections.append(f"- **Narrative Angle**: {creative_direction_data.get('storytelling_angle', '')}")
+        sections.append(f"- **Central Thesis**: {creative_direction_data.get('central_thesis', '')}")
+        sections.append(f"- **Tone**: {creative_direction_data.get('tone', '')}")
+        protagonist = creative_direction_data.get("protagonist_config", {})
+        if isinstance(protagonist, dict) and protagonist.get("character_count") != "none" and protagonist.get("archetype_summary"):
+            sections.append(f"- **Protagonist Archetype**: {protagonist.get('archetype_summary')}")
+        constraints = creative_direction_data.get("creative_constraints", [])
+        if constraints:
+            sections.append("- **Creative Constraints**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
 
     if target_duration_range or target_word_range:
         min_d, max_d = target_duration_range or (35.0, 45.0)
@@ -929,6 +955,10 @@ def generate_script_step(
         db=db, channel_id=channel_id, current_video_id=video.id, limit=8
     )
 
+    # 3b. Extract Creative Direction if present (from 8-step pipeline)
+    cd_step = prev.get("creative_direction") if isinstance(prev, dict) else None
+    cd_data = cd_step.get("creative_direction") if isinstance(cd_step, dict) else None
+
     # 4. Check Revision Mode (previous script comes ONLY from step.output)
     is_revision = False
     previous_script = None
@@ -961,6 +991,7 @@ def generate_script_step(
         revision_instruction=step.user_prompt,
         target_duration_range=target_duration_range,
         target_word_range=target_word_range,
+        creative_direction_data=cd_data,
     )
 
     # 7. Call LLM with task routing

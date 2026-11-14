@@ -40,7 +40,9 @@ def _dir(video: Video) -> Path:
     return p
 
 
+from .steps.creative_direction import generate_creative_direction_step
 from .steps.script import generate_script_step
+from .steps.video_bible import generate_video_bible_step
 from .steps.storyboard import generate_storyboard_step
 from .steps.images import generate_images_step
 from .steps.voiceover import generate_voiceover_step
@@ -50,61 +52,11 @@ from .steps.subtitles import generate_subtitles_step
 
 # ---------- handlers ----------
 def h_creative_direction(video, prev, step):
-    """Stub handler for Phase 1. Real implementation in Phase 2."""
-    return {
-        "creative_direction": {
-            "format_archetype": "explainer_myth_bust",
-            "storytelling_angle": getattr(video, "topic", "Overview"),
-            "central_thesis": getattr(video, "description", None) or getattr(video, "topic", "Core Thesis"),
-            "tone": "conversational",
-            "visual_genre": "styled_3d",
-            "protagonist_config": {"character_count": "none", "archetype_summary": None},
-            "emotional_progression": [],
-            "creative_constraints": [],
-        }
-    }
+    return generate_creative_direction_step(video, prev, step)
 
 
 def h_video_bible(video, prev, step):
-    """Stub handler for Phase 1. Real implementation in Phase 2."""
-    return {
-        "video_bible": {
-            "bible_id": f"bible_{getattr(video, 'id', 'default')}",
-            "topic_summary": getattr(video, "topic", ""),
-            "entities": {
-                "characters": [],
-                "environments": [],
-                "objects": [],
-                "concepts": [],
-            },
-            "art_direction": {
-                "style_family": "cinematic",
-                "rendering_engine_flavor": "default",
-                "primary_palette_hex": [],
-                "negative_prompt_tokens": "",
-            },
-            "cinematography": {
-                "aspect_ratio": "9:16 vertical",
-                "subject_safe_zone": "upper 55% of viewport",
-                "caption_safe_zone": "lower 35% of viewport",
-            },
-            "audio_direction": {
-                "voice_identifier": "af_heart",
-                "default_speech_speed": 1.0,
-                "ambient_bed_track": None,
-                "music_bed_track": None,
-                "music_duck_db": -15.0,
-                "foley_palette": [],
-            },
-            "subtitle_direction": {
-                "font_family": "Montserrat ExtraBold",
-                "font_size_pt": 52,
-                "primary_color_hex": "#FFFFFF",
-                "highlight_color_hex": "#F7931E",
-                "margin_vertical_px": 280,
-            },
-        }
-    }
+    return generate_video_bible_step(video, prev, step)
 
 
 def h_script(video, prev, step):

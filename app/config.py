@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     openai_model: str | None = None
     openai_reasoning_effort: str | None = None  # low | medium | high (if model supports it)
 
-    # Optional per-task overrides (task: script, storyboard, metadata, factcheck)
+    # Optional per-task overrides (task: script, storyboard, metadata, factcheck, creative_direction, video_bible)
     llm_provider_script: str | None = None
     llm_model_script: str | None = None
     llm_provider_storyboard: str | None = None
@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     llm_model_metadata: str | None = None
     llm_provider_factcheck: str | None = None
     llm_model_factcheck: str | None = None
+    llm_provider_creative_direction: str | None = None
+    llm_model_creative_direction: str | None = None
+    llm_provider_video_bible: str | None = None
+    llm_model_video_bible: str | None = None
 
     # Image generation settings
     image_provider: str = "mock"  # mock | openai
