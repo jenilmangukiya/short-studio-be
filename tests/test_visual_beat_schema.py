@@ -119,7 +119,7 @@ def test_missing_optional_beat_fields_apply_defaults():
     assert beat.camera_angle == "eye-level"
     assert beat.focal_point == ""
     assert beat.visual_technique == "cinematic-photo"
-    assert beat.image_strategy == "reuse_scene_image"
+    assert beat.image_strategy == "new_image"
     assert beat.source_image_id is None
 
 
@@ -415,7 +415,7 @@ def test_end_to_end_storyboard_step_produces_visual_beats(monkeypatch):
 # ===========================================================================
 
 def test_normalize_scene_visual_beats_reuse_previous_image_later_scene():
-    """First beat of a later scene using reuse_previous_image infers immediately preceding scene reference."""
+    """First beat of a later scene using reuse_previous_image does NOT infer preceding scene reference."""
     raw_beats_scene_2 = [
         {
             "id": "beat_2_1",
@@ -429,9 +429,9 @@ def test_normalize_scene_visual_beats_reuse_previous_image_later_scene():
     assert len(normalized_2) == 1
     assert normalized_2[0].order == 1
     assert normalized_2[0].image_strategy == "reuse_previous_image"
-    assert normalized_2[0].source_image_id == "1"
+    assert normalized_2[0].source_image_id is None
 
-    # Also test scene 5 infers scene 4
+    # Also test scene 5 does not infer scene 4
     raw_beats_scene_5 = [
         {
             "id": "beat_5_1",
@@ -441,7 +441,7 @@ def test_normalize_scene_visual_beats_reuse_previous_image_later_scene():
         }
     ]
     normalized_5 = normalize_scene_visual_beats(raw_beats_scene_5, scene_index=5)
-    assert normalized_5[0].source_image_id == "4"
+    assert normalized_5[0].source_image_id is None
 
 
 def test_normalize_scene_visual_beats_reuse_previous_image_first_scene_safe_fallback():
@@ -530,8 +530,8 @@ def test_normalize_scene_visual_beats_new_image_unchanged():
 
 
 def test_normalize_scene_visual_beats_subsequent_beat_reuse_previous_image():
-    """Subsequent beat in a scene continuing reuse_previous_image inherits previous beat reference."""
-    # Case A: Beat 1 reused scene 1, Beat 2 also reuses previous image
+    """Subsequent beat in a scene does not automatically infer previous beat reference without explicit ID."""
+    # Case A: Beat 1 and Beat 2 use reuse_previous_image with None source_image_id
     raw_beats_a = [
         {
             "id": "b2_1",
@@ -547,10 +547,10 @@ def test_normalize_scene_visual_beats_subsequent_beat_reuse_previous_image():
         },
     ]
     normalized_a = normalize_scene_visual_beats(raw_beats_a, scene_index=2)
-    assert normalized_a[0].source_image_id == "1"
-    assert normalized_a[1].source_image_id == "1"
+    assert normalized_a[0].source_image_id is None
+    assert normalized_a[1].source_image_id is None
 
-    # Case B: Beat 1 is new_image (scene 3 image), Beat 2 reuses previous image -> refers to scene 3
+    # Case B: Beat 1 is new_image (scene 3 image), Beat 2 reuses previous image with None -> remains None
     raw_beats_b = [
         {
             "id": "b3_1",
@@ -565,11 +565,11 @@ def test_normalize_scene_visual_beats_subsequent_beat_reuse_previous_image():
     ]
     normalized_b = normalize_scene_visual_beats(raw_beats_b, scene_index=3)
     assert normalized_b[0].source_image_id is None
-    assert normalized_b[1].source_image_id == "3"
+    assert normalized_b[1].source_image_id is None
 
 
 def test_inferred_reference_matches_renderer_asset_resolution(tmp_path):
-    """Inferred cross-scene reference seamlessly resolves via renderer's _resolve_beat_image contract."""
+    """Explicit cross-scene reference seamlessly resolves via renderer's _resolve_beat_image contract."""
     from app.images.mock import create_solid_png
     from app.steps.render import _resolve_beat_image
 
@@ -581,9 +581,9 @@ def test_inferred_reference_matches_renderer_asset_resolution(tmp_path):
     valid_images = {1: {"file": "scene_01.png"}, 2: {"file": "scene_02.png"}}
     img_items = [{"index": 1, "file": "scene_01.png"}, {"index": 2, "file": "scene_02.png"}]
 
-    # 1. Scene 2 with inferred reuse_previous_image -> resolves to scene_01.png as distinct
+    # 1. Scene 2 with explicit reuse_previous_image -> resolves to scene_01.png as distinct
     normalized_sc2 = normalize_scene_visual_beats(
-        [{"visual_description": "Cross-scene lingering", "image_strategy": "reuse_previous_image"}],
+        [{"visual_description": "Cross-scene lingering", "image_strategy": "reuse_previous_image", "source_image_id": "1"}],
         scene_index=2,
     )
     beat_dict = normalized_sc2[0].model_dump()

@@ -175,10 +175,24 @@ def _resolve_beat_image(
     Returns:
         tuple of (image_abs_path, image_rel_path, is_distinct_image_from_parent)
     """
-    parent_rel = str(valid_images[scene_idx]["file"])
-    parent_abs = (storage_root / parent_rel).resolve()
+    parent_rel = str(valid_images[scene_idx]["file"]) if scene_idx in valid_images and "file" in valid_images[scene_idx] else ""
+    parent_abs = (storage_root / parent_rel).resolve() if parent_rel else Path("")
 
     source_image_id = beat.get("source_image_id")
+    beat_id = str(beat.get("id") or "").strip()
+
+    # 1. First check if a distinct per-beat image was generated in img_items
+    if beat_id:
+        for it in img_items:
+            if not isinstance(it, dict):
+                continue
+            if (str(it.get("id") or "") == beat_id or str(it.get("beat_id") or "") == beat_id) and it.get("file"):
+                cand_rel = str(it["file"])
+                cand_abs = (storage_root / cand_rel).resolve()
+                if cand_abs.is_file():
+                    return cand_abs, cand_rel, (cand_rel != parent_rel)
+
+    # 2. If no explicit source_image_id, fall back to parent scene image
     if not source_image_id or not str(source_image_id).strip():
         return parent_abs, parent_rel, False
 
@@ -186,7 +200,7 @@ def _resolve_beat_image(
     if sid == str(scene_idx):
         return parent_abs, parent_rel, False
 
-    # 1. Match as integer scene index
+    # 3. Match as integer scene index
     try:
         sid_int = int(sid)
         if sid_int in valid_images:
@@ -197,24 +211,29 @@ def _resolve_beat_image(
     except ValueError:
         pass
 
-    # 2. Match in img_items by id, image_id, or file
+    # 4. Match in img_items by id, image_id, beat_id, or file
     for it in img_items:
         if not isinstance(it, dict):
             continue
-        if str(it.get("id") or "") == sid or str(it.get("image_id") or "") == sid or str(it.get("file") or "") == sid:
+        if (
+            str(it.get("id") or "") == sid
+            or str(it.get("image_id") or "") == sid
+            or str(it.get("beat_id") or "") == sid
+            or str(it.get("file") or "") == sid
+        ):
             cand_rel = it.get("file")
             if cand_rel and isinstance(cand_rel, str):
                 cand_abs = (storage_root / cand_rel).resolve()
                 if cand_abs.is_file():
                     return cand_abs, cand_rel, (cand_rel != parent_rel)
 
-    # 3. Direct path relative to storage root
+    # 5. Direct path relative to storage root
     cand_abs = (storage_root / sid).resolve()
     if cand_abs.is_file():
         return cand_abs, sid, (cand_abs != parent_abs)
 
-    # Fallback to parent image
-    return parent_abs, parent_rel, False
+    # Explicit image reference was not found: do NOT silently reuse previous/parent image
+    raise PipelineError(f"Referenced image '{sid}' for visual beat '{beat_id or 'unknown'}' was not found.")
 
 
 def _resolve_scene_beats(

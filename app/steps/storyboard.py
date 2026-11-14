@@ -276,13 +276,20 @@ class VisualBeat(BaseModel):
         description="Visual technique (e.g. cinematic-photo, macro-photo, technical-illustration, cutaway-diagram)",
     )
     image_strategy: ImageStrategy = Field(
-        default="reuse_scene_image",
-        description="Image strategy planning hint: 'reuse_scene_image', 'reuse_previous_image', or 'new_image'",
+        default="new_image",
+        description="Image strategy planning hint: 'new_image', 'reuse_scene_image', or 'reuse_previous_image'",
     )
     source_image_id: str | None = Field(
         default=None,
         description="Optional reference to an existing image if reusing a specific image asset",
     )
+
+    @property
+    def image_id(self) -> str:
+        """Effective image identifier for this visual beat."""
+        if self.source_image_id and str(self.source_image_id).strip():
+            return str(self.source_image_id).strip()
+        return self.id or f"beat_{self.scene_id}_{self.order}"
 
 
 class SceneInput(BaseModel):
@@ -412,30 +419,15 @@ def normalize_scene_visual_beats(
         if b_strat_raw in ALLOWED_IMAGE_STRATEGIES:
             b_strat: ImageStrategy = b_strat_raw
         else:
-            b_strat = "new_image" if seq_order == 1 else "reuse_scene_image"
+            b_strat = "new_image"
 
         b_source_raw = b_dict.get("source_image_id")
         b_source_id = str(b_source_raw).strip() if b_source_raw is not None and str(b_source_raw).strip() else None
         if b_strat == "reuse_scene_image" and not b_source_id:
             b_source_id = str(scene_index)
         elif b_strat == "reuse_previous_image" and not b_source_id:
-            try:
-                sc_idx_int = int(scene_index)
-            except (ValueError, TypeError):
-                sc_idx_int = 1
-
-            if seq_order == 1:
-                if sc_idx_int > 1:
-                    b_source_id = str(sc_idx_int - 1)
-                else:
-                    b_source_id = None
-            else:
-                prev_beat = normalized[-1] if normalized else None
-                b_source_id = (
-                    prev_beat.source_image_id
-                    if prev_beat and prev_beat.source_image_id
-                    else str(scene_index)
-                )
+            # Do not automatically infer or carry-forward previous scene or beat's image
+            b_source_id = None
 
         normalized.append(
             VisualBeat(
@@ -806,6 +798,42 @@ def validate_storyboard_soft_checks(
                         f"Scene {idx} visual beat {b_idx} has invalid image_strategy '{b_strat}'."
                     )
 
+    # Cross-beat distinctness & uniqueness checks across consecutive visual beats
+    all_storyboard_beats: list[tuple[int, int, Any]] = []
+    for s_idx, s in enumerate(scenes, start=1):
+        s_beats = get_field(s, "visual_beats")
+        if isinstance(s_beats, list):
+            for b_idx, b in enumerate(s_beats, start=1):
+                all_storyboard_beats.append((s_idx, b_idx, b))
+
+    for i in range(len(all_storyboard_beats) - 1):
+        s_idx_1, b_idx_1, b1 = all_storyboard_beats[i]
+        s_idx_2, b_idx_2, b2 = all_storyboard_beats[i + 1]
+
+        def _b_get(beat: Any, key: str, default: Any = "") -> Any:
+            if isinstance(beat, dict):
+                return beat.get(key, default)
+            return getattr(beat, key, default)
+
+        sid1 = _b_get(b1, "source_image_id")
+        sid2 = _b_get(b2, "source_image_id")
+
+        # Flag repeated image IDs between consecutive visual beats
+        if sid1 and sid2 and str(sid1).strip() == str(sid2).strip():
+            warnings.append(
+                f"Consecutive visual beats (scene {s_idx_1} beat {b_idx_1} and scene {s_idx_2} beat {b_idx_2}) "
+                f"share the same image ID '{sid1}'. Visual beats must not reuse the same image."
+            )
+
+        # Check prompt distinctness between consecutive beats
+        desc1 = str(_b_get(b1, "visual_description", "")).strip().lower()
+        desc2 = str(_b_get(b2, "visual_description", "")).strip().lower()
+        if desc1 and desc2 and desc1 == desc2:
+            warnings.append(
+                f"Consecutive visual beats (scene {s_idx_1} beat {b_idx_1} and scene {s_idx_2} beat {b_idx_2}) "
+                "have identical visual descriptions. Vary perspective, camera angle, composition, and action."
+            )
+
     return warnings
 
 
@@ -998,6 +1026,253 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _has_unnegated_hazard(text: str) -> bool:
+    """Check whether text contains a hazard/danger term that is not negated by 'not', 'never', 'no', etc."""
+    hazard_terms = (
+        "danger",
+        "dangerous",
+        "warning",
+        "fatal",
+        "risk",
+        "risky",
+        "caution",
+        "hazard",
+        "hazardous",
+        "disaster",
+        "critical",
+    )
+    for match in re.finditer(r"\b(" + "|".join(hazard_terms) + r")\b", text):
+        start = match.start()
+        preceding = text[max(0, start - 30) : start].strip()
+        # If preceded by negation (e.g. "not", "never", "no", "is not", "was not", "isn't", "aren't")
+        if re.search(r"\b(not|never|no|isn't|isnt|aren't|arent|wasn't|weren't)\b(?:\s+\w+){0,2}\s*$", preceding):
+            continue
+        return True
+    return False
+
+
+def _generate_mock_visual_beats_for_scene(
+    chunk: str, scene_idx: int, beat: dict[str, Any]
+) -> list[VisualBeat]:
+    """Break scene narration into meaningful, emotion-aware visual beats (2–5 seconds pacing)."""
+    words = chunk.split()
+    total_words = len(words)
+
+    # 1. Determine slices
+    slices: list[str] = []
+    if total_words <= 6:
+        slices = [chunk]
+    elif total_words <= 13:
+        # Split into 2 beats around mid
+        mid = total_words // 2
+        punct_match = None
+        for m in re.finditer(r"([,;:—–?!])\s+", chunk):
+            idx = len(chunk[: m.end()].split())
+            if 3 <= idx <= total_words - 3:
+                punct_match = m
+                break
+        if punct_match:
+            split_pos = punct_match.end()
+            p1 = chunk[:split_pos].strip()
+            p2 = chunk[split_pos:].strip()
+            if p1 and p2:
+                slices = [p1, p2]
+        if not slices:
+            p1 = " ".join(words[:mid])
+            p2 = " ".join(words[mid:])
+            slices = [p1, p2]
+    else:
+        # 14+ words: split into 2 or 3 beats
+        punct_matches = list(re.finditer(r"([,;:—–?!])\s+", chunk))
+        valid_puncts = [
+            m for m in punct_matches
+            if 4 <= len(chunk[: m.end()].split()) <= total_words - 4
+        ]
+        if len(valid_puncts) >= 2:
+            m1 = valid_puncts[0]
+            m2 = valid_puncts[-1]
+            p1 = chunk[: m1.end()].strip()
+            p2 = chunk[m1.end() : m2.end()].strip()
+            p3 = chunk[m2.end() :].strip()
+            if p1 and p2 and p3:
+                slices = [p1, p2, p3]
+        elif len(valid_puncts) == 1:
+            m = valid_puncts[0]
+            p1 = chunk[: m.end()].strip()
+            p2 = chunk[m.end() :].strip()
+            slices = [p1, p2]
+        else:
+            third = total_words // 3
+            if total_words >= 16:
+                p1 = " ".join(words[:third])
+                p2 = " ".join(words[third : 2 * third])
+                p3 = " ".join(words[2 * third :])
+                slices = [p1, p2, p3]
+            else:
+                mid = total_words // 2
+                slices = [" ".join(words[:mid]), " ".join(words[mid:])]
+
+    # 2. Assign emotion-aware and varied visual attributes to each beat
+    beats_out: list[VisualBeat] = []
+    focal_base = beat.get("focal_point", "key subject")
+    technique_base = beat.get("technique", "cinematic-photo")
+
+    for b_idx, p_text in enumerate(slices, start=1):
+        p_lower = p_text.lower()
+
+        # Emotion-aware storytelling detection
+        if "?" in p_text or any(k in p_lower for k in ("why", "how", "what if", "ever wonder", "mystery", "puzzling", "what happens next")):
+            purpose = "Question curiosity: explore the puzzle"
+            if b_idx == 1:
+                shot = "medium"
+                angle = "eye-level"
+                focal = "curious thinking character with glowing question mark"
+                prompt = f"Stylized thinking character with curious expression looking upward toward glowing question mark iconography in atmospheric lighting, exploring {focal_base}"
+            elif b_idx == 2:
+                shot = "close-up"
+                angle = "low-angle hero"
+                focal = "curious character tilting head examining puzzle"
+                prompt = f"Close-up of curious character tilting head with glowing question mark reflection, intently examining {focal_base}"
+            else:
+                shot = "top-down"
+                angle = "top-down flat lay"
+                focal = "thinking silhouette surrounded by question cues"
+                prompt = f"Top-down isometric view of thinking character silhouette surrounded by glowing curiosity question marks around {focal_base}"
+            tech = "cinematic-photo"
+        elif any(k in p_lower for k in ("actually", "shocking", "surprising", "unexpected", "suddenly", "unbelievable", "twist", "jaw-drop", "won't believe", "wont believe", "believe it or not")):
+            purpose = "Surprise reaction: sudden dramatic reveal"
+            if b_idx == 1:
+                shot = "close-up"
+                angle = "low-angle hero"
+                focal = "surprised character with wide eyes in dramatic lighting"
+                prompt = f"Close-up of stylized character with wide eyes and shocked expression, dramatic reveal with high contrast rim lighting highlighting {focal_base}"
+            elif b_idx == 2:
+                shot = "extreme-close-up"
+                angle = "eye-level"
+                focal = "astonished reaction revealing unexpected truth"
+                prompt = f"Extreme close-up of astonished character reaction with dramatic spotlight reveal uncovering {focal_base}"
+            else:
+                shot = "wide"
+                angle = "low-angle"
+                focal = "dramatic wide perspective of sudden reveal"
+                prompt = f"Wide dramatic perspective of astonished character stepping back in surprise from {focal_base}"
+            tech = "cinematic-photo"
+        elif any(k in p_lower for k in ("wrong", "myth", "mistake", "assume", "assumed", "lie", "false", "misconception", "fail")):
+            purpose = "Misconception contrast: highlight the mistake"
+            if b_idx == 1:
+                shot = "medium"
+                angle = "top-down flat lay"
+                focal = "confused character with prominent red cross symbol"
+                prompt = f"Confused stylized character scratching head beside a prominent red cross wrong-answer symbol, contrasting assumption with reality of {focal_base}"
+            elif b_idx == 2:
+                shot = "close-up"
+                angle = "eye-level"
+                focal = "confused expression pointing at false belief indicator"
+                prompt = f"Close-up of confused character pointing toward glowing red X indicator questioning flawed assumption of {focal_base}"
+            else:
+                shot = "in-context"
+                angle = "isometric 45-degree"
+                focal = "split comparison showing mistaken belief crossed out"
+                prompt = f"Split-screen comparison layout showing the common mistaken belief crossed out in red next to {focal_base}"
+            tech = "technical-illustration"
+        elif any(k in p_lower for k in ("discovered", "turns out", "secret", "reveal", "reveals", "found", "eureka", "breakthrough", "solution")):
+            purpose = "Discovery reveal: breakthrough eureka moment"
+            if b_idx == 1:
+                shot = "close-up"
+                angle = "isometric 45-degree"
+                focal = "excited character with glowing lightbulb moment"
+                prompt = f"Excited stylized character with a glowing lightbulb reveal and triumphant breakthrough expression in warm luminous lighting on {focal_base}"
+            elif b_idx == 2:
+                shot = "medium"
+                angle = "low-angle hero"
+                focal = "triumphant character pointing at breakthrough lightbulb"
+                prompt = f"Medium hero shot of character enthusiastically pointing up at brilliant illuminated breakthrough lightbulb over {focal_base}"
+            else:
+                shot = "macro"
+                angle = "eye-level"
+                focal = "glowing filament radiating golden eureka glow"
+                prompt = f"Macro detail of glowing filament within lightbulb radiating warm golden eureka glow onto {focal_base}"
+            tech = "cinematic-photo"
+        elif _has_unnegated_hazard(p_lower):
+            purpose = "Hazard warning: emphasize risk and consequences"
+            if b_idx == 1:
+                shot = "close-up"
+                angle = "low-angle dutch"
+                focal = "bold caution hazard badge with alert illumination"
+                prompt = f"Bold caution hazard warning badge with glowing amber alert lighting and dramatic shadows indicating impending consequence for {focal_base}"
+            elif b_idx == 2:
+                shot = "medium"
+                angle = "eye-level"
+                focal = "concerned character reacting to flashing hazard symbol"
+                prompt = f"Medium shot of concerned character reacting to flashing hazard triangle symbols warning against {focal_base}"
+            else:
+                shot = "macro"
+                angle = "low-angle"
+                focal = "caution barrier stripes and pulsating warning beacon"
+                prompt = f"Macro view of caution barrier stripes and pulsating warning beacon illuminating {focal_base}"
+            tech = "technical-illustration"
+        elif any(k in p_lower for k in ("works", "because", "mechanism", "process", "system", "structure", "airflow", "pressure")):
+            purpose = "Mechanism demonstration: clear technical explanation"
+            if b_idx == 1:
+                shot = "cutaway"
+                angle = "isometric technical cutaway"
+                focal = "detailed cross-section with directional flow arrows"
+                prompt = f"Clean technical cutaway diagram revealing internal structure and dynamic directional flow vectors demonstrating the physical mechanism of {focal_base}"
+            elif b_idx == 2:
+                shot = "cross-section"
+                angle = "side cross-section"
+                focal = "pressure balance channels and internal components"
+                prompt = f"Detailed cross-section view showing pressure balance channels and internal components of {focal_base}"
+            else:
+                shot = "diagram"
+                angle = "isometric 45-degree"
+                focal = "schematic diagram tracking airflow pathways"
+                prompt = f"Schematic diagram tracking energy transfer vectors and operational airflow pathways through {focal_base}"
+            tech = "cutaway-diagram"
+        else:
+            # Fallback contextual progression ensuring variety across beats
+            if b_idx == 1:
+                purpose = beat.get("purpose", "Establish visual context")
+                shot = beat.get("shot_type", "medium")
+                angle = beat.get("camera_angle", "eye-level")
+                focal = focal_base
+                prompt = beat.get("prompt", f"Clear cinematic composition showing {focal_base}")
+                tech = technique_base
+            elif b_idx == 2:
+                purpose = f"Advance visual narrative on {focal_base}"
+                shot = "close-up" if beat.get("shot_type") != "close-up" else "macro"
+                angle = "top-down" if beat.get("camera_angle") != "top-down" else "isometric 45-degree"
+                focal = f"{focal_base} dynamic detail"
+                prompt = f"Distinct angle showing {focal_base} in active motion with dynamic framing and high contrast"
+                tech = technique_base
+            else:
+                purpose = f"In-depth perspective of {focal_base}"
+                shot = "macro" if beat.get("shot_type") != "macro" else "wide"
+                angle = "low-angle hero" if beat.get("camera_angle") != "low-angle hero" else "eye-level"
+                focal = f"{focal_base} intricate texture"
+                prompt = f"Detailed macro composition revealing intricate texture and physical depth of {focal_base}"
+                tech = "macro-photo" if technique_base != "macro-photo" else "cinematic-photo"
+
+        beats_out.append(
+            VisualBeat(
+                id=f"beat_{scene_idx}_{b_idx}",
+                scene_id=str(scene_idx),
+                order=b_idx,
+                narration_text=p_text,
+                visual_description=prompt,
+                visual_purpose=purpose,
+                shot_type=shot if shot in ALLOWED_SHOT_TYPES else "medium",
+                camera_angle=angle,
+                focal_point=focal,
+                visual_technique=tech,
+                image_strategy="new_image",
+                source_image_id=f"img_{scene_idx}_{b_idx}",
+            )
+        )
+
+    return beats_out
+
+
 def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
     """Deterministically split script narration into scenes along sentence/clause boundaries.
 
@@ -1120,69 +1395,18 @@ def split_script_for_mock(narration: str) -> tuple[list[SceneInput], str]:
         anim_data = beat.get("animation")
         anim_obj = AnimationPlanInput(**anim_data) if anim_data else None
 
-        words_in_chunk = chunk.split()
-        if len(words_in_chunk) >= 12:
-            mid = len(words_in_chunk) // 2
-            p1 = " ".join(words_in_chunk[:mid])
-            p2 = " ".join(words_in_chunk[mid:])
-            mock_beats: list[VisualBeat] = [
-                VisualBeat(
-                    id=f"beat_{scene_idx}_1",
-                    scene_id=str(scene_idx),
-                    order=1,
-                    narration_text=p1,
-                    visual_description=beat["prompt"],
-                    visual_purpose=beat["purpose"],
-                    shot_type=beat["shot_type"],
-                    camera_angle=beat["camera_angle"],
-                    focal_point=beat["focal_point"],
-                    visual_technique=beat["technique"],
-                    image_strategy="new_image",
-                    source_image_id=str(scene_idx),
-                ),
-                VisualBeat(
-                    id=f"beat_{scene_idx}_2",
-                    scene_id=str(scene_idx),
-                    order=2,
-                    narration_text=p2,
-                    visual_description=f"Detailed close-up emphasizing {beat['focal_point']}",
-                    visual_purpose=f"Direct attention to {beat['focal_point']}",
-                    shot_type="close-up",
-                    camera_angle="eye-level",
-                    focal_point=beat["focal_point"],
-                    visual_technique=beat["technique"],
-                    image_strategy="reuse_scene_image",
-                    source_image_id=str(scene_idx),
-                ),
-            ]
-        else:
-            mock_beats = [
-                VisualBeat(
-                    id=f"beat_{scene_idx}_1",
-                    scene_id=str(scene_idx),
-                    order=1,
-                    narration_text=chunk,
-                    visual_description=beat["prompt"],
-                    visual_purpose=beat["purpose"],
-                    shot_type=beat["shot_type"],
-                    camera_angle=beat["camera_angle"],
-                    focal_point=beat["focal_point"],
-                    visual_technique=beat["technique"],
-                    image_strategy="new_image",
-                    source_image_id=str(scene_idx),
-                )
-            ]
+        mock_beats = _generate_mock_visual_beats_for_scene(chunk, scene_idx, beat)
 
         scenes.append(
             SceneInput(
                 narration=chunk,
-                visual_purpose=beat["purpose"],
+                visual_purpose=mock_beats[0].visual_purpose or beat["purpose"],
                 shot_type=beat["shot_type"],
                 camera_angle=beat["camera_angle"],
                 focal_point=beat["focal_point"],
                 visual_technique=beat["technique"],
                 environment=beat.get("environment", ""),
-                image_prompt=beat["prompt"],
+                image_prompt=mock_beats[0].visual_description or beat["prompt"],
                 uses_anchor=uses_anchor,
                 animation=anim_obj,
                 visual_beats=mock_beats,

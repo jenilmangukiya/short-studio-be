@@ -369,7 +369,9 @@ def evaluate_beat_crop_feasibility(
     warnings: list[str] = []
 
     # 1. Extract beat attributes (supporting both Pydantic model and dict)
+    has_explicit_strategy = False
     if isinstance(beat, dict):
+        has_explicit_strategy = "image_strategy" in beat
         beat_shot_type = str(beat.get("shot_type") or "medium").lower().strip()
         beat_angle = str(beat.get("camera_angle") or "eye-level").lower().strip()
         beat_tech = str(beat.get("visual_technique") or "cinematic-photo").lower().strip()
@@ -377,6 +379,9 @@ def evaluate_beat_crop_feasibility(
         beat_desc = str(beat.get("visual_description") or "").strip()
         beat_focal = str(beat.get("focal_point") or "").strip()
     else:
+        model_fields_set = getattr(beat, "model_fields_set", None)
+        if model_fields_set is not None:
+            has_explicit_strategy = "image_strategy" in model_fields_set
         beat_shot_type = str(getattr(beat, "shot_type", "medium") or "medium").lower().strip()
         beat_angle = str(getattr(beat, "camera_angle", "eye-level") or "eye-level").lower().strip()
         beat_tech = str(getattr(beat, "visual_technique", "cinematic-photo") or "cinematic-photo").lower().strip()
@@ -402,7 +407,7 @@ def evaluate_beat_crop_feasibility(
             parent_focal = str(getattr(parent_scene, "focal_point", "") or "").strip()
 
     # 3. Check explicit image strategy
-    if beat_strategy == "new_image":
+    if beat_strategy == "new_image" and has_explicit_strategy:
         return CropFeasibilityResult(
             status="new_image_needed",
             reason="Visual beat explicitly specifies image strategy 'new_image'.",

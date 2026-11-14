@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     openai_image_quality: str = "low"
     openai_image_est_cost_usd: float | None = None
     image_budget_usd: float = 0.50
-    image_max_per_video: int = 12
+    image_max_per_video: int = 50
+    image_max_unique_per_video: int = 50
+    image_max_generation_attempts: int = 75
     image_timeout_seconds: float = 120.0
 
     # Voiceover generation settings
