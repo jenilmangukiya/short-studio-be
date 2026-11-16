@@ -312,19 +312,18 @@ def map_recognized_words_to_script(
             )
             continue
 
+        span_count = span_end - span_start + 1
         if span_start > 0 and result_words[span_start - 1] is not None:
             t_left = result_words[span_start - 1].end
         else:
             first_rec_start = float(recognized_words[0].get("start", 0.03))
-            t_left = max(0.0, min(0.05, first_rec_start))
+            t_left = max(0.0, first_rec_start - 0.15 * span_count)
 
         if idx < n_script and result_words[idx] is not None:
             t_right = result_words[idx].start
         else:
             last_rec_end = float(recognized_words[-1].get("end", audio_duration))
-            t_right = min(audio_duration, max(t_left + 0.1 * (span_end - span_start + 1), last_rec_end))
-
-        span_count = span_end - span_start + 1
+            t_right = min(audio_duration, max(t_left + 0.1 * span_count, last_rec_end))
         if t_right <= t_left + 0.04 * span_count:
             t_right = min(audio_duration, t_left + 0.08 * span_count)
             if t_right <= t_left:
@@ -418,12 +417,8 @@ class AcousticSubtitleProvider(BaseSubtitleProvider):
             word_cursor += count
 
             if seg_words:
-                seg_start = 0.0 if s_pos == 0 else round(seg_words[0].start, 3)
-                seg_end = (
-                    round(actual_duration, 3)
-                    if s_pos == len(scene_tokens_map) - 1
-                    else round(seg_words[-1].end, 3)
-                )
+                seg_start = round(seg_words[0].start, 3)
+                seg_end = round(seg_words[-1].end, 3)
             else:
                 prev_end = segments[-1].end if segments else 0.0
                 seg_start = round(prev_end, 3)

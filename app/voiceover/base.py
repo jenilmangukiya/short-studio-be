@@ -37,7 +37,7 @@ class BaseVoiceoverProvider(ABC):
     def generate(
         self,
         text: str,
-        voice: str = "af_heart",
+        voice: str = "am_adam",
         speed: float = 1.0,
         target_duration: float | None = None,
     ) -> VoiceoverResult:

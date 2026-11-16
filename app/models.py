@@ -101,7 +101,7 @@ class VideoStepRevision(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     output: Mapped[dict | None] = mapped_column(JSONType)
     user_prompt: Mapped[str | None] = mapped_column(Text)
-    change_summary: Mapped[str | None] = mapped_column(String(255))
+    change_summary: Mapped[str | None] = mapped_column(Text)
     step: Mapped[VideoStep] = relationship(back_populates="revisions")
 
 

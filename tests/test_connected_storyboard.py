@@ -447,16 +447,27 @@ def test_generate_storyboard_step_consumes_all_three_upstream_outputs(db_session
     assert "beats" in sb
     assert len(sb["beats"]) >= 5
 
-    # Check that scenes have composed prompts and bound entities
+    # Check that scenes and beats have composed prompts and bound entities
     scene1 = sb["scenes"][0]
     assert "final_prompt" in scene1
     assert COMPOSITION_RULES in scene1["final_prompt"]
     assert scene1["entity_bindings"] is not None
 
+    for sc in sb["scenes"]:
+        for vb in sc.get("visual_beats", []):
+            assert "final_prompt" in vb
+            assert vb["final_prompt"] is not None
+            assert len(vb["final_prompt"]) > 20
+            assert COMPOSITION_RULES in vb["final_prompt"]
+
     # Check flat StoryboardBeat models
     parsed_beats = [StoryboardBeat.model_validate(b) for b in sb["beats"]]
     assert len(parsed_beats) >= 5
     assert parsed_beats[0].transition_from_previous == "establishing"
+    for pb in parsed_beats:
+        assert pb.final_prompt is not None
+        assert len(pb.final_prompt) > 20
+        assert COMPOSITION_RULES in pb.final_prompt
 
 
 def test_legacy_six_step_storyboard_compatibility(db_session, monkeypatch):

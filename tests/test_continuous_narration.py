@@ -180,15 +180,16 @@ def test_produces_single_valid_continuous_wav_asset(tmp_path, monkeypatch):
 
     output = generate_voiceover_step(video, prev, step=DummyStep(), voiceover_provider=provider)
 
-    # Exactly 1 provider call for the entire video
-    assert provider.call_count == 1
+    # 2 provider calls: 1 for isolated opening hook, 1 for remaining scenes
+    assert provider.call_count == 2
     assert "voiceover" in output
     vo = output["voiceover"]
 
     assert vo["continuous"] is True
     assert vo["complete"] is True
-    assert vo["total_duration_seconds"] == 7.5
-    assert output["duration_seconds"] == 7.5
+    expected_duration = output["duration_seconds"]
+    assert vo["total_duration_seconds"] == expected_duration
+    assert expected_duration > 7.5  # Includes start silence (1.0s), hook pause (0.75s), end silence (2.0s)
 
     # Check primary continuous WAV file
     cont_rel = vo["audio_file"]
@@ -203,7 +204,7 @@ def test_produces_single_valid_continuous_wav_asset(tmp_path, monkeypatch):
         n_frames = wf.getnframes()
         assert n_frames > 0
         actual_dur = round(n_frames / 24000.0, 3)
-        assert abs(actual_dur - 7.5) < 0.05
+        assert abs(actual_dur - expected_duration) < 0.05
 
 
 # ==============================================================================
@@ -277,7 +278,8 @@ def test_preserve_scene_to_narration_associations(tmp_path, monkeypatch):
 
     assert items[2]["index"] == 3
     assert items[2]["start_time"] == items[1]["end_time"]
-    assert items[2]["end_time"] == 7.0  # Total duration (2.5 + 2.0 + 2.5)
+    assert items[2]["end_time"] == output["duration_seconds"]  # Total duration including paddings
+    assert items[2]["speech_end_time"] == round(output["duration_seconds"] - 1.0, 3)
 
     # Confirm no per-scene WAV files are referenced or created on disk
     for it in items:
@@ -341,7 +343,7 @@ def test_retry_after_failure_succeeds_consistently(tmp_path, monkeypatch):
     working_provider = MockContinuousProvider()
     retry_output = generate_voiceover_step(video, prev, step=step, voiceover_provider=working_provider)
 
-    assert working_provider.call_count == 1
+    assert working_provider.call_count == 2
     assert retry_output["voiceover"]["complete"] is True
     assert retry_output["meta"]["scenes_generated"] == 2
     assert retry_output["meta"]["scenes_reused"] == 0
@@ -445,7 +447,13 @@ def test_compute_inter_chunk_gaps_and_multi_chunk_pause_insertion():
 
     provider = MockContinuousProvider()
     res, count = generate_continuous_audio(
-        " ".join(chunks), provider=provider, max_chunk_words=8
+        " ".join(chunks),
+        provider=provider,
+        max_chunk_words=8,
+        start_silence_seconds=0.0,
+        opening_hook_pause_seconds=0.0,
+        end_silence_seconds=0.0,
+        isolate_hook=False,
     )
     assert count == 3
     # Sum of chunk durations (7/2.5=2.8 + 7/2.5=2.8 + 6/2.5=2.4 = 8.0s) + inter-chunk gaps (0.24 + 0.09 = 0.33s)

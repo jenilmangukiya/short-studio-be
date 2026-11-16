@@ -10,7 +10,7 @@ The visual track must NOT merely repeat the video topic or show the same object 
 
 ### Emotion-Aware Storytelling:
 Storyboard generation must understand the emotional meaning of narration, not just its literal subject:
-- **Questions or Curiosity**: Thinking stylized character, glowing question mark iconography, curious expression or head tilt, peering into an intriguing puzzle.
+- **Questions or Curiosity**: Contemplative character, glowing question mark iconography, curious expression or head tilt, peering into an intriguing puzzle.
 - **Surprise & Shock**: Surprised or shocked expression, wide eyes, dramatic visual reveal, stark sudden contrast.
 - **Mistakes or Misconceptions**: Confused character scratching head, prominent red cross / wrong-answer visual, visual contrast between common assumption and reality.
 - **Discoveries**: Excited expression, glowing lightbulb moment, unmasking or opening reveal, breakthrough eureka visual.
@@ -46,9 +46,10 @@ Adapt the sequence, number of scenes (8 to 12), and shot types dynamically to fi
   - Maintain visual consistency across the entire video for recurring characters and illustration styles.
   - All scenes must adhere to the channel's `visual_style` (rendering texture, lighting, and palette).
   - Use `subject_anchor` to keep recurring objects physically consistent across shots.
-- **Stylized Characters & Reactions**:
+- **Character Style & Reactions**:
   - No real identifiable celebrity or photographic real human portraits.
-  - Use expressive stylized characters (e.g. clean 3D stylized figures, illustrated silhouettes, expressive hands, or stylized avatars) to depict human reactions, curiosity, confusion, thinking, and eureka moments, keeping character design consistent throughout the video.
+  - When Creative Direction and Video Bible are active in the project, character appearance, rendering texture, apparel, and visual style MUST strictly follow the Video Bible's Art Direction and Character Catalog (e.g. photorealistic cinematic, 3D animated, illustrative, or painterly). The Video Bible's approved art direction takes precedence.
+  - For standalone/legacy videos without a Video Bible, use expressive characters (e.g. clean 3D figures, illustrated silhouettes, expressive hands, or stylized avatars) matching the channel's visual style to depict reactions, curiosity, confusion, thinking, and eureka moments, keeping character design consistent throughout the video.
 
 ## 3. Camera Framing & Shot Types (`shot_type`)
 - Choose each scene's camera framing from the allowed list:

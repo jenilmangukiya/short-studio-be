@@ -256,3 +256,86 @@ def test_three_scenes_from_ai_cost_storyboard():
     assert "Camera direction: wide shot, low-angle wide perspective." in prompt_4
     assert "Primary focal point: towering server cabinets receding into infinity." in prompt_4
     assert COMPOSITION_RULES in prompt_4
+
+
+def test_standalone_conceptual_beat_excludes_physical_scene_details():
+    """Verify standalone conceptual beats do not inherit physical-scene details like bedding or specific sleeper."""
+    bible = {
+        "art_direction": {
+            "style_family": "cinematic",
+            "visual_genre": "styled_3d_cinematic_explainer",
+            "rendering_texture": "Tactile cotton weave, softly rumpled bedding, natural skin shading, finely tousled hair, and subtle filmic grain",
+            "lighting_philosophy": "Warm bedside key light at 2700K balanced by cool moonlight",
+            "primary_palette_hex": ["#263445", "#50677A", "#D8B98A"],
+            "negative_anchors": [
+                "Keep the same sleeper and bedroom throughout",
+                "Keep falling imagery restrained and clearly metaphorical",
+                "Do not depict supernatural causes or a stopped heart",
+            ],
+        },
+        "entities": {
+            "characters": [
+                {
+                    "id": "char_sleeper",
+                    "name": "The Sleeper",
+                    "visual_anchor": "Young adult with tousled dark brown hair",
+                    "apparel_anchor": "Simple slate-blue cotton sleep shirt",
+                    "forbidden_mutations": ["Never change the slate-blue sleep shirt", "No glasses"],
+                }
+            ],
+            "environments": [
+                {
+                    "id": "env_bedroom",
+                    "name": "Quiet Bedroom",
+                    "spatial_layout": "Compact bedroom with bed against wall",
+                    "persistent_props": ["Low bed with neutral bedding", "Bedside lamp"],
+                }
+            ],
+            "concepts": [
+                {
+                    "id": "concept_falling_reflex",
+                    "name": "Relaxation Mistaken for Falling",
+                    "visual_analogy": "The sleeper gently settles into the bed while a restrained, translucent downward drift suggests falling; a brief pulse of light travels through a simple body silhouette and resolves in a small muscular twitch.",
+                    "concept_explained": "As the sleeper drifts off and muscles relax, the brain may briefly interpret the sudden change in bodily sensation as a loss of balance.",
+                }
+            ],
+        },
+    }
+
+    # Standalone conceptual beat (concept_id set, char_id and env_id are None)
+    beat = {
+        "transition_from_previous": "explanatory_cutaway",
+        "visual_description": "A translucent downward visual metaphor drifting through abstract space",
+        "camera": {
+            "shot_type": "medium",
+            "camera_angle": "eye_level",
+            "focal_point_description": "Translucent downward drift",
+        },
+        "entity_bindings": {
+            "character_id": None,
+            "environment_id": None,
+            "concept_id": "concept_falling_reflex",
+            "object_ids": [],
+        },
+    }
+
+    prompt = compose_final_prompt(beat, video_bible=bible)
+
+    # 1. Physical bedding, hair, and specific character must be absent
+    assert "cotton weave" not in prompt
+    assert "rumpled bedding" not in prompt
+    assert "tousled hair" not in prompt
+    assert "The Sleeper" not in prompt
+    assert "slate-blue sleep shirt" not in prompt
+    assert "settles into the bed" not in prompt
+
+    # 2. Approved visual style and abstract conceptual elements must be present
+    assert "Styled 3d cinematic explainer visual style" in prompt
+    assert "subtle filmic grain" in prompt
+    assert "single body silhouette" in prompt
+    assert "translucent downward drift" in prompt
+    assert "no bedroom setting" in prompt
+
+    # 3. Bedroom continuity rule must be omitted from conceptual scene
+    assert "Keep the same sleeper and bedroom throughout" not in prompt
+    assert "Keep falling imagery restrained and clearly metaphorical" in prompt

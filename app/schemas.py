@@ -221,7 +221,7 @@ class FoleySound(BaseModel):
 
 
 class AudioDirection(BaseModel):
-    voice_identifier: str = "af_heart"
+    voice_identifier: str = "am_adam"
     default_speech_speed: float = 1.0
     ambient_bed_track: str | None = None
     music_bed_track: str | None = None
@@ -316,6 +316,7 @@ class StoryboardBeat(BaseModel):
     character_state: CharacterState | None = None
     environment_state_override: str | None = None
     foley_cues: list[FoleyCue] = Field(default_factory=list)
+    final_prompt: str | None = None
 
 
 class StoryboardOutput(BaseModel):

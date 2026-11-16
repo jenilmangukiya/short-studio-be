@@ -259,11 +259,23 @@ def generate_voiceover_step(
     raw_default_speed = getattr(settings, "voiceover_default_speed", 1.0)
     default_speed = validate_voiceover_speed(raw_default_speed, fallback=1.0) or 1.0
 
-    default_voice = getattr(settings, "voiceover_default_voice", "af_heart") or "af_heart"
+    default_voice = getattr(settings, "voiceover_default_voice", "am_adam") or "am_adam"
 
     voice = default_voice
     speed = default_speed
     warnings: list[str] = []
+
+    # Check video_bible output first if present, then allow channel_settings to override
+    vb_outer = prev.get("video_bible") or {}
+    vb = (
+        vb_outer.get("video_bible")
+        if isinstance(vb_outer, dict) and isinstance(vb_outer.get("video_bible"), dict)
+        else (vb_outer if isinstance(vb_outer, dict) else {})
+    )
+    if isinstance(vb, dict) and isinstance(vb.get("audio_direction"), dict):
+        vb_voice = vb["audio_direction"].get("voice_identifier")
+        if vb_voice and isinstance(vb_voice, str) and vb_voice.strip():
+            voice = vb_voice.strip()
 
     if isinstance(channel_settings, dict):
         if channel_settings.get("voice") and isinstance(channel_settings["voice"], str):
@@ -292,8 +304,16 @@ def generate_voiceover_step(
     audio_dir = storage_root / str(video.id) / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve configurable silence paddings and hook pause
+    start_silence = float(getattr(settings, "voiceover_start_silence_seconds", 0.75))
+    hook_pause = float(getattr(settings, "voiceover_opening_hook_pause_seconds", 0.75))
+    end_silence = float(getattr(settings, "voiceover_end_silence_seconds", 1.0))
+
     # 7. Compute continuous narration hash
-    hash_payload = f"{full_script}|{voice}|{speed}|{provider.model}".encode("utf-8")
+    hash_payload = (
+        f"{full_script}|{voice}|{speed}|{provider.model}|"
+        f"{start_silence}|{hook_pause}|{end_silence}"
+    ).encode("utf-8")
     full_hash = hashlib.sha256(hash_payload).hexdigest()
     hash8 = full_hash[:8]
 
@@ -365,6 +385,7 @@ def generate_voiceover_step(
     target_duration = total_est if total_est > 0.0 else None
 
     # Generate continuous narration audio
+    hook_text = str(validated_scenes[0]["narration"]).strip() if validated_scenes else None
     try:
         result, chunks_count = generate_continuous_audio(
             narration_script=full_script,
@@ -372,6 +393,10 @@ def generate_voiceover_step(
             voice=voice,
             speed=speed,
             target_duration=target_duration,
+            start_silence_seconds=start_silence,
+            opening_hook_pause_seconds=hook_pause,
+            end_silence_seconds=end_silence,
+            hook_text=hook_text,
         )
     except VoiceoverConfigError as exc:
         _persist_failure(step, str(exc))
@@ -397,7 +422,13 @@ def generate_voiceover_step(
     # 10. Compute scene-to-narration timing mapping for downstream rendering and subtitle alignment.
     # Prefer actual word timestamps from forced alignment on the continuous WAV; fall back to
     # proportional estimates only when alignment is unavailable.
-    scene_timings = estimate_scene_timings(validated_scenes, result.duration_seconds)
+    scene_timings = estimate_scene_timings(
+        validated_scenes,
+        result.duration_seconds,
+        start_silence_seconds=start_silence,
+        end_silence_seconds=end_silence,
+        opening_hook_pause_seconds=hook_pause,
+    )
     alignment_hash: str | None = None
     alignment_reused = False
     aligned = _align_scene_timings(

@@ -93,6 +93,12 @@ TEXTBOOK_PHRASE_PATTERNS: tuple[str, ...] = (
     r"no\s+single\s+explanation\s+is\s+settled",
     r"(?:exact\s+makeup\s+)?may\s+remain\s+uncertain",
     r"remains?\s+uncertain",
+    r"one\s+leading\s+(?:explanation|theory)\s+is\s+that\b",
+    r"this\s+phenomenon\s+occurs\s+when\b",
+    r"is\s+commonly\s+associated\s+with\b",
+    r"can\s+be\s+attributed\s+to\b",
+    r"it\s+is\s+believed\s+that\b",
+    r"serves\s+to\s+facilitate\b",
     r"\bfurthermore\b",
     r"\bmoreover\b",
     r"\bconsequently\b",
@@ -102,7 +108,6 @@ TEXTBOOK_PHRASE_PATTERNS: tuple[str, ...] = (
     r"\butilizes?\b",
     r"\bfacilitates?\b",
     r"\bis\s+characterized\s+by\b",
-    r"\bcan\s+be\s+attributed\s+to\b",
     r"\bempirically\b",
     r"\bheretofore\b",
 )
@@ -551,7 +556,7 @@ def evaluate_script_quality(
     if dogmatic_match:
         issues.append(
             f"Narration uses dogmatic assertion ('{dogmatic_match.group(0)}'). "
-            "Use measured framing (e.g. 'one leading theory is', 'evidence suggests') to distinguish hypotheses from established consensus."
+            "Use measured, natural conversational framing (e.g. 'one idea is that', 'scientists think', 'the reason might be') to distinguish hypotheses from established consensus."
         )
 
     # Check for unexplained complex/polysyllabic jargon (>= 4 syllables not in everyday allowlist)
@@ -914,13 +919,22 @@ def build_script_prompt(
         sections.append(f"- **Revision Instruction**: {revision_instruction}")
         sections.append(f"- **Previous Script**: {json.dumps(previous_script, indent=2)}")
 
+    sections.append(
+        "\n### Conversational Voice Requirement\n"
+        "- Write like a real person talking to viewers in a natural, conversational way—as if explaining an interesting fact to a friend across the table.\n"
+        "- Use everyday vocabulary and prefer natural contractions (it's, you're, doesn't, that's, don't) without forcing them into every single sentence.\n"
+        "- Avoid formal textbook or encyclopedia phrasing (e.g. use 'one idea is that' instead of 'one leading explanation is that', 'this happens when' instead of 'this phenomenon occurs when').\n"
+        "- Explain one clear idea at a time; treat 8 to 18 words per sentence as a pacing guideline, not a rigid constraint.\n"
+        "- Preserve the actual level of scientific certainty: if something is an unproven theory or hypothesis, describe it as an idea or theory rather than a proven fact."
+    )
+
     min_w_str = f"between {target_word_range[0]} and {target_word_range[1]} words" if target_word_range else "within the target word count"
     sections.append(
         "\n## Instructions\n"
         "Plan one connected story arc (hook -> immediate answer -> progressive cause-and-effect -> memorable payoff) "
         f"and generate a structured script whose narration is strictly {min_w_str}, "
-        "avoiding redundant summary lines, repetitive sentence openings, or circular explanations, "
-        "and conforming to the ScriptOutput schema."
+        "written in natural, conversational spoken English, avoiding textbook formulations, redundant summary lines, "
+        "repetitive sentence openings, or circular explanations, and conforming to the ScriptOutput schema."
     )
 
     return "\n".join(sections)

@@ -9,16 +9,34 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
-from app.pipeline import PipelineError
 from app.schemas import CreativeDirectionOutput
 
+
+class PipelineError(Exception):
+    """Raised when pipeline preconditions or execution fail."""
+
 PROMPT_FILE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "creative_direction.md"
+
+# Targeted sensory and bodily reflex keywords for non-blocking advisory warnings
+HUMAN_SENSORY_TOPIC_REGEX = re.compile(
+    r"\b(?:"
+    r"hypnic\s+jerk|"
+    r"falling\s+asleep|"
+    r"sleep\s+paralysis|"
+    r"(?:why\s+(?:we|do\s+we|people))\s+(?:yawn|dream|shiver|blush|sweat)|"
+    r"brain\s+freeze|"
+    r"goosebumps|"
+    r"deja\s+vu"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def load_prompt_template(path: Path = PROMPT_FILE_PATH) -> tuple[str, str]:
@@ -72,14 +90,17 @@ def build_creative_direction_prompt(
     sections.append(
         "\n## Instructions\n"
         "Generate a structured CreativeDirectionOutput conforming strictly to the schema. "
-        "Select the most appropriate format archetype and visual genre for this topic. "
-        "Do NOT force a character if the topic is purely mechanical, cosmic, or abstract."
+        "Select the most appropriate format archetype and visual genre for this topic.\n"
+        "Apply the balanced character and subject selection guidelines:\n"
+        "- When the topic explores human bodily sensations, sleep, dreams, emotions, or physical reflexes, strongly consider defining a relatable human character/subject.\n"
+        "- When the topic focuses on animal biology or instincts, consider an appropriate animal subject.\n"
+        "- Do NOT force a character if the topic is purely mechanical, cosmic, chemical, or abstract."
     )
 
     return "\n".join(sections)
 
 
-def validate_creative_direction(cd: CreativeDirectionOutput) -> list[str]:
+def validate_creative_direction(cd: CreativeDirectionOutput, topic: str = "") -> list[str]:
     """Validate creative direction consistency and return any soft warnings."""
     warnings: list[str] = []
 
@@ -91,6 +112,15 @@ def validate_creative_direction(cd: CreativeDirectionOutput) -> list[str]:
 
     if not cd.creative_constraints:
         warnings.append("No creative constraints specified; provide 3-5 rules to prevent downstream production drift.")
+
+    # Non-blocking advisory check for human sensory/bodily topics with character_count == "none"
+    if cd.protagonist_config.character_count == "none":
+        context_str = f"{topic} {cd.central_thesis} {cd.storytelling_angle}".strip()
+        if HUMAN_SENSORY_TOPIC_REGEX.search(context_str):
+            warnings.append(
+                "Topic involves a human physical or sensory experience, but character_count is set to 'none'. "
+                "Consider whether a relatable human subject would improve visual storytelling."
+            )
 
     return warnings
 
@@ -106,7 +136,8 @@ def generate_creative_direction_step(
     """
     topic = getattr(video, "topic", "")
     if not topic or not topic.strip():
-        raise PipelineError("Video topic is required to generate creative direction")
+        from app.pipeline import PipelineError as AppPipelineError
+        raise AppPipelineError("Video topic is required to generate creative direction")
 
     channel = getattr(video, "channel", None)
     channel_name = getattr(channel, "name", None) if channel else None
@@ -143,7 +174,7 @@ def generate_creative_direction_step(
         raise LLMError(f"Creative direction generation failed: {exc}") from exc
 
     cd_output: CreativeDirectionOutput = result.output
-    warnings = validate_creative_direction(cd_output)
+    warnings = validate_creative_direction(cd_output, topic=topic)
 
     return {
         "creative_direction": cd_output.model_dump(),

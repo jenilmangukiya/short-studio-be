@@ -919,5 +919,54 @@ def test_evaluate_script_quality_detects_redundant_summary_and_repetitive_subjec
     assert any("repeatedly begins sentences with 'honey'" in i.lower() for i in issues)
 
 
+def test_soft_checks_flag_formal_textbook_phrases():
+    """Verify that formal textbook formulas like 'one leading explanation is that' trigger soft warnings."""
+    from app.steps.script import evaluate_script_quality
+
+    hook = "Why does sleep sometimes begin with a fall?"
+    narration = (
+        f"{hook} As you drift off, your muscles relax, and a brief hypnic jerk can snap them tight again. "
+        "That jolt can feel like your heart stopped or you dropped through the bed, but neither is happening. "
+        "Instead, one leading explanation is that your brain misreads signals from relaxing muscles as a sudden loss of support. "
+        "This phenomenon occurs when your brain sends a quick corrective twitch before you safely return to sleep."
+    )
+    script = _make_sample_script(hook=hook, narration=narration)
+    issues = evaluate_script_quality(script)
+
+    assert any("textbook or academic phrasing ('one leading explanation is that')" in i.lower() for i in issues)
+
+
+def test_soft_checks_pass_on_natural_conversational_phrasing():
+    """Verify that natural conversational phrasing and contractions pass without textbook warnings."""
+    from app.steps.script import evaluate_script_quality
+
+    hook = "Why does sleep sometimes begin with a fall?"
+    narration = (
+        f"{hook} As you drift off, your muscles relax, and a sudden twitch can snap them tight again. "
+        "That jolt might feel like you're falling through the bed, but it's completely safe. "
+        "One idea is that your brain thinks relaxing muscles mean you're losing your footing. "
+        "So it sends a quick signal to catch you, and you wake up before drifting right back to sleep."
+    )
+    script = _make_sample_script(hook=hook, narration=narration)
+    issues = evaluate_script_quality(script)
+
+    # Must NOT flag any textbook or academic phrasing warnings
+    assert not any("textbook or academic phrasing" in i.lower() for i in issues)
+
+
+def test_build_script_prompt_injects_conversational_voice_guidelines():
+    """Verify build_script_prompt includes explicit conversational voice requirements."""
+    prompt = build_script_prompt(
+        rules_text="Base Rules",
+        topic="Hypnic Jerks",
+        description="Explaining sleep starts",
+    )
+    assert "Conversational Voice Requirement" in prompt
+    assert "real person talking to viewers in a natural, conversational way" in prompt
+    assert "prefer natural contractions" in prompt
+    assert "Avoid formal textbook or encyclopedia phrasing" in prompt
+
+
+
 
 

@@ -94,6 +94,7 @@ class CountingFakeVoiceoverProvider(BaseVoiceoverProvider):
         self.error_to_raise = error_to_raise
         self.call_count = 0
         self.called_narrations = []
+        self.called_voices = []
 
     @property
     def provider_name(self) -> str:
@@ -104,6 +105,7 @@ class CountingFakeVoiceoverProvider(BaseVoiceoverProvider):
     ) -> tuple[bytes, int, float]:
         self.call_count += 1
         self.called_narrations.append(text)
+        self.called_voices.append(voice)
 
         if self.fail_on_call is not None and self.call_count == self.fail_on_call:
             if self.error_to_raise:
@@ -162,8 +164,8 @@ def test_voiceover_step_multi_scene_success(tmp_path, monkeypatch):
     assert vo["complete"] is True
     assert vo["continuous"] is True
     assert len(vo["items"]) == 3
-    assert vo["total_duration_seconds"] == 6.0
-    assert output["duration_seconds"] == 6.0
+    assert vo["total_duration_seconds"] == output["duration_seconds"]
+    assert output["duration_seconds"] > 6.0  # Includes start/end silence and hook pause
 
     meta = output["meta"]
     assert meta["scenes_total"] == 3
@@ -239,7 +241,7 @@ def test_voiceover_step_retry_after_failure_succeeds(tmp_path, monkeypatch):
     assert vo["continuous"] is True
     assert len(vo["items"]) == 3
     assert all(it["status"] == "ok" for it in vo["items"])
-    assert working_prov.call_count == 1
+    assert working_prov.call_count == 2
     assert retry_output["meta"]["scenes_generated"] == 3
     assert retry_output["meta"]["scenes_reused"] == 0
 
@@ -279,7 +281,7 @@ def test_voiceover_step_reuse_when_narration_unchanged(tmp_path, monkeypatch):
     # Initial successful run
     prov1 = CountingFakeVoiceoverProvider()
     out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
-    assert prov1.call_count == 1
+    assert prov1.call_count == 2
     step.output = out1
 
     # Second run with same input
@@ -306,14 +308,14 @@ def test_voiceover_step_regenerates_when_voice_changes(tmp_path, monkeypatch):
     out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
     step.output = out1
     assert out1["meta"]["voice"] == "af_heart"
-    assert prov1.call_count == 1
+    assert prov1.call_count == 2
 
     # 2. Change channel voice to am_adam
     channel.settings["voice"] = "am_adam"
     prov2 = CountingFakeVoiceoverProvider()
     out2 = generate_voiceover_step(video, prev, step, voiceover_provider=prov2)
 
-    assert prov2.call_count == 1
+    assert prov2.call_count == 2
     assert out2["meta"]["voice"] == "am_adam"
     assert out2["meta"]["scenes_reused"] == 0
     assert all(it["reused"] is False for it in out2["voiceover"]["items"])
@@ -448,7 +450,7 @@ def test_h_voiceover_pipeline_handler(tmp_path, monkeypatch):
 
     res = h_voiceover(video, prev, None)
     assert res["mock"] is True
-    assert res["duration_seconds"] == 5.0
+    assert res["duration_seconds"] > 5.0  # Includes start/end silence and hook pause
     assert "voiceover" in res
     assert len(res["voiceover"]["items"]) == 2
 
@@ -536,7 +538,7 @@ def test_voiceover_regenerates_when_continuous_wav_missing_on_disk(tmp_path, mon
 
     prov1 = CountingFakeVoiceoverProvider()
     out1 = generate_voiceover_step(video, prev, step, voiceover_provider=prov1)
-    assert prov1.call_count == 1
+    assert prov1.call_count == 2
     step.output = out1
 
     cont_abs = tmp_path / out1["audio_file"]
@@ -545,7 +547,76 @@ def test_voiceover_regenerates_when_continuous_wav_missing_on_disk(tmp_path, mon
 
     prov2 = CountingFakeVoiceoverProvider()
     out2 = generate_voiceover_step(video, prev, step, voiceover_provider=prov2)
-    assert prov2.call_count == 1
+    assert prov2.call_count == 2
     assert cont_abs.is_file()
     assert out2["meta"]["scenes_generated"] == 2
     assert out2["meta"]["scenes_reused"] == 0
+
+
+def test_voiceover_step_defaults_to_am_adam(tmp_path, monkeypatch):
+    """Verify that new video generation defaults to am_adam when no channel or voice override is specified."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    video = DummyVideo(channel=None)
+    prev = _make_storyboard_prev(scene_count=2, est_seconds_per_scene=2.0)
+    step = DummyStep()
+
+    provider = CountingFakeVoiceoverProvider()
+    out = generate_voiceover_step(video, prev, step, voiceover_provider=provider)
+
+    assert out["meta"]["voice"] == "am_adam"
+    assert set(provider.called_voices) == {"am_adam"}
+    assert out["audio_file"].endswith(".wav")
+
+
+def test_voiceover_step_explicit_channel_overrides_default(tmp_path, monkeypatch):
+    """Verify that explicitly selected channel voices (e.g. af_heart, af_bella) override the am_adam default."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    # 1. Explicit af_heart
+    video_heart = DummyVideo(channel=DummyChannel(voice="af_heart"))
+    prev = _make_storyboard_prev(scene_count=2, est_seconds_per_scene=2.0)
+    step1 = DummyStep()
+    prov1 = CountingFakeVoiceoverProvider()
+    out1 = generate_voiceover_step(video_heart, prev, step1, voiceover_provider=prov1)
+    assert out1["meta"]["voice"] == "af_heart"
+    assert set(prov1.called_voices) == {"af_heart"}
+
+    # 2. Explicit af_bella
+    video_bella = DummyVideo(channel=DummyChannel(voice="af_bella"))
+    step2 = DummyStep()
+    prov2 = CountingFakeVoiceoverProvider()
+    out2 = generate_voiceover_step(video_bella, prev, step2, voiceover_provider=prov2)
+    assert out2["meta"]["voice"] == "af_bella"
+    assert set(prov2.called_voices) == {"af_bella"}
+
+
+def test_voiceover_step_video_bible_voice_and_channel_precedence(tmp_path, monkeypatch):
+    """Verify Video Bible voice_identifier is used when channel is unset, but channel explicitly overrides it."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    prev_with_vb = _make_storyboard_prev(scene_count=2, est_seconds_per_scene=2.0)
+    prev_with_vb["video_bible"] = {
+        "video_bible": {
+            "audio_direction": {
+                "voice_identifier": "bf_emma",
+            }
+        }
+    }
+
+    # 1. Channel unset -> Video Bible voice_identifier used
+    video1 = DummyVideo(channel=None)
+    step1 = DummyStep()
+    prov1 = CountingFakeVoiceoverProvider()
+    out1 = generate_voiceover_step(video1, prev_with_vb, step1, voiceover_provider=prov1)
+    assert out1["meta"]["voice"] == "bf_emma"
+    assert set(prov1.called_voices) == {"bf_emma"}
+
+    # 2. Channel explicitly set to am_adam -> overrides Video Bible
+    video2 = DummyVideo(channel=DummyChannel(voice="am_adam"))
+    step2 = DummyStep()
+    prov2 = CountingFakeVoiceoverProvider()
+    out2 = generate_voiceover_step(video2, prev_with_vb, step2, voiceover_provider=prov2)
+    assert out2["meta"]["voice"] == "am_adam"
+    assert set(prov2.called_voices) == {"am_adam"}
+

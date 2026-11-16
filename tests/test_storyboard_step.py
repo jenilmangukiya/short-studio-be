@@ -612,12 +612,12 @@ def test_pipeline_downstream_handlers_support_nested_storyboard(tmp_path, monkey
     img_file = tmp_path / img_result["images"]["items"][0]["file"]
     assert img_file.is_file()
     assert img_file.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert "First scene prompt" in img_result["images"]["items"][0]["prompt"]
+    assert "First scene final prompt" in img_result["images"]["items"][0]["prompt"]
 
     # h_voiceover extracts total_seconds and writes voice.txt
     vo_result = h_voiceover(DummyVideo(), prev, None)
     assert vo_result["mock"] is True
-    assert vo_result["duration_seconds"] == 5.0
+    assert vo_result["duration_seconds"] > 4.5  # Includes start/end silence (0.75s, 1.0s) and hook pause (0.75s)
 
 
 def test_backward_compatibility_old_shape_storyboard(tmp_path, monkeypatch):

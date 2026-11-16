@@ -4,7 +4,7 @@ Orchestrates a complete real video production run:
 1. script (LLM: gpt-6-luna) - target 40-45s spoken narration
 2. storyboard (LLM: gpt-6-luna) - emotion-aware dynamic visual beats (~2-5s)
 3. images (OpenAI: gpt-image-2) - unique images per visual beat
-4. voiceover (Kokoro: af_heart, continuous narration WAV)
+4. voiceover (Kokoro: am_adam, continuous narration WAV)
 5. render (FFmpeg: Ken Burns camera motion & continuous audio muxing)
 6. subtitles (Vosk: forced acoustic word alignment & ASS burn-in)
 

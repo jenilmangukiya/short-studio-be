@@ -51,7 +51,7 @@ Only define entities that are genuinely used by the narration script. Avoid extr
 - `caption_safe_zone`: "lower 35% of viewport".
 
 ## 4. Audio Direction & Sound Palette
-- `voice_identifier`: Kokoro TTS voice name (e.g., "af_heart" for warm narration, "am_adam" for deep authority, "bf_emma" for poised British).
+- `voice_identifier`: Kokoro TTS voice name (default: "am_adam" for deep authority; or "af_bella" for expressive energy, "af_heart" for warm narration, "bf_emma" for poised British). Unless explicitly instructed otherwise by the user or channel, always specify "am_adam".
 - `default_speech_speed`: 1.0 (or 0.95 to 1.05 if pacing requires).
 - `ambient_bed_track`: Continuous background room tone/atmosphere to eliminate digital silence during speech pauses.
 - `music_bed_track`: Background music mood loop.

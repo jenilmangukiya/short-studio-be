@@ -244,3 +244,27 @@ def test_schemas_instantiation():
     assert beat.transition_from_previous == "establishing"
     assert beat.entity_bindings.character_id == "char_alex"
     assert len(beat.foley_cues) == 1
+
+
+def test_rerun_step_with_long_prompt(db_session):
+    """Verify that rerun_step handles arbitrarily long prompts (> 255 chars) without truncating or failing."""
+    video = _create_test_video(db_session, require_approval=False)
+
+    step = video.steps[0]
+    step.status = "done"
+    step.output = {"data": "initial output"}
+    db_session.commit()
+
+    long_prompt = "⚠️ Generation Warnings (8):\n" + ("Scene 1 final prompt length is 1544 chars (target: at most 1500 chars).\n" * 5)
+    assert len(long_prompt) > 300
+
+    rerun_step(db_session, video, step.name, prompt=long_prompt)
+    db_session.commit()
+
+    assert step.status == "pending"
+    assert step.user_prompt == long_prompt
+    assert len(step.revisions) == 1
+    rev = step.revisions[0]
+    assert rev.change_summary.startswith("Archived before rerun with prompt:")
+    assert len(rev.change_summary) > 300
+

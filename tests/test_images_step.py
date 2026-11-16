@@ -608,3 +608,426 @@ def test_tokens_and_cost_aggregation_in_meta(tmp_path, monkeypatch):
     assert meta["total_tokens"] == 115 * 2
     assert meta["est_cost_usd"] == round(0.04 * 2, 4)
 
+
+# ==============================================================================
+# Stage 1: Intended Image Prompt Architecture & Connected Pass-Through Tests
+# ==============================================================================
+
+def test_images_step_uses_stored_beat_final_prompt(tmp_path, monkeypatch):
+    """Verify images step uses the exact precomposed beat-level final_prompt."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    beat_prompt_1 = "Connected Beat 1: The Sleeper resting in slate-blue crew-neck shirt."
+    beat_prompt_2 = "Connected Beat 2: The Sleeper jolting awake with startled expression."
+
+    prev = {
+        "video_bible": {"video_bible": {"entities": {"characters": [{"id": "char_1"}]}}},
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "narration": "Narration text",
+                        "final_prompt": "Scene-level fallback prompt",
+                        "visual_beats": [
+                            {
+                                "id": "beat_1_1",
+                                "order": 1,
+                                "final_prompt": beat_prompt_1,
+                                "image_strategy": "new_image",
+                            },
+                            {
+                                "id": "beat_1_2",
+                                "order": 2,
+                                "final_prompt": beat_prompt_2,
+                                "image_strategy": "new_image",
+                            },
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 2
+    assert provider.called_prompts[0] == beat_prompt_1
+    assert provider.called_prompts[1] == beat_prompt_2
+
+
+def test_images_step_uses_scene_final_prompt_when_beat_prompt_missing(tmp_path, monkeypatch):
+    """Verify images step falls back to scene-level final_prompt when beat prompt is absent."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    scene_prompt = "Scene 1 precomposed prompt with character and environment."
+
+    prev = {
+        "video_bible": {"video_bible": {"entities": {}}},
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "narration": "Narration text",
+                        "final_prompt": scene_prompt,
+                        "visual_beats": [
+                            {
+                                "id": "beat_1_1",
+                                "order": 1,
+                                "final_prompt": None,
+                                "image_strategy": "new_image",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 1
+    assert provider.called_prompts[0] == scene_prompt
+
+
+def test_connected_prompts_not_recomposed_through_legacy_path(tmp_path, monkeypatch):
+    """Verify connected prompts are used as-is and not silently recomposed through legacy template."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    exact_stored_prompt = "Exact connected prompt with specific tokens #ABC 123"
+
+    prev = {
+        "video_bible": {"video_bible": {"entities": {}}},
+        "storyboard": {
+            "storyboard": {
+                "visual_style": "Legacy Style That Must Not Appear",
+                "scenes": [
+                    {
+                        "index": 1,
+                        "narration": "Narration text",
+                        "image_prompt": "Raw LLM prompt that must not be used",
+                        "final_prompt": exact_stored_prompt,
+                        "visual_beats": [
+                            {
+                                "id": "beat_1_1",
+                                "order": 1,
+                                "final_prompt": exact_stored_prompt,
+                                "image_strategy": "new_image",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 1
+    assert provider.called_prompts[0] == exact_stored_prompt
+    assert "Legacy Style That Must Not Appear" not in provider.called_prompts[0]
+    assert "Raw LLM prompt that must not be used" not in provider.called_prompts[0]
+
+
+def test_missing_prompts_in_connected_storyboards_produce_clear_error(tmp_path, monkeypatch):
+    """Verify new-format storyboards with missing final_prompt fail with clear PipelineError."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    prev = {
+        "video_bible": {"video_bible": {"entities": {}}},
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 1,
+                        "narration": "Narration text",
+                        "final_prompt": "",
+                        "visual_beats": [
+                            {
+                                "id": "beat_1_1",
+                                "order": 1,
+                                "final_prompt": "",
+                                "image_strategy": "new_image",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    with pytest.raises(PipelineError) as exc_info:
+        generate_images_step(video, prev, step, image_provider=provider)
+
+    assert "Missing required final_prompt" in str(exc_info.value)
+    assert provider.call_count == 0
+
+
+def test_legacy_storyboard_uses_compatibility_path(tmp_path, monkeypatch):
+    """Verify legacy 6-step storyboards without video_bible still use compatibility composition."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    prev = {
+        # No video_bible present (legacy 6-step)
+        "storyboard": {
+            "storyboard": {
+                "visual_style": "Cinematic photo",
+                "subject_anchor": "A wooden chair",
+                "scenes": [
+                    {
+                        "index": 1,
+                        "narration": "Narration text",
+                        "image_prompt": "A close up of the chair in morning light",
+                        # No final_prompt stored (legacy)
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 1
+    assert "A close up of the chair in morning light" in provider.called_prompts[0]
+    assert "Cinematic photo" in provider.called_prompts[0]
+
+
+def test_character_clothing_environment_survive_into_provider_request(tmp_path, monkeypatch):
+    """Verify full character, apparel, persistent props, and constraints reach the provider."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    cd_data = {
+        "protagonist_config": {"character_count": "single"},
+        "visual_genre": "photorealistic_cinematic",
+    }
+    vb_data = {
+        "art_direction": {
+            "visual_genre": "photorealistic_cinematic",
+            "rendering_texture": "Tactile natural skin shading and 35mm film grain",
+            "negative_anchors": ["cartoon elements", "cgi smoothness"],
+        },
+        "entities": {
+            "characters": [
+                {
+                    "id": "char_sleeper",
+                    "name": "The Sleeper",
+                    "visual_anchor": "A young adult in their late 20s with a softly rounded face, expressive brows, and tousled dark brown hair",
+                    "apparel_anchor": "Simple slate-blue cotton sleep shirt with a relaxed crew neck",
+                    "forbidden_mutations": [
+                        "Never change the slate-blue crew-neck sleep shirt",
+                        "No glasses, facial hair, or added accessories",
+                    ],
+                }
+            ],
+            "environments": [
+                {
+                    "id": "env_bedroom",
+                    "name": "Quiet Bedroom at Night",
+                    "spatial_layout": "A compact modern bedroom with a low bed centered against a soft wall",
+                    "persistent_props": [
+                        "Low bed with rumpled charcoal duvet",
+                        "Warm-shaded ceramic bedside lamp",
+                    ],
+                }
+            ],
+        },
+    }
+
+    from app.steps.prompt_compose import compose_final_prompt
+
+    scene_data = {
+        "index": 1,
+        "visual_purpose": "Establish sleeper peacefully in bed",
+        "shot_type": "medium",
+        "camera_angle": "low-angle",
+        "focal_point": "The relaxed face",
+        "entity_bindings": {"character_id": "char_sleeper", "environment_id": "env_bedroom"},
+        "character_state": {
+            "pose_description": "Lying supine",
+            "expression_description": "Peaceful",
+            "action_in_progress": "Settling into the mattress",
+        },
+    }
+
+    beat_1_data = {
+        **scene_data,
+        "id": "beat_1_1",
+        "visual_description": "The sleeper sinking softly into the mattress as muscles relax",
+    }
+    beat_1_prompt = compose_final_prompt(
+        scene=beat_1_data,
+        video_bible=vb_data,
+        creative_direction=cd_data,
+    )
+
+    prev = {
+        "video_bible": {"video_bible": vb_data},
+        "creative_direction": {"creative_direction": cd_data},
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        **scene_data,
+                        "final_prompt": beat_1_prompt,
+                        "visual_beats": [
+                            {
+                                **beat_1_data,
+                                "final_prompt": beat_1_prompt,
+                                "image_strategy": "new_image",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 1
+    prompt = provider.called_prompts[0]
+
+    # Character & Apparel
+    assert "The Sleeper" in prompt
+    assert "softly rounded face" in prompt
+    assert "slate-blue cotton sleep shirt" in prompt
+    assert "relaxed crew neck" in prompt
+
+    # Environment & Persistent props
+    assert "Quiet Bedroom at Night" in prompt
+    assert "Low bed with rumpled charcoal duvet" in prompt
+    assert "Warm-shaded ceramic bedside lamp" in prompt
+
+    # Action / Visual moment
+    assert "Visual moment: The sleeper sinking softly into the mattress as muscles relax" in prompt
+
+    # Negative constraints
+    assert "Never change the slate-blue crew-neck sleep shirt" in prompt
+    assert "No glasses, facial hair, or added accessories" in prompt
+
+    # Fixed framing
+    assert "Vertical 9:16" in prompt
+
+
+def test_multi_beat_scene_distinct_actions_same_character_anchor(tmp_path, monkeypatch):
+    """Verify multiple beats in the same scene have distinct actions while retaining identical character/environment anchors."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+
+    provider = CountingFakeProvider()
+    video = DummyVideo()
+    step = DummyStep()
+
+    cd_data = {
+        "protagonist_config": {"character_count": "single"},
+        "visual_genre": "photorealistic_cinematic",
+    }
+    vb_data = {
+        "art_direction": {
+            "visual_genre": "photorealistic_cinematic",
+            "rendering_texture": "Tactile natural skin shading",
+        },
+        "entities": {
+            "characters": [
+                {
+                    "id": "char_sleeper",
+                    "name": "The Sleeper",
+                    "visual_anchor": "A young adult in their late 20s with tousled dark brown hair",
+                    "apparel_anchor": "Simple slate-blue cotton sleep shirt",
+                }
+            ],
+            "environments": [
+                {
+                    "id": "env_bedroom",
+                    "name": "Quiet Bedroom at Night",
+                    "spatial_layout": "A compact modern bedroom",
+                }
+            ],
+        },
+    }
+
+    from app.steps.prompt_compose import compose_final_prompt
+
+    beat_1_ctx = {
+        "index": 2,
+        "id": "beat_2_1",
+        "shot_type": "medium",
+        "visual_description": "The sleeper sinking softly into the mattress as shoulders relax",
+        "entity_bindings": {"character_id": "char_sleeper", "environment_id": "env_bedroom"},
+        "character_state": {"pose_description": "Lying on side", "expression_description": "Calm", "action_in_progress": "Relaxing"},
+    }
+    beat_2_ctx = {
+        "index": 2,
+        "id": "beat_2_2",
+        "shot_type": "close-up",
+        "visual_description": "The sleeper suddenly jolts upright with wide alert eyes clutching the bedding",
+        "entity_bindings": {"character_id": "char_sleeper", "environment_id": "env_bedroom"},
+        "character_state": {"pose_description": "Startled upright", "expression_description": "Shocked", "action_in_progress": "Jolting"},
+    }
+
+    p1 = compose_final_prompt(scene=beat_1_ctx, video_bible=vb_data, creative_direction=cd_data)
+    p2 = compose_final_prompt(scene=beat_2_ctx, video_bible=vb_data, creative_direction=cd_data)
+
+    prev = {
+        "video_bible": {"video_bible": vb_data},
+        "creative_direction": {"creative_direction": cd_data},
+        "storyboard": {
+            "storyboard": {
+                "scenes": [
+                    {
+                        "index": 2,
+                        "narration": "Narration text",
+                        "final_prompt": p1,
+                        "visual_beats": [
+                            {**beat_1_ctx, "order": 1, "final_prompt": p1, "image_strategy": "new_image"},
+                            {**beat_2_ctx, "order": 2, "final_prompt": p2, "image_strategy": "new_image"},
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    output = generate_images_step(video, prev, step, image_provider=provider)
+
+    assert provider.call_count == 2
+    prompt_1 = provider.called_prompts[0]
+    prompt_2 = provider.called_prompts[1]
+
+    # Shared character & apparel anchors
+    for p in (prompt_1, prompt_2):
+        assert "The Sleeper" in p
+        assert "slate-blue cotton sleep shirt" in p
+        assert "Quiet Bedroom at Night" in p
+
+    # Distinct actions & framing
+    assert "medium shot" in prompt_1
+    assert "Visual moment: The sleeper sinking softly into the mattress as shoulders relax" in prompt_1
+    assert "close-up shot" in prompt_2
+    assert "Visual moment: The sleeper suddenly jolts upright with wide alert eyes clutching the bedding" in prompt_2
+
+

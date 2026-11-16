@@ -62,9 +62,12 @@ class Settings(BaseSettings):
     voiceover_provider: str = "mock"  # mock | kokoro
     kokoro_model_path: str = str(_BACKEND_DIR / "storage/models/kokoro/kokoro-v1.0.onnx")
     kokoro_voices_path: str = str(_BACKEND_DIR / "storage/models/kokoro/voices-v1.0.bin")
-    voiceover_default_voice: str = "af_heart"
+    voiceover_default_voice: str = "am_adam"
     voiceover_default_speed: float = 1.0
     voiceover_timeout_seconds: float = 60.0
+    voiceover_start_silence_seconds: float = 0.75
+    voiceover_opening_hook_pause_seconds: float = 0.75
+    voiceover_end_silence_seconds: float = 1.0
 
     # Render generation settings
     render_fps: int = 30

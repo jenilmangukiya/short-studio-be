@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
+from app.config import settings
+
 from .base import BaseVoiceoverProvider
 from .exceptions import VoiceoverError, VoiceoverProviderError
 from .types import VoiceoverResult
@@ -159,9 +161,17 @@ def _partition_units_balanced(
 
 
 def split_script_into_chunks(
-    text: str, max_words: int = 65, max_chars: int = 380
+    text: str,
+    max_words: int = 65,
+    max_chars: int = 380,
+    isolate_hook: bool = False,
+    hook_text: str | None = None,
 ) -> list[str]:
     """Split narration script into balanced linguistic chunks at sentence or paragraph boundaries.
+
+    When isolate_hook is True, isolates the opening hook sentence/clause as the very first
+    chunk so it can receive an intentional dramatic breath pause, and preserves the balanced
+    chunking strategy for all remaining narration.
 
     Ensures words are never split mid-word, sentence order and punctuation are preserved,
     no words are duplicated or omitted, and multi-chunk splits are balanced to keep
@@ -171,6 +181,8 @@ def split_script_into_chunks(
         text: Full narration script text.
         max_words: Maximum target spoken words per chunk (default: 65).
         max_chars: Maximum target characters per chunk (default: 380).
+        isolate_hook: Whether to isolate the first sentence/hook as its own chunk.
+        hook_text: Optional explicit opening hook text to isolate.
 
     Returns:
         List of cleanly chunked narration text strings.
@@ -178,6 +190,34 @@ def split_script_into_chunks(
     cleaned_text = text.strip()
     if not cleaned_text:
         return []
+
+    if isolate_hook:
+        candidate_hook: str | None = None
+        if hook_text and isinstance(hook_text, str) and hook_text.strip():
+            h_candidate = hook_text.strip()
+            if cleaned_text.startswith(h_candidate):
+                candidate_hook = h_candidate
+
+        if not candidate_hook:
+            sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(cleaned_text) if s.strip()]
+            if len(sentences) <= 1:
+                sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_text) if s.strip()]
+            if len(sentences) > 1:
+                candidate_hook = sentences[0]
+
+        if candidate_hook and len(candidate_hook) < len(cleaned_text):
+            remainder = cleaned_text[len(candidate_hook) :].strip()
+            if remainder:
+                if len(candidate_hook.split()) > max_words or len(candidate_hook) > max_chars:
+                    hook_chunks = split_script_into_chunks(
+                        candidate_hook, max_words=max_words, max_chars=max_chars, isolate_hook=False
+                    )
+                else:
+                    hook_chunks = [candidate_hook]
+                remaining_chunks = split_script_into_chunks(
+                    remainder, max_words=max_words, max_chars=max_chars, isolate_hook=False
+                )
+                return hook_chunks + remaining_chunks
 
     words = cleaned_text.split()
     if len(words) <= max_words and len(cleaned_text) <= max_chars and "\n\n" not in cleaned_text:
@@ -239,19 +279,22 @@ def compute_inter_chunk_gaps(
     chunks: list[str],
     sentence_gap_seconds: float = 0.24,
     clause_gap_seconds: float = 0.09,
+    hook_pause_seconds: float | None = None,
 ) -> list[float]:
     """Compute natural spoken breath gaps between adjacent narration chunks.
 
-    When combined with `trim_silence_samples` (which preserves 110ms trailing pad on
-    sentence-ending chunks and 35ms leading pad on the next chunk), a 240ms inter-chunk
-    sentence gap yields a total ~385ms pause—matching Kokoro's natural internal
-    sentence-to-sentence pause (360ms–480ms).
+    If hook_pause_seconds is set (e.g. 0.75s), it is applied to the very first boundary
+    (immediately after the isolated opening hook) exactly once, while subsequent boundaries
+    use standard sentence/clause gap durations.
     """
     if len(chunks) <= 1:
         return []
 
     gaps: list[float] = []
-    for chunk in chunks[:-1]:
+    for idx, chunk in enumerate(chunks[:-1]):
+        if idx == 0 and hook_pause_seconds is not None and hook_pause_seconds > 0.0:
+            gaps.append(float(hook_pause_seconds))
+            continue
         stripped = chunk.strip()
         if re.search(r"[.!?][\"'”’)]*\s*$", stripped):
             gaps.append(sentence_gap_seconds)
@@ -261,18 +304,23 @@ def compute_inter_chunk_gaps(
 
 
 def concatenate_audio_segments(
-    segments: list[tuple[bytes, int]], gap_seconds: float | list[float] = 0.0
+    segments: list[tuple[bytes, int]],
+    gap_seconds: float | list[float] = 0.0,
+    start_pad_seconds: float = 0.0,
+    end_pad_seconds: float = 0.0,
 ) -> tuple[bytes, int, float]:
     """Concatenate multiple WAV byte streams into a single seamless continuous WAV asset.
 
-    Validates that sample rates, channel formats, and data types match, applies a subtle
-    3ms boundary taper to prevent waveform clicks, and returns uncompressed 16-bit PCM WAV
-    bytes with valid headers.
+    Validates that sample rates, channel formats, and data types match, applies subtle
+    boundary de-click tapers, prepends start_pad_seconds of silence, appends
+    end_pad_seconds of silence, and returns uncompressed 16-bit PCM WAV bytes with valid headers.
 
     Args:
         segments: List of tuples (wav_bytes, sample_rate).
         gap_seconds: Silence gap(s) between chunks in seconds—either a single float applied
             to all boundaries (default: 0.0) or a list of per-boundary floats.
+        start_pad_seconds: Leading silence padding in seconds (default: 0.0).
+        end_pad_seconds: Trailing silence padding in seconds (default: 0.0).
 
     Returns:
         Tuple of (combined_wav_bytes, sample_rate, total_duration_seconds).
@@ -280,15 +328,22 @@ def concatenate_audio_segments(
     if not segments:
         raise ValueError("No audio segments provided to concatenate")
 
-    if len(segments) == 1:
+    target_sr = segments[0][1]
+
+    if len(segments) == 1 and start_pad_seconds <= 0.0 and end_pad_seconds <= 0.0:
         wav_bytes, sr = segments[0]
         data, file_sr = sf.read(io.BytesIO(wav_bytes))
         dur = round(len(data) / float(file_sr), 3)
         return wav_bytes, file_sr, dur
 
-    target_sr = segments[0][1]
     all_data: list[np.ndarray] = []
     n_segs = len(segments)
+
+    # 1. Prepend start silence padding
+    if start_pad_seconds > 0.0:
+        start_samples = int(round(start_pad_seconds * target_sr))
+        if start_samples > 0:
+            all_data.append(np.zeros(start_samples, dtype=np.float32))
 
     for idx, (seg_bytes, sr) in enumerate(segments):
         data, read_sr = sf.read(io.BytesIO(seg_bytes))
@@ -303,9 +358,9 @@ def concatenate_audio_segments(
         # Apply subtle 3ms boundary de-click taper at join edges without changing sample count
         fade_len = min(len(seg_arr) // 8, int(0.003 * target_sr))
         if fade_len > 0:
-            if idx > 0:
+            if idx > 0 or start_pad_seconds > 0.0:
                 seg_arr[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-            if idx < n_segs - 1:
+            if idx < n_segs - 1 or end_pad_seconds > 0.0:
                 seg_arr[-fade_len:] *= np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
 
         all_data.append(seg_arr)
@@ -320,7 +375,13 @@ def concatenate_audio_segments(
                 if silence_samples > 0:
                     all_data.append(np.zeros(silence_samples, dtype=np.float32))
 
-    combined = np.concatenate(all_data)
+    # 2. Append end silence padding
+    if end_pad_seconds > 0.0:
+        end_samples = int(round(end_pad_seconds * target_sr))
+        if end_samples > 0:
+            all_data.append(np.zeros(end_samples, dtype=np.float32))
+
+    combined = np.concatenate(all_data) if all_data else np.array([], dtype=np.float32)
     total_dur = round(len(combined) / float(target_sr), 3)
 
     buf = io.BytesIO()
@@ -329,16 +390,23 @@ def concatenate_audio_segments(
 
 
 def estimate_scene_timings(
-    scenes: list[dict[str, Any]], total_duration: float
+    scenes: list[dict[str, Any]],
+    total_duration: float,
+    start_silence_seconds: float = 0.0,
+    end_silence_seconds: float = 0.0,
+    opening_hook_pause_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Estimate start and end timestamps for each scene within the continuous narration.
 
     Uses phonetic word weighting based on syllables and consonants to allocate the continuous
-    duration proportionally across scenes. Explicitly labels timing as 'estimated'.
+    duration proportionally across scenes. Respects start and end silence paddings.
 
     Args:
         scenes: List of scene dictionaries (with 'index' and 'narration').
         total_duration: Total duration of the continuous narration audio in seconds.
+        start_silence_seconds: Leading silence padding in seconds.
+        end_silence_seconds: Trailing silence padding in seconds.
+        opening_hook_pause_seconds: Opening hook pause padding in seconds.
 
     Returns:
         List of dictionaries with scene timing metadata.
@@ -355,9 +423,11 @@ def estimate_scene_timings(
         scene_weights.append(max(0.1, total_w))
 
     total_weight = sum(scene_weights) or 1.0
+    usable_duration = max(0.1, total_duration - start_silence_seconds - end_silence_seconds)
 
     timings: list[dict[str, Any]] = []
     current_time = 0.0
+    n_scenes = len(scenes)
 
     for idx, sc in enumerate(scenes):
         scene_idx = int(sc.get("index", idx + 1))
@@ -365,17 +435,32 @@ def estimate_scene_timings(
         narration = str(sc.get("narration") or "").strip()
 
         w = scene_weights[idx]
-        allocated_dur = round(total_duration * (w / total_weight), 3)
+        allocated_dur = round(usable_duration * (w / total_weight), 3)
 
-        start_time = round(current_time, 3)
-        if idx == len(scenes) - 1:
+        if idx == 0:
+            start_time = 0.0
+            speech_start = round(start_silence_seconds, 3)
+            if n_scenes == 1:
+                end_time = round(total_duration, 3)
+                speech_end = round(total_duration - end_silence_seconds, 3)
+            else:
+                extra_hook_gap = min(opening_hook_pause_seconds * 0.5, 0.4) if opening_hook_pause_seconds > 0 else 0.0
+                end_time = round(start_silence_seconds + allocated_dur + extra_hook_gap, 3)
+                speech_end = round(start_silence_seconds + allocated_dur, 3)
+                current_time = end_time
+        elif idx == n_scenes - 1:
+            start_time = round(current_time, 3)
             end_time = round(total_duration, 3)
-            scene_dur = round(max(0.1, end_time - start_time), 3)
+            speech_start = round(start_time, 3)
+            speech_end = round(max(speech_start + 0.1, total_duration - end_silence_seconds), 3)
         else:
+            start_time = round(current_time, 3)
             end_time = round(start_time + allocated_dur, 3)
-            scene_dur = round(max(0.1, allocated_dur), 3)
+            speech_start = round(start_time, 3)
+            speech_end = round(end_time, 3)
             current_time = end_time
 
+        scene_dur = round(max(0.1, end_time - start_time), 3)
         timings.append(
             {
                 "index": scene_idx,
@@ -384,6 +469,8 @@ def estimate_scene_timings(
                 "start_time": start_time,
                 "end_time": end_time,
                 "duration_seconds": scene_dur,
+                "speech_start_time": speech_start,
+                "speech_end_time": speech_end,
                 "timing_type": "estimated",
             }
         )
@@ -394,16 +481,22 @@ def estimate_scene_timings(
 def generate_continuous_audio(
     narration_script: str,
     provider: BaseVoiceoverProvider,
-    voice: str = "af_heart",
+    voice: str = "am_adam",
     speed: float = 1.0,
     target_duration: float | None = None,
     max_chunk_words: int = 65,
+    start_silence_seconds: float | None = None,
+    opening_hook_pause_seconds: float | None = None,
+    end_silence_seconds: float | None = None,
+    hook_text: str | None = None,
+    isolate_hook: bool = True,
 ) -> tuple[VoiceoverResult, int]:
     """Generate speech for the entire continuous narration script.
 
     Splits into balanced sentence/paragraph chunks when chunking is required,
-    generates speech using the configured voiceover provider, and combines segments
-    with natural inter-chunk breath pauses into a single continuous WAV asset.
+    isolates the opening hook when requested, generates speech using the configured
+    voiceover provider, combines segments with natural inter-chunk breath pauses
+    and hook pause, and pads with start and end silence.
 
     Returns:
         Tuple of (VoiceoverResult, chunks_count).
@@ -412,16 +505,51 @@ def generate_continuous_audio(
     if not clean_text:
         raise ValueError("Narration script text is empty")
 
-    chunks = split_script_into_chunks(clean_text, max_words=max_chunk_words)
+    start_silence = (
+        float(start_silence_seconds)
+        if start_silence_seconds is not None
+        else float(getattr(settings, "voiceover_start_silence_seconds", 0.75))
+    )
+    hook_pause = (
+        float(opening_hook_pause_seconds)
+        if opening_hook_pause_seconds is not None
+        else float(getattr(settings, "voiceover_opening_hook_pause_seconds", 0.75))
+    )
+    end_silence = (
+        float(end_silence_seconds)
+        if end_silence_seconds is not None
+        else float(getattr(settings, "voiceover_end_silence_seconds", 1.0))
+    )
+
+    chunks = split_script_into_chunks(
+        clean_text,
+        max_words=max_chunk_words,
+        isolate_hook=isolate_hook,
+        hook_text=hook_text,
+    )
     if not chunks:
         chunks = [clean_text]
 
     start_time = time.perf_counter()
 
     if len(chunks) == 1:
+        # If target_duration was specified for mock, subtract paddings if positive
+        adj_target = target_duration
+        if adj_target is not None and float(adj_target) > (start_silence + end_silence):
+            adj_target = round(float(adj_target) - start_silence - end_silence, 3)
+
         res = provider.generate(
-            text=chunks[0], voice=voice, speed=speed, target_duration=target_duration
+            text=chunks[0], voice=voice, speed=speed, target_duration=adj_target
         )
+        if start_silence > 0.0 or end_silence > 0.0:
+            comb_bytes, sample_rate, total_duration = concatenate_audio_segments(
+                [(res.audio_bytes, res.sample_rate)],
+                start_pad_seconds=start_silence,
+                end_pad_seconds=end_silence,
+            )
+            res.audio_bytes = comb_bytes
+            res.duration_seconds = total_duration
+            res.sample_rate = sample_rate
         return res, 1
 
     segments: list[tuple[bytes, int]] = []
@@ -432,9 +560,14 @@ def generate_continuous_audio(
         total_calls += getattr(chunk_res, "inference_calls", 1) or 1
         segments.append((chunk_res.audio_bytes, chunk_res.sample_rate))
 
-    inter_chunk_gaps = compute_inter_chunk_gaps(chunks)
+    inter_chunk_gaps = compute_inter_chunk_gaps(
+        chunks, hook_pause_seconds=hook_pause
+    )
     comb_bytes, sample_rate, total_duration = concatenate_audio_segments(
-        segments, gap_seconds=inter_chunk_gaps
+        segments,
+        gap_seconds=inter_chunk_gaps,
+        start_pad_seconds=start_silence,
+        end_pad_seconds=end_silence,
     )
     latency = time.perf_counter() - start_time
 

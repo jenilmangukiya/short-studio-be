@@ -52,29 +52,42 @@ Align the hook and story arc with the chosen `angle`:
 - **"numbers that surprise"**: Lead with a vivid, verifiable scale comparison or measurement.
   - *Examples*: "How does a two-millimeter hole hold back five tons of cabin pressure?" / "Thirty thousand feet of altitude puts five tons of force on this tiny pane."
 
-## 3. Conversational Style, Information Density & Visual Awareness
-- **Sound Like a Person, Not a Document**:
-  - Use everyday words and natural contractions (*it's*, *doesn't*, *can't*, *that's*, *you've*, *won't*).
-  - If you introduce a scientific or technical term, explain it immediately in plain everyday English (e.g., *"That edge is the event horizon, the point where gravity pulls so hard not even light can get out"*).
-  - Avoid stiff academic or encyclopedia phrasing (*"researchers link"*, *"studies haven't shown that... reliably triggers"*, *"scientists infer from observations"*, *"remains uncertain"*, *"no single explanation is settled"*). If science is still exploring a detail, state it warmly and simply (*"Scientists are still piecing together the full picture, but the biggest clue comes from how your brain mirrors people around you"*).
+## 3. Conversational Style, Information Density & Natural Spoken Voice
+- **Natural, Everyday Spoken Language**:
+  - Write like a real person talking to viewers in a natural, conversational way—as if explaining an interesting fact to a friend across the table.
+  - Use everyday vocabulary. Avoid technical or medical jargon when a simpler common word conveys the same idea. When a technical term is essential, introduce it naturally and explain what it means in plain English in the very next breath.
+  - Prefer natural contractions (*it's*, *you're*, *doesn't*, *that's*, *don't*, *can't*) without mechanically forcing them into every single clause.
+  - Allow natural conversational sentence openings (*"But here's the interesting part"*, *"And that's why..."*, *"So basically..."*, *"You know what's strange?"*), but do not overuse them or force them into every sentence.
+- **Avoid Textbook & Encyclopedia Narration**:
+  - Do NOT use formal educational or academic formulations:
+    - *Avoid*: "One leading explanation is that..." -> *Prefer*: "One idea is that..." or "The reason might be..."
+    - *Avoid*: "This phenomenon occurs when..." -> *Prefer*: "This happens when..."
+    - *Avoid*: "It is commonly associated with..." -> *Prefer*: "It can happen more often when..."
+    - *Avoid*: "This can be attributed to..." -> *Prefer*: "That's because..."
+    - *Avoid*: "It is believed that..." -> *Prefer*: "Scientists think..."
+- **Keep Sentences Easy to Understand**:
+  - Prefer short and medium-length sentences. Use roughly 8 to 18 words per sentence as a pacing guideline, not a rigid mathematical constraint.
+  - Explain one clear idea at a time. Avoid packing multiple technical mechanisms or stacked clauses into a single sentence.
+  - Use familiar examples or everyday comparisons when they make something easier to grasp.
+- **Preserve Scientific Accuracy & Epistemic Honesty**:
+  - Simplifying language must never alter factual truth or introduce misconceptions.
+  - Preserve the actual level of scientific certainty from the facts. If something is a leading hypothesis or unproven theory, explicitly state that it is an idea or theory (e.g. *"One idea is that..."*, *"Scientists think..."*). Do not turn possible explanations into settled facts just to sound simpler.
+- **Engaging Narrative Flow Without Gimmicks (Anti-Overcorrection)**:
+  - Do NOT use childish slang, deliberate grammar errors, or broken English.
+  - Do NOT write staccato robotic short sentences or repetitive filler words.
+  - Avoid making every sentence sound like an exaggerated YouTube hook or overusing rhetorical questions.
+  - Connect each thought logically to the one before it with natural spoken transitions (*"When that happens..."*, *"The catch is..."*, *"So instead..."*, *"Which means..."*).
 - **Forbid Repetition and Redundant Filler**:
-  - **Single-Pass Explanations**: Explain each mechanism or concept ONCE and keep moving forward. Do not explain the same concept multiple times using different wording (e.g., explaining low moisture drawing water from bacteria, and then repeating that bacteria need water to survive).
-  - **No Meta-Summary Filler**: Never write summary filler lines like *"Together, these defenses help properly stored honey stay stable for a very long time"*, *"All these factors combine to make it work"*, or *"These elements work together"*. Every sentence must deliver fresh information or progressive cause-and-effect.
-  - **Vary Sentence Subjects**: Do not start three consecutive sentences with the topic name (*"Honey is... Honey also... Honey can..."*). Use natural pronouns, causal connectors, or active physical descriptions.
+  - **Single-Pass Explanations**: Explain each mechanism or concept ONCE and keep moving forward. Never repeat the same point in different words.
+  - **No Meta-Summary Filler**: Never write summary filler lines like *"Together, these defenses help keep it stable..."* or *"All these factors combine to make it work"*. Every sentence must deliver fresh narrative progression.
+  - **Vary Sentence Subjects**: Do not start three consecutive sentences with the topic noun. Use pronouns, causal connectors, or active physical descriptions.
 - **Visual Storytelling Awareness (Writing for the Screen)**:
-  - Short-form video transitions visual moments every 3 to 5 seconds. Write narration that naturally moves through distinct physical/visual stages:
+  - Short-form video transitions visual moments every 2 to 5 seconds. Write narration that naturally moves through distinct physical/visual stages:
     1. A concrete physical subject or dramatic visual contrast.
     2. An internal, structural, or microscopic mechanism.
     3. The chemical, biological, or physical action taking place.
     4. The real-world consequence, exception, or test condition.
     5. A clean, memorable visual payoff.
-  - Avoid static prose that lingers on the same visual subject from multiple angles without progressing the narrative.
-- **Forbid Disconnected Fact Lists**:
-  - Do NOT write a list of separate trivia facts ("X also does Y. When X joins together... Scientists first detected...").
-  - Every sentence must connect logically to the sentence right before it using natural spoken transitions (*"That happens because..."*, *"The catch is..."*, *"So instead..."*, *"When that happens..."*, *"Without it..."*, *"Which means..."*).
-- **Spoken Rhythm & Sentence Variety**:
-  - Vary sentence length so the voiceover breathes naturally. Mix medium explanatory sentences (12–20 words) with short, punchy sentences (5–10 words) that land key takeaways.
-  - Keep sentences concise and conversational. Never write long, winding sentences over 25 words with stacked clauses.
 - **Duration-Aware Length & Pacing**:
   - Total `narration` length must strictly conform to the target word count specified in the project details (typically 75–105 words for 35–42 seconds, or 110–150 words for 50–60 seconds).
   - Never write unnecessary filler or circular explanations just to pad out word count.

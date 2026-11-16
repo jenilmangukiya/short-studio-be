@@ -167,6 +167,12 @@ def generate_images_step(
     video_topic = getattr(video, "topic", None)
     video_title = getattr(video, "title", None)
 
+    # Detect if storyboard is connected (8-step pipeline with Video Bible)
+    is_connected_storyboard = bool(
+        (isinstance(sb, dict) and sb.get("video_bible"))
+        or (isinstance(prev, dict) and prev.get("video_bible"))
+    )
+
     # 6. Prepare filesystem storage directory
     storage_root = Path(settings.storage_dir)
     images_dir = storage_root / str(video.id) / "images"
@@ -257,19 +263,31 @@ def generate_images_step(
         prev_scene = scenes[idx - 1] if idx > 0 else None
         next_scene = scenes[idx + 1] if idx + 1 < len(scenes) else None
         beats = scene.get("visual_beats") or []
-        primary_beat_id = beats[0].get("id", f"beat_{scene_idx}_1") if beats else f"scene_{scene_idx}"
+        primary_beat = beats[0] if beats else None
+        primary_beat_id = primary_beat.get("id", f"beat_{scene_idx}_1") if primary_beat else f"scene_{scene_idx}"
 
-        # Dynamically compose exact final prompt at generation time
-        prompt_text = compose_final_prompt(
-            scene=scene,
-            subject_anchor=subject_anchor,
-            visual_style=visual_style,
-            environment_anchor=environment_anchor,
-            video_topic=video_topic,
-            video_title=video_title,
-            prev_scene=prev_scene,
-            next_scene=next_scene,
+        # Consume precomposed final_prompt: beat final_prompt -> scene final_prompt -> legacy fallback
+        prompt_text = (
+            (primary_beat.get("final_prompt") if isinstance(primary_beat, dict) else getattr(primary_beat, "final_prompt", None))
+            or scene.get("final_prompt")
         )
+
+        if not prompt_text or not str(prompt_text).strip():
+            if is_connected_storyboard:
+                raise PipelineError(
+                    f"Missing required final_prompt for scene {scene_idx} (beat '{primary_beat_id}') in connected storyboard."
+                )
+            # Legacy fallback for older 6-step videos without precomposed prompts
+            prompt_text = compose_final_prompt(
+                scene=scene,
+                subject_anchor=subject_anchor,
+                visual_style=visual_style,
+                environment_anchor=environment_anchor,
+                video_topic=video_topic,
+                video_title=video_title,
+                prev_scene=prev_scene,
+                next_scene=next_scene,
+            )
 
         # Full SHA256 prompt hash over exact prompt, provider model, size, and quality
         hash_payload = f"{prompt_text}|{provider.model}|{size}|{quality}".encode("utf-8")
@@ -475,24 +493,34 @@ def generate_images_step(
                     else:
                         raise PipelineError(f"Image reference '{ref_sid}' for beat '{b_id}' not found.")
 
-                # Unique image generation for this visual beat
-                beat_ctx = {
-                    **scene,
-                    "image_prompt": beat.get("visual_description") or scene.get("image_prompt"),
-                    "shot_type": beat.get("shot_type") or scene.get("shot_type"),
-                    "camera_angle": beat.get("camera_angle") or scene.get("camera_angle"),
-                    "focal_point": beat.get("focal_point") or scene.get("focal_point"),
-                    "visual_technique": beat.get("visual_technique") or scene.get("visual_technique"),
-                    "visual_purpose": beat.get("visual_purpose") or scene.get("visual_purpose"),
-                }
-                b_prompt = compose_final_prompt(
-                    scene=beat_ctx,
-                    subject_anchor=subject_anchor,
-                    visual_style=visual_style,
-                    environment_anchor=environment_anchor,
-                    video_topic=video_topic,
-                    video_title=video_title,
+                # Consume precomposed final_prompt: beat final_prompt -> scene final_prompt -> legacy fallback
+                b_prompt = (
+                    beat.get("final_prompt")
+                    or scene.get("final_prompt")
                 )
+                if not b_prompt or not str(b_prompt).strip():
+                    if is_connected_storyboard:
+                        raise PipelineError(
+                            f"Missing required final_prompt for beat '{b_id}' in connected storyboard."
+                        )
+                    # Legacy fallback for older 6-step videos without precomposed beat prompts
+                    beat_ctx = {
+                        **scene,
+                        "image_prompt": beat.get("visual_description") or scene.get("image_prompt"),
+                        "shot_type": beat.get("shot_type") or scene.get("shot_type"),
+                        "camera_angle": beat.get("camera_angle") or scene.get("camera_angle"),
+                        "focal_point": beat.get("focal_point") or scene.get("focal_point"),
+                        "visual_technique": beat.get("visual_technique") or scene.get("visual_technique"),
+                        "visual_purpose": beat.get("visual_purpose") or scene.get("visual_purpose"),
+                    }
+                    b_prompt = compose_final_prompt(
+                        scene=beat_ctx,
+                        subject_anchor=subject_anchor,
+                        visual_style=visual_style,
+                        environment_anchor=environment_anchor,
+                        video_topic=video_topic,
+                        video_title=video_title,
+                    )
                 b_hash_payload = f"{b_prompt}|{provider.model}|{size}|{quality}".encode("utf-8")
                 b_full_hash = hashlib.sha256(b_hash_payload).hexdigest()
                 b_hash8 = b_full_hash[:8]

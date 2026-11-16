@@ -13,7 +13,7 @@ from app.voiceover import get_voiceover_provider
 
 def main():
     narration = "Welcome to Shorts Studio. Today, we are exploring something interesting."
-    voice = "af_heart"
+    voice = getattr(settings, "voiceover_default_voice", "am_adam")
     output_path = Path("storage/kokoro-smoke-test.wav")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

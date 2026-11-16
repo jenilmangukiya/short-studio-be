@@ -319,6 +319,10 @@ class VisualBeat(BaseModel):
         default_factory=list,
         description="Foley audio cues for this beat",
     )
+    final_prompt: str | None = Field(
+        default=None,
+        description="The complete composed image prompt for this visual beat",
+    )
 
     @property
     def image_id(self) -> str:
@@ -2004,6 +2008,53 @@ def generate_storyboard_step(
         raw_cs = getattr(s, "character_state", None)
         cs_dict = raw_cs.model_dump() if hasattr(raw_cs, "model_dump") else (dict(raw_cs) if isinstance(raw_cs, dict) else None)
 
+        # Ensure every visual beat that has its own visual direction receives its own final_prompt
+        for b_order, b in enumerate(normalized_beats, start=1):
+            has_own_direction = (
+                len(normalized_beats) > 1
+                or bool(b.visual_description and b.visual_description != getattr(s, "visual_purpose", ""))
+                or bool(b.character_state or b.camera or b.entity_bindings or b.environment_state_override)
+            )
+
+            if has_own_direction:
+                b_ctx = {
+                    "index": idx,
+                    "scene_index": idx,
+                    "order": b.order or b_order,
+                    "id": b.id or f"beat_{idx}_{b_order}",
+                    "narration": b.narration_text or s.narration,
+                    "visual_description": b.visual_description or getattr(s, "image_prompt", "") or "",
+                    "visual_purpose": b.visual_purpose or getattr(s, "visual_purpose", "") or "",
+                    "shot_type": b.shot_type or s.shot_type,
+                    "camera_angle": b.camera_angle or getattr(s, "camera_angle", "eye-level"),
+                    "focal_point": b.focal_point or getattr(s, "focal_point", ""),
+                    "visual_technique": b.visual_technique or getattr(s, "visual_technique", "cinematic-photo"),
+                    "image_prompt": b.visual_description or getattr(s, "image_prompt", ""),
+                    "uses_anchor": bool(s.uses_anchor),
+                    "entity_bindings": b.entity_bindings or eb_dict,
+                    "camera": b.camera or cam_dict,
+                    "character_state": b.character_state or cs_dict,
+                    "environment_state_override": b.environment_state_override or getattr(s, "environment_state_override", None),
+                    "transition_from_previous": b.transition_from_previous or getattr(s, "transition_from_previous", "same_scene_reframe"),
+                    "continuity_intent": b.continuity_intent or getattr(s, "continuity_intent", ""),
+                    "environment": getattr(s, "environment", "") or "",
+                }
+                b.final_prompt = compose_final_prompt(
+                    scene=b_ctx,
+                    subject_anchor=subject_anchor,
+                    visual_style=visual_style,
+                    environment_anchor=environment_anchor,
+                    video_topic=getattr(video, "topic", None),
+                    video_title=getattr(video, "title", None),
+                    prev_scene=prev_s,
+                    next_scene=next_s,
+                    video_bible=vb_data,
+                    creative_direction=cd_data,
+                )
+            else:
+                # Beats without separate visual direction reuse the scene-level prompt
+                b.final_prompt = final_prompt
+
         raw_fc = getattr(s, "foley_cues", []) or []
         fc_list = [f.model_dump() if hasattr(f, "model_dump") else dict(f) for f in raw_fc]
 
@@ -2085,6 +2136,7 @@ def generate_storyboard_step(
                 character_state=cs_obj,
                 environment_state_override=b.get("environment_state_override") or sc.get("environment_state_override"),
                 foley_cues=[FoleyCue.model_validate(fc) for fc in b.get("foley_cues", [])],
+                final_prompt=b.get("final_prompt") or sc.get("final_prompt"),
             )
             flat_beats.append(sb_beat.model_dump())
 

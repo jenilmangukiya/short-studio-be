@@ -111,6 +111,94 @@ def adapt_visual_style(
     return ", ".join(kept_parts)
 
 
+def _clean_conceptual_analogy(text: str) -> str:
+    """Sanitize concept visual analogy for standalone conceptual beats.
+
+    Ensures only a single figure or silhouette is referenced, and converts physical
+    bedding/furniture references into abstract visual equivalents.
+    """
+    if not text:
+        return ""
+    s = text.strip()
+
+    # Remove leading physical bedroom actions (e.g. "The sleeper gently settles into the bed while...")
+    s = re.sub(
+        r"^[Tt]he\s+sleeper\s+gently\s+settles\s+into\s+the\s+bed\s+while\s+",
+        "",
+        s,
+    )
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+
+    # Prevent duplicate figures: transform "passes through the duvet as the sleeper gives..."
+    s = re.sub(
+        r"\bthrough\s+the\s+duvet\s+as\s+the\s+sleeper\s+gives\b",
+        "through a single simplified body silhouette during",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\bthrough\s+the\s+duvet\b",
+        "through a single simplified body silhouette",
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # Transform bedding and furniture to abstract equivalents
+    s = re.sub(r"\bback\s+into\s+the\s+pillow\b", "back to rest", s, flags=re.IGNORECASE)
+    s = re.sub(r"\binto\s+the\s+pillow\b", "to rest", s, flags=re.IGNORECASE)
+    s = re.sub(r"\binto\s+the\s+bed\b", "into rest", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bon\s+the\s+mattress\b", "in abstract space", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bon\s+the\s+bed\b", "in abstract space", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(duvet|pillow|mattress|bedding)\b", "", s, flags=re.IGNORECASE)
+
+    # Standardize character references to a single body silhouette
+    s = re.sub(r"\ba\s+simple\s+body\s+silhouette\b", "a single body silhouette", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bthe\s+sleeper\b", "the silhouette", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bthe\s+sleeper's\b", "the silhouette's", s, flags=re.IGNORECASE)
+
+    # Clean whitespace and punctuation
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+([,.;])", r"\1", s)
+    s = re.sub(r",\s*,", ",", s)
+    return s.strip()
+
+
+def _clean_conceptual_styling(text: str) -> str:
+    """Sanitize styling/explanation text so it complements the visual diagram without repeating the visual silhouette or character."""
+    if not text:
+        return ""
+    s = text.strip()
+
+    # In styling/explanation, replace "as the sleeper drifts off..." with bodily/sensory transition
+    s = re.sub(
+        r"\bAs\s+the\s+sleeper\s+drifts\s+off\s+and\s+muscles\s+relax\b",
+        "As muscles relax during the transition to sleep",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\bthe\s+sleeper\s+drifts\s+off\b",
+        "the body drifts into rest",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\bas\s+a\s+person\s+transitions\s+into\s+sleep\b",
+        "during the sleep-onset transition",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\bthe\s+sleeper\b", "the resting body", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bthe\s+sleeper's\b", "the body's", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(duvet|pillow|mattress|bedding|bed)\b", "", s, flags=re.IGNORECASE)
+
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+([,.;])", r"\1", s)
+    s = re.sub(r",\s*,", ",", s)
+    return s.strip()
+
+
 def _compose_connected_final_prompt(
     scene: Any,
     video_bible: dict[str, Any] | Any,
@@ -225,6 +313,8 @@ def _compose_connected_final_prompt(
 
     segments: list[str] = []
 
+    is_standalone_concept = bool(concept_id and not char_id)
+
     # Segment 1: Art Direction & Style Engine
     style_family = str(art_dir.get("style_family", "cinematic")).strip()
     visual_genre = str(art_dir.get("visual_genre", "photorealistic_cinematic")).replace("_", " ").strip()
@@ -233,7 +323,39 @@ def _compose_connected_final_prompt(
 
     art_parts: list[str] = [f"{visual_genre.capitalize()} visual style"]
     if texture:
-        art_parts.append(texture)
+        if is_standalone_concept:
+            # Filter out physical scene textures (e.g. bedding, duvet, mattress, pillows, cotton weave, tousled hair, clothing, skin shading)
+            physical_terms = (
+                "cotton weave",
+                "bedding",
+                "rumpled",
+                "bed",
+                "duvet",
+                "pillow",
+                "mattress",
+                "nightstand",
+                "furniture",
+                "tousled hair",
+                "hair",
+                "clothing",
+                "shirt",
+                "pajama",
+                "fabric",
+                "skin shading",
+            )
+            parts = [p.strip() for p in texture.split(",") if p.strip()]
+            kept_textures = []
+            for part in parts:
+                low = part.lower().rstrip(".")
+                if any(t in low for t in physical_terms):
+                    continue
+                clean_p = re.sub(r"^(and\s+)", "", part.strip(), flags=re.IGNORECASE).strip().rstrip(".")
+                if clean_p:
+                    kept_textures.append(clean_p)
+            if kept_textures:
+                art_parts.append(", ".join(kept_textures))
+        else:
+            art_parts.append(texture)
     segments.append(_clean_segment(", ".join(art_parts)))
 
     # Segment 2: Bound Character (ONLY if character_id is explicitly bound)
@@ -268,6 +390,9 @@ def _compose_connected_final_prompt(
         cp_name = _extract(cp_entry, "name", "")
         cp_style = _extract(cp_entry, "visual_analogy") or _extract(cp_entry, "diagram_style", "")
         cp_rules = _extract(cp_entry, "concept_explained") or _extract(cp_entry, "labeling_rules", "")
+        if is_standalone_concept:
+            cp_style = _clean_conceptual_analogy(str(cp_style))
+            cp_rules = _clean_conceptual_styling(str(cp_rules))
         cpt_desc = f"Visual diagram concept: {cp_name}, {cp_style}"
         if cp_rules:
             cpt_desc += f". Styling: {cp_rules}"
@@ -277,8 +402,11 @@ def _compose_connected_final_prompt(
         e_name = _extract(e_entry, "name", "")
         e_desc = _extract(e_entry, "spatial_layout") or _extract(e_entry, "description", "")
         e_light = _extract(e_entry, "lighting_setup") or _extract(e_entry, "lighting", "")
+        e_props = _extract(e_entry, "persistent_props") or []
 
         env_desc = f"Environment setting: {e_name}, {e_desc}"
+        if e_props:
+            env_desc += f". Persistent props: {'; '.join(str(p) for p in e_props)}"
         if env_override:
             env_desc += f". Condition: {env_override}"
         if e_light and e_light.lower() not in lighting_phil.lower():
@@ -312,13 +440,20 @@ def _compose_connected_final_prompt(
     if focal_point and focal_point.lower() not in ("default", ""):
         segments.append(_clean_segment(f"Primary focal point: {focal_point}"))
 
-    # Segment 6: Narrative Transition Rationale
+    # Segment 6: Narrative Transition Rationale & Visual Action
+    context_parts: list[str] = []
     if transition == "explanatory_cutaway":
-        segments.append(_clean_segment("Framing context: explanatory cutaway transition"))
+        context_parts.append("Framing context: explanatory cutaway transition")
     elif transition == "surreal_metaphor":
-        segments.append(_clean_segment("Framing context: surreal visual metaphor"))
-    elif visual_purpose and len(visual_purpose.split()) >= 3:
-        segments.append(_clean_segment(f"Visual concept: {visual_purpose}"))
+        context_parts.append("Framing context: surreal visual metaphor")
+
+    visual_desc = str(_extract(scene, "visual_description", "") or "").strip()
+    action_text = visual_desc or visual_purpose
+    if action_text and len(action_text.split()) >= 3:
+        context_parts.append(f"Visual moment: {action_text}")
+
+    if context_parts:
+        segments.append(_clean_segment(". ".join(context_parts)))
 
     # Segment 7: Color Palette Harmony
     palette = art_dir.get("primary_palette_hex") or []
@@ -326,14 +461,55 @@ def _compose_connected_final_prompt(
         palette_str = ", ".join(str(p) for p in palette)
         segments.append(_clean_segment(f"Color palette: {palette_str}"))
 
-    # Segment 8: Negative Constraints
-    neg_anchors = list(art_dir.get("negative_anchors") or [])
-    if not neg_anchors and art_dir.get("negative_prompt_tokens"):
-        neg_anchors = [str(art_dir.get("negative_prompt_tokens"))]
-    if concept_id and not any("bedroom" in str(n).lower() for n in neg_anchors):
-        neg_anchors.append("bedroom setting")
-    if neg_anchors:
-        segments.append(_clean_segment(f"Negative constraints: no {', no '.join(neg_anchors)}"))
+    # Segment 8: Continuity Rules and Negative Constraints
+    raw_anchors = list(art_dir.get("negative_anchors") or [])
+    if not raw_anchors and art_dir.get("negative_prompt_tokens"):
+        raw_anchors = [str(art_dir.get("negative_prompt_tokens"))]
+
+    continuity_rules: list[str] = []
+    negative_rules: list[str] = []
+
+    prohibitive_prefixes = ("no ", "never ", "do not ", "don't ", "avoid ", "without ", "stop ")
+    affirmative_prefixes = ("keep ", "maintain ", "ensure ", "always ")
+
+    for item in raw_anchors:
+        s = str(item).strip()
+        if not s:
+            continue
+        lower = s.lower()
+        if any(lower.startswith(p) for p in affirmative_prefixes):
+            # In standalone conceptual explanation beats, omit continuity rules mandating sleeper or bedroom
+            if concept_id and not char_id and any(term in lower for term in ("sleeper", "character", "bedroom", "person")):
+                continue
+            if s not in continuity_rules:
+                continuity_rules.append(s)
+        else:
+            clean_neg = s if any(lower.startswith(p) for p in prohibitive_prefixes) else f"no {s}"
+            if clean_neg not in negative_rules:
+                negative_rules.append(clean_neg)
+
+    # Character forbidden mutations (only when a character is actively bound)
+    if char_id and char_id in chars_by_id:
+        c_entry = chars_by_id[char_id]
+        c_mutations = _extract(c_entry, "forbidden_mutations") or []
+        for mut in c_mutations:
+            m_str = str(mut).strip()
+            if not m_str:
+                continue
+            lower_m = m_str.lower()
+            clean_m = m_str if any(lower_m.startswith(p) for p in prohibitive_prefixes) else f"no {m_str}"
+            if clean_m not in negative_rules:
+                negative_rules.append(clean_m)
+
+    # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements
+    if concept_id and not char_id:
+        if not any("bedroom" in r.lower() for r in negative_rules):
+            negative_rules.append("no bedroom setting")
+
+    if continuity_rules:
+        segments.append(_clean_segment(f"Continuity rules: {', '.join(continuity_rules)}"))
+    if negative_rules:
+        segments.append(_clean_segment(f"Negative constraints: {', '.join(negative_rules)}"))
 
     # Segment 9: Fixed Composition Rules
     segments.append(_clean_segment(COMPOSITION_RULES))
@@ -471,6 +647,7 @@ def recompute_final_prompts(
     storyboard: dict[str, Any],
     visual_style: str | None = None,
     video_bible: dict[str, Any] | Any | None = None,
+    creative_direction: dict[str, Any] | Any | None = None,
 ) -> dict[str, Any]:
     """Rebuild every scene's final_prompt from its component parts.
 
@@ -487,12 +664,13 @@ def recompute_final_prompts(
     anchor = target.get("subject_anchor") or ""
     env_anchor = target.get("environment_anchor") or ""
     vb = video_bible or target.get("video_bible")
+    cd = creative_direction or target.get("creative_direction")
 
     scenes = target.get("scenes") or []
     for idx, s in enumerate(scenes):
         prev_s = scenes[idx - 1] if idx > 0 else None
         next_s = scenes[idx + 1] if idx + 1 < len(scenes) else None
-        s["final_prompt"] = compose_final_prompt(
+        scene_prompt = compose_final_prompt(
             scene=s,
             subject_anchor=anchor,
             visual_style=style,
@@ -500,6 +678,23 @@ def recompute_final_prompts(
             prev_scene=prev_s,
             next_scene=next_s,
             video_bible=vb,
+            creative_direction=cd,
         )
+        s["final_prompt"] = scene_prompt
+
+        beats = s.get("visual_beats") or []
+        for b in beats:
+            if isinstance(b, dict):
+                b_ctx = {**s, **b}
+                b["final_prompt"] = compose_final_prompt(
+                    scene=b_ctx,
+                    subject_anchor=anchor,
+                    visual_style=style,
+                    environment_anchor=env_anchor,
+                    prev_scene=prev_s,
+                    next_scene=next_s,
+                    video_bible=vb,
+                    creative_direction=cd,
+                )
 
     return storyboard
