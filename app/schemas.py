@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class ORM(BaseModel):
@@ -56,6 +56,13 @@ class VideoCreate(BaseModel):
     description: str | None = None
 
 
+class SubtitleStyleOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    is_default: bool = False
+
+
 class StepOut(ORM):
     name: str
     position: int
@@ -66,6 +73,18 @@ class StepOut(ORM):
     started_at: datetime | None
     finished_at: datetime | None
     revisions_count: int = 0
+
+    @field_validator("output", mode="after")
+    @classmethod
+    def ensure_subtitles_style(cls, v: dict | None) -> dict | None:
+        if isinstance(v, dict) and "subtitles" in v and isinstance(v["subtitles"], dict):
+            if not v["subtitles"].get("style"):
+                new_v = dict(v)
+                new_sub = dict(new_v["subtitles"])
+                new_sub["style"] = "clean_cinematic"
+                new_v["subtitles"] = new_sub
+                return new_v
+        return v
 
 
 class StepRevisionOut(ORM):
@@ -118,6 +137,19 @@ class VideoDetail(VideoSummary):
 
 class RerunBody(BaseModel):
     prompt: str | None = None  # "make the hook more dramatic", etc.
+    subtitle_style: str | None = None
+
+    @field_validator("subtitle_style")
+    @classmethod
+    def validate_subtitle_style(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        norm = v.strip().lower()
+        from .subtitles.styles import SUBTITLE_STYLES
+        if norm not in SUBTITLE_STYLES:
+            valid_ids = sorted(SUBTITLE_STYLES.keys())
+            raise ValueError(f"Unknown subtitle style '{v}'. Valid styles: {valid_ids}")
+        return norm
 
 
 # ============================================================================

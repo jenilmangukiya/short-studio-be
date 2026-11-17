@@ -19,6 +19,7 @@ from ..schemas import (
     StepApproveBody,
     StepContentUpdate,
     StepRevisionOut,
+    SubtitleStyleOut,
     VideoCreate,
     VideoDetail,
     VideoSummary,
@@ -40,6 +41,22 @@ def create_video(body: VideoCreate, channel: Channel = Depends(get_owned_channel
 @router.get("/channels/{channel_id}/videos", response_model=list[VideoSummary])
 def list_videos(channel: Channel = Depends(get_owned_channel), db: Session = Depends(get_db)):
     return db.scalars(select(Video).where(Video.channel_id == channel.id).order_by(Video.created_at.desc())).all()
+
+
+@router.get("/videos/subtitle-styles", response_model=list[SubtitleStyleOut])
+def get_subtitle_styles():
+    """Retrieve all registered subtitle visual styles in canonical display order."""
+    from ..subtitles.styles import DEFAULT_SUBTITLE_STYLE_ID, list_subtitle_styles
+
+    return [
+        SubtitleStyleOut(
+            id=s.id,
+            name=s.name,
+            description=s.description,
+            is_default=(s.id == DEFAULT_SUBTITLE_STYLE_ID),
+        )
+        for s in list_subtitle_styles()
+    ]
 
 
 @router.get("/videos/{video_id}", response_model=VideoDetail)
@@ -104,7 +121,7 @@ def rerun(step_name: str, body: RerunBody, video: Video = Depends(get_owned_vide
     if step_name not in pipeline.STEPS:
         raise HTTPException(404, f"Unknown step. Valid: {pipeline.STEPS}")
     try:
-        pipeline.rerun_step(db, video, step_name, body.prompt)
+        pipeline.rerun_step(db, video, step_name, body.prompt, subtitle_style=body.subtitle_style)
     except pipeline.PipelineError as e:
         raise HTTPException(409, str(e))
     return video
@@ -386,6 +403,9 @@ def get_video_subtitles(video: Video = Depends(get_owned_video)):
     subtitles_data = step.output.get("subtitles")
     if not subtitles_data:
         raise HTTPException(404, f"Subtitles data is not ready for video {video.id}")
+
+    if isinstance(subtitles_data, dict) and not subtitles_data.get("style"):
+        return {**subtitles_data, "style": "clean_cinematic"}
 
     return subtitles_data
 

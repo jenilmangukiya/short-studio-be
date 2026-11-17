@@ -143,6 +143,7 @@ def generate_subtitles_step(
     prev: dict[str, Any],
     step: VideoStep | None = None,
     subtitle_provider: BaseSubtitleProvider | None = None,
+    subtitle_style: str | None = None,
 ) -> dict[str, Any]:
     """Execute the subtitle generation and video captioning step for a video.
 
@@ -151,6 +152,7 @@ def generate_subtitles_step(
         prev: Dictionary containing outputs of preceding pipeline steps.
         step: Current VideoStep instance (for status and error handling).
         subtitle_provider: Optional provider override (e.g. for testing).
+        subtitle_style: Optional style ID override (e.g. 'remotion_neon').
 
     Returns:
         Structured dictionary conforming to the pipeline handler interface.
@@ -274,12 +276,30 @@ def generate_subtitles_step(
     # Keep voiceover scene timings consistent with the alignment used for captions.
     _sync_voiceover_timings(video, prev, sorted_scenes, result, alignment_hash)
 
+    # Resolve subtitle visual style:
+    # 1. Explicit style supplied in rerun / caller argument
+    # 2. Previously selected style for that video (from step output)
+    # 3. Canonical fallback ('clean_cinematic') if video has no previously selected style
+    candidate_style: str | None = subtitle_style
+    if not candidate_style and step is not None and isinstance(step.output, dict):
+        sub_out = step.output.get("subtitles")
+        if isinstance(sub_out, dict) and sub_out.get("style"):
+            candidate_style = str(sub_out["style"])
+        elif step.output.get("style"):
+            candidate_style = str(step.output["style"])
+
+    from app.subtitles.styles import DEFAULT_SUBTITLE_STYLE_ID, get_subtitle_style
+
+    style_obj = get_subtitle_style(candidate_style)
+    active_style_id = style_obj.id
+
     # 8. Write subtitle artifacts to storage
     subtitles_dict = result.to_dict()
+    subtitles_dict["style"] = active_style_id
     json_abs_path.write_text(json.dumps(subtitles_dict, indent=2), encoding="utf-8")
     vtt_abs_path.write_text(result.to_vtt(), encoding="utf-8")
     srt_abs_path.write_text(result.to_srt(), encoding="utf-8")
-    ass_abs_path.write_text(result.to_ass(), encoding="utf-8")
+    ass_abs_path.write_text(result.to_ass(style=style_obj), encoding="utf-8")
 
     # 9. Burn subtitles into separate captioned video via FFmpeg if rendered video exists
     warnings: list[str] = []
@@ -357,6 +377,7 @@ def generate_subtitles_step(
             "ass_file": ass_rel_path,
             "captioned_file": captioned_rel_path if is_captioned_ready else None,
             "captioned_video_path": str(captioned_abs_path) if is_captioned_ready else None,
+            "style": active_style_id,
         },
         "subtitles_path": str(json_abs_path),
         "vtt_path": str(vtt_abs_path),

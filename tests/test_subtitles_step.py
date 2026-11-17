@@ -439,9 +439,9 @@ def test_subtitle_result_ass_format():
     assert "PlayResY: 1920" in ass_text
     assert "[V4+ Styles]" in ass_text
     assert "[Events]" in ass_text
-    assert r"{\c&H0028F5FC&}Why{\c&H00FFFFFF&} do airplanes" in ass_text
-    assert r"Why {\c&H0028F5FC&}do{\c&H00FFFFFF&} airplanes" in ass_text
-    assert r"Why do {\c&H0028F5FC&}airplanes{\c&H00FFFFFF&}" in ass_text
+    assert r"{\c&H004DD3FC&\fscx108\fscy108}Why{\c&H00FFFFFF&\fscx100\fscy100} do airplanes" in ass_text
+    assert r"Why {\c&H004DD3FC&\fscx108\fscy108}do{\c&H00FFFFFF&\fscx100\fscy100} airplanes" in ass_text
+    assert r"Why do {\c&H004DD3FC&\fscx108\fscy108}airplanes{\c&H00FFFFFF&\fscx100\fscy100}" in ass_text
 
 
 def test_generate_subtitles_step_burns_captioned_video(tmp_path, monkeypatch):

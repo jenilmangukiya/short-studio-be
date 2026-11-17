@@ -7,6 +7,12 @@ import json
 import re
 from typing import Any
 
+from .styles import (
+    DEFAULT_SUBTITLE_STYLE_ID,
+    SubtitleStyle,
+    get_subtitle_style,
+)
+
 
 @dataclass
 class WordTimestamp:
@@ -262,8 +268,16 @@ class SubtitleResult:
             lines.append(f"{i}\n{t_start} --> {t_end}\n{seg.text.strip()}\n")
         return "\n".join(lines)
 
-    def to_ass(self) -> str:
-        """Export subtitle segments as ASS (.ass) subtitle text with word-level highlight animation."""
+    def to_ass(self, style: str | SubtitleStyle | None = None) -> str:
+        """Export subtitle segments as ASS (.ass) subtitle text with word-level highlight animation.
+
+        Args:
+            style: Optional subtitle style identifier (e.g. 'clean_cinematic', 'remotion_neon',
+                   'dynamic_highlight') or SubtitleStyle instance. Defaults to 'clean_cinematic'
+                   to maintain complete backward compatibility.
+        """
+        style_obj = style if isinstance(style, SubtitleStyle) else get_subtitle_style(style)
+
         header = [
             "[Script Info]",
             "ScriptType: v4.00+",
@@ -273,7 +287,7 @@ class SubtitleResult:
             "",
             "[V4+ Styles]",
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-            r"Style: Default,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,360,1",
+            style_obj.build_ass_style_header("Default"),
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -325,9 +339,32 @@ class SubtitleResult:
 
                 parts = []
                 for idx, cw in enumerate(chunk_words):
-                    txt = cw.text
+                    txt = cw.text.upper() if style_obj.uppercase else cw.text
                     if idx == w_idx:
-                        parts.append(r"{\c&H0028F5FC&}" + txt + r"{\c&H00FFFFFF&}")
+                        if style_obj.active_scale_percent and style_obj.active_scale_percent != 100:
+                            scale_tag = f"\\fscx{style_obj.active_scale_percent}\\fscy{style_obj.active_scale_percent}"
+                            reset_scale_tag = "\\fscx100\\fscy100"
+                            parts.append(
+                                "{"
+                                + style_obj.active_color_tag
+                                + scale_tag
+                                + "}"
+                                + txt
+                                + "{"
+                                + style_obj.primary_color_tag
+                                + reset_scale_tag
+                                + "}"
+                            )
+                        else:
+                            parts.append(
+                                "{"
+                                + style_obj.active_color_tag
+                                + "}"
+                                + txt
+                                + "{"
+                                + style_obj.primary_color_tag
+                                + "}"
+                            )
                     else:
                         parts.append(txt)
 

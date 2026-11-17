@@ -221,7 +221,13 @@ def approve_step(db: Session, video: Video, step_name: str) -> VideoStep:
     return step
 
 
-def rerun_step(db: Session, video: Video, step_name: str, prompt: str | None):
+def rerun_step(
+    db: Session,
+    video: Video,
+    step_name: str,
+    prompt: str | None,
+    subtitle_style: str | None = None,
+):
     """Reset one step (with optional revision prompt) and mark downstream steps stale.
     Cancels any queued jobs and ensures no worker is actively executing."""
     if any(s.status == "running" for s in video.steps):
@@ -255,6 +261,15 @@ def rerun_step(db: Session, video: Video, step_name: str, prompt: str | None):
     for s in video.steps:
         if s.position == target.position:
             s.status, s.user_prompt, s.error = "pending", prompt, None
+            if s.name in ("subtitles", "subtitle") and subtitle_style:
+                if isinstance(s.output, dict):
+                    new_out = dict(s.output)
+                    sub_dict = dict(new_out.get("subtitles") or {})
+                    sub_dict["style"] = subtitle_style
+                    new_out["subtitles"] = sub_dict
+                    s.output = new_out
+                else:
+                    s.output = {"subtitles": {"style": subtitle_style}}
         elif s.position > target.position and s.status in ("done", "awaiting_approval"):
             s.status = "stale"
     video.status = "in_progress"
