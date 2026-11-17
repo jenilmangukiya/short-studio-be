@@ -1811,12 +1811,15 @@ def generate_storyboard_step(
 
     visual_style: str
     style_source: Literal["channel", "default"]
-    if (
-        isinstance(channel_settings, dict)
-        and isinstance(channel_settings.get("visual_style"), str)
-        and channel_settings["visual_style"].strip()
-    ):
-        visual_style = channel_settings["visual_style"].strip()
+    raw_style = None
+    if isinstance(channel_settings, dict):
+        raw_style = (
+            channel_settings.get("visual_style")
+            or channel_settings.get("style_prompt")
+            or channel_settings.get("visual_direction")
+        )
+    if isinstance(raw_style, str) and raw_style.strip():
+        visual_style = raw_style.strip()
         style_source = "channel"
     else:
         visual_style = load_default_visual_style()

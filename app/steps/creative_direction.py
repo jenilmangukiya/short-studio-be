@@ -74,7 +74,10 @@ def build_creative_direction_prompt(
             sections.append(f"- **Niche**: {channel_niche}")
         if channel_settings:
             # Avoid exposing internal secrets, pass relevant visual/brand settings
-            brand_keys = {k: v for k, v in channel_settings.items() if k in ("visual_style", "tone", "target_audience")}
+            brand_keys = {
+                k: v for k, v in channel_settings.items()
+                if k in ("visual_style", "style_prompt", "visual_direction", "tone", "target_audience")
+            }
             if brand_keys:
                 sections.append(f"- **Brand Settings**: {json.dumps(brand_keys)}")
 

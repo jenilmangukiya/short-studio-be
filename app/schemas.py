@@ -26,6 +26,19 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+MAX_VISUAL_STYLE_LENGTH: int = 2000
+STYLE_PROMPT_KEYS: tuple[str, ...] = ("visual_style", "style_prompt", "visual_direction")
+
+
+def validate_visual_style_length(val: str | None) -> str | None:
+    """Validate that visual direction / style prompt text does not exceed 2,000 characters."""
+    if val is not None and isinstance(val, str) and len(val) > MAX_VISUAL_STYLE_LENGTH:
+        raise ValueError(
+            f"Style prompt / visual direction exceeds maximum allowed length of {MAX_VISUAL_STYLE_LENGTH} characters (got {len(val)})"
+        )
+    return val
+
+
 class ChannelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     platform: Literal["youtube", "instagram"] = "youtube"
@@ -33,12 +46,30 @@ class ChannelCreate(BaseModel):
     handle: str | None = None
     settings: dict = {}
 
+    @field_validator("settings")
+    @classmethod
+    def validate_settings(cls, v: dict) -> dict:
+        if isinstance(v, dict):
+            for key in STYLE_PROMPT_KEYS:
+                if key in v:
+                    validate_visual_style_length(v[key])
+        return v
+
 
 class ChannelUpdate(BaseModel):
     name: str | None = None
     niche: str | None = None
     handle: str | None = None
     settings: dict | None = None
+
+    @field_validator("settings")
+    @classmethod
+    def validate_settings(cls, v: dict | None) -> dict | None:
+        if v is not None and isinstance(v, dict):
+            for key in STYLE_PROMPT_KEYS:
+                if key in v:
+                    validate_visual_style_length(v[key])
+        return v
 
 
 class ChannelOut(ORM):
@@ -104,6 +135,15 @@ class StepApproveBody(BaseModel):
 class StepContentUpdate(BaseModel):
     output: dict
     change_summary: str | None = None
+
+    @field_validator("output")
+    @classmethod
+    def validate_output(cls, v: dict) -> dict:
+        if isinstance(v, dict):
+            for key in STYLE_PROMPT_KEYS:
+                if key in v:
+                    validate_visual_style_length(v[key])
+        return v
 
 
 class JobOut(ORM):

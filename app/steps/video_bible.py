@@ -137,7 +137,13 @@ def generate_video_bible_step(
     # 3. Channel Visual Style
     channel = getattr(video, "channel", None)
     channel_settings = getattr(channel, "settings", None) if channel else None
-    channel_style = channel_settings.get("visual_style") if isinstance(channel_settings, dict) else None
+    channel_style = None
+    if isinstance(channel_settings, dict):
+        channel_style = (
+            channel_settings.get("visual_style")
+            or channel_settings.get("style_prompt")
+            or channel_settings.get("visual_direction")
+        )
 
     # 4. Check revision mode
     previous_bible = None
