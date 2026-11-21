@@ -13,6 +13,9 @@ __pycache__/
 storage/
 tmp_images/
 
+# Local developer scratchpad
+scratch/
+
 # Editors and OS
 .idea/
 .vscode/
