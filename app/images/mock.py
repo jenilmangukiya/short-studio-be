@@ -45,6 +45,10 @@ class MockImageProvider(BaseImageProvider):
             timeout_seconds=timeout_seconds,
             est_cost_usd=est_cost_usd,
         )
+        self.last_prompt: str | None = None
+        self.last_reference_images: list[bytes] | None = None
+        self.last_call_type: str | None = None
+        self.call_history: list[dict] = []
 
     @property
     def provider_name(self) -> str:
@@ -63,10 +67,29 @@ class MockImageProvider(BaseImageProvider):
         return 1024, 1536
 
     def _execute_generate(
-        self, prompt: str, size: str, quality: str
+        self,
+        prompt: str,
+        size: str,
+        quality: str,
+        reference_images: list[bytes] | None = None,
     ) -> tuple[bytes, int | None, int | None, int | None]:
-        # Derive deterministic solid RGB color from SHA256 hash of the prompt
-        digest = hashlib.sha256(prompt.encode("utf-8")).digest()
+        call_type = "edit" if reference_images else "generate"
+        self.last_prompt = prompt
+        self.last_reference_images = reference_images
+        self.last_call_type = call_type
+        self.call_history.append(
+            {
+                "prompt": prompt,
+                "size": size,
+                "quality": quality,
+                "reference_images": reference_images,
+                "call_type": call_type,
+            }
+        )
+
+        # Derive deterministic solid RGB color from SHA256 hash of the prompt (and reference count if present)
+        ref_count_tag = f"|refs_{len(reference_images)}" if reference_images else ""
+        digest = hashlib.sha256(f"{prompt}{ref_count_tag}".encode("utf-8")).digest()
         r, g, b = digest[0], digest[1], digest[2]
 
         width, height = self._parse_dimensions(size)

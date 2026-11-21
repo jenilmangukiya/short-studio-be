@@ -1,0 +1,124 @@
+{
+  "studio_closeup": {
+    "scene": {
+      "image_prompt": "A modern smartphone showing an incoming alert",
+      "shot_type": "close-up"
+    },
+    "visual_style": "Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field",
+    "expected_prompt": "A modern smartphone showing an incoming alert. Camera direction: close-up shot. Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "wide_environment": {
+    "scene": {
+      "image_prompt": "Rows of enterprise server racks with flashing blue LED indicators",
+      "shot_type": "wide",
+      "environment": "data center server hall"
+    },
+    "visual_style": "Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field",
+    "expected_prompt": "Rows of enterprise server racks with flashing blue LED indicators. Environment: data center server hall. Camera direction: wide shot. Clean 3D render, soft studio lighting, smooth matte materials. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "cutaway_diagram": {
+    "scene": {
+      "image_prompt": "Cross-section cutaway showing internal fan blades",
+      "shot_type": "cutaway",
+      "visual_technique": "diagram"
+    },
+    "visual_style": "Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field",
+    "expected_prompt": "Cross-section cutaway showing internal fan blades. Camera direction: cutaway shot. Visual technique: diagram. Clean 3D render, soft studio lighting, smooth matte materials. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "aerial_cityscape": {
+    "scene": {
+      "image_prompt": "Aerial view of a sprawling metropolis with highway interchanges at night",
+      "shot_type": "aerial",
+      "environment": "urban highway landscape"
+    },
+    "visual_style": "Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field",
+    "expected_prompt": "Aerial view of a sprawling metropolis with highway interchanges at night. Environment: urban highway landscape. Camera direction: aerial shot. Clean 3D render, soft studio lighting, smooth matte materials. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "character_with_anchor": {
+    "scene": {
+      "image_prompt": "An airline captain inspecting the flight deck instrument panel",
+      "shot_type": "medium",
+      "uses_anchor": true
+    },
+    "subject_anchor": "Captain Miller, a tall middle-aged pilot with aviator sunglasses and navy uniform",
+    "visual_style": "Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field",
+    "expected_prompt": "An airline captain inspecting the flight deck instrument panel. Captain Miller, a tall middle-aged pilot with aviator sunglasses and navy uniform. Camera direction: medium shot. Clean 3D render, soft studio lighting, smooth matte materials, simple pastel gradient background, shallow depth of field. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "connected_video_bible_beat": {
+    "scene": {
+      "entity_bindings": {
+        "character_id": "c1",
+        "environment_id": "e1"
+      },
+      "camera": {
+        "shot_type": "medium",
+        "camera_angle": "eye_level",
+        "focal_point_description": "the pilot"
+      },
+      "visual_description": "Checking flight instruments"
+    },
+    "video_bible": {
+      "art_direction": {
+        "style_family": "cinematic",
+        "visual_genre": "styled_3d",
+        "rendering_texture": "smooth matte geometry",
+        "lighting_philosophy": "soft directional key light",
+        "negative_anchors": [
+          "no 2D sketches",
+          "no photorealism"
+        ]
+      },
+      "entities": {
+        "characters": [
+          {
+            "id": "c1",
+            "name": "Pilot",
+            "visual_anchor": "Stylized 3D pilot",
+            "apparel_anchor": "navy uniform"
+          }
+        ],
+        "environments": [
+          {
+            "id": "e1",
+            "name": "Cockpit",
+            "spatial_layout": "Instrument panel controls"
+          }
+        ]
+      }
+    },
+    "expected_prompt": "Styled 3d visual style, smooth matte geometry. Subject: Pilot, Stylized 3D pilot, wearing navy uniform. Environment setting: Cockpit, Instrument panel controls. Camera direction: medium shot. Primary focal point: the pilot. Visual moment: Checking flight instruments. Negative constraints: no 2D sketches, no photorealism. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  },
+  "conceptual_diagram_beat": {
+    "scene": {
+      "entity_bindings": {
+        "concept_id": "cp1"
+      },
+      "camera": {
+        "shot_type": "medium",
+        "focal_point_description": "signal waveform"
+      },
+      "visual_description": "Brain wave frequencies shifting from alpha to theta"
+    },
+    "video_bible": {
+      "art_direction": {
+        "style_family": "cinematic",
+        "visual_genre": "styled_3d",
+        "rendering_texture": "smooth matte geometry, cotton weave bedding",
+        "negative_anchors": [
+          "keep character in bedroom"
+        ]
+      },
+      "entities": {
+        "concepts": [
+          {
+            "id": "cp1",
+            "name": "Sleep Onset",
+            "concept_explained": "As the sleeper drifts off and muscles relax, brainwaves slow down",
+            "visual_analogy": "The sleeper gently settles into the bed while soundwaves ripple into rest"
+          }
+        ]
+      }
+    },
+    "expected_prompt": "Styled 3d visual style, smooth matte geometry. Visual diagram concept: Sleep Onset, Soundwaves ripple into rest. Styling: As muscles relax during the transition to sleep, brainwaves slow down. Camera direction: medium shot. Primary focal point: signal waveform. Visual moment: Brain wave frequencies shifting from alpha to theta. Negative constraints: no bedroom setting. Vertical 9:16, main subject in the upper-middle of the frame, calm uncluttered lower third, no text, no letters, no logos, no watermark."
+  }
+}

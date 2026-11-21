@@ -25,6 +25,7 @@ class OpenAIImageProvider(BaseImageProvider):
         api_key: str | None = None,
         timeout_seconds: float = 120.0,
         est_cost_usd: float | None = None,
+        allow_reference_fallback: bool = False,
     ):
         super().__init__(
             model=model or "",
@@ -32,6 +33,7 @@ class OpenAIImageProvider(BaseImageProvider):
             est_cost_usd=est_cost_usd,
         )
         self.api_key = api_key
+        self.allow_reference_fallback = allow_reference_fallback
         self._client = None
 
     @property
@@ -103,8 +105,8 @@ class OpenAIImageProvider(BaseImageProvider):
                 if self._is_content_policy_violation(exc):
                     raise ImageContentBlockedError(
                         f"Image prompt rejected by OpenAI safety policy: {exc.message}"
-                    ) from None
-                raise ImageProviderError(f"OpenAI invalid image request: {exc.message}") from None
+                    ) from exc
+                raise ImageProviderError(f"OpenAI invalid image request: {exc.message}") from exc
             except openai.RateLimitError as exc:
                 if attempt < max_retries:
                     time.sleep(backoff)
@@ -136,22 +138,29 @@ class OpenAIImageProvider(BaseImageProvider):
                     f"Unexpected OpenAI error ({action_desc}): {exc}"
                 ) from None
 
-    def _execute_generate(
-        self, prompt: str, size: str, quality: str
-    ) -> tuple[bytes, int | None, int | None, int | None]:
-        client = self._get_client()
+    def _is_model_compatibility_error(self, exc: Any) -> bool:
+        """Check whether an exception indicates the model does not support image edits."""
+        code = getattr(exc, "code", None)
+        if code in ("model_not_supported", "unsupported_model", "endpoint_not_supported"):
+            return True
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err_dict = body.get("error", {})
+            if isinstance(err_dict, dict):
+                err_code = err_dict.get("code")
+                if err_code in ("model_not_supported", "unsupported_model", "endpoint_not_supported"):
+                    return True
+                err_param = err_dict.get("param")
+                err_msg = str(err_dict.get("message", "")).lower()
+                if err_param in ("model", "image") and "not supported" in err_msg:
+                    return True
+        msg = str(getattr(exc, "message", exc)).lower()
+        if "does not support image edits" in msg or "edit endpoint is not supported" in msg:
+            return True
+        return False
 
-        # Pass size and quality through exactly as configured; do NOT send response_format
-        response = self._call_with_retry(
-            "generate image",
-            lambda: client.images.generate(
-                prompt=prompt,
-                model=self.model,
-                size=size,
-                quality=quality,
-            ),
-        )
-
+    def _parse_response_image(self, response: Any) -> tuple[bytes, int | None, int | None, int | None]:
+        """Extract image bytes and token usage from OpenAI images response."""
         if not response.data:
             raise ImageProviderError("OpenAI returned no image data in response.")
 
@@ -181,3 +190,64 @@ class OpenAIImageProvider(BaseImageProvider):
             tot_tokens = getattr(usage, "total_tokens", None)
 
         return image_bytes, in_tokens, out_tokens, tot_tokens
+
+    def _execute_generate(
+        self,
+        prompt: str,
+        size: str,
+        quality: str,
+        reference_images: list[bytes] | None = None,
+    ) -> tuple[bytes, int | None, int | None, int | None]:
+        client = self._get_client()
+
+        # 1. Text-only generation path (when no references are provided)
+        if not reference_images:
+            response = self._call_with_retry(
+                "generate image",
+                lambda: client.images.generate(
+                    prompt=prompt,
+                    model=self.model,
+                    size=size,
+                    quality=quality,
+                ),
+            )
+            return self._parse_response_image(response)
+
+        # 2. Reference-conditioned edit path
+        formatted_images: Any
+        if len(reference_images) == 1:
+            formatted_images = ("ref_0.png", reference_images[0], "image/png")
+        else:
+            formatted_images = [
+                (f"ref_{i}.png", img_bytes, "image/png")
+                for i, img_bytes in enumerate(reference_images)
+            ]
+
+        def _do_edit():
+            # For gpt-image-2, do NOT pass input_fidelity; preserve configured size and quality
+            return client.images.edit(
+                image=formatted_images,
+                prompt=prompt,
+                model=self.model,
+                size=size,
+                quality=quality,
+            )
+
+        try:
+            response = self._call_with_retry("edit image with references", _do_edit)
+            return self._parse_response_image(response)
+        except ImageProviderError as exc:
+            # Fallback is disabled by default; only allow if explicitly configured and specifically recognized
+            cause = getattr(exc, "__cause__", None)
+            if self.allow_reference_fallback and cause and self._is_model_compatibility_error(cause):
+                response = self._call_with_retry(
+                    "generate image (fallback)",
+                    lambda: client.images.generate(
+                        prompt=prompt,
+                        model=self.model,
+                        size=size,
+                        quality=quality,
+                    ),
+                )
+                return self._parse_response_image(response)
+            raise

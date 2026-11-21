@@ -45,6 +45,21 @@ class ChannelCreate(BaseModel):
     niche: str | None = None
     handle: str | None = None
     settings: dict = {}
+    default_visual_style_id: str | None = None
+
+    @field_validator("default_visual_style_id")
+    @classmethod
+    def validate_default_visual_style(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        norm = v.strip().lower()
+        if not norm:
+            return None
+        from .styles.registry import STYLES_REGISTRY, is_valid_style_id
+        if not is_valid_style_id(norm):
+            valid_ids = sorted(STYLES_REGISTRY.keys())
+            raise ValueError(f"Unknown visual style '{v}'. Valid styles: {valid_ids}")
+        return norm
 
     @field_validator("settings")
     @classmethod
@@ -61,6 +76,21 @@ class ChannelUpdate(BaseModel):
     niche: str | None = None
     handle: str | None = None
     settings: dict | None = None
+    default_visual_style_id: str | None = None
+
+    @field_validator("default_visual_style_id")
+    @classmethod
+    def validate_default_visual_style(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        norm = v.strip().lower()
+        if not norm:
+            return None
+        from .styles.registry import STYLES_REGISTRY, is_valid_style_id
+        if not is_valid_style_id(norm):
+            valid_ids = sorted(STYLES_REGISTRY.keys())
+            raise ValueError(f"Unknown visual style '{v}'. Valid styles: {valid_ids}")
+        return norm
 
     @field_validator("settings")
     @classmethod
@@ -79,12 +109,57 @@ class ChannelOut(ORM):
     niche: str | None
     handle: str | None
     settings: dict
+    default_visual_style_id: str | None = None
     created_at: datetime
 
 
 class VideoCreate(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
     description: str | None = None
+    visual_style_id: str | None = None
+
+    @field_validator("visual_style_id")
+    @classmethod
+    def validate_visual_style(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        norm = v.strip().lower()
+        if not norm:
+            return None
+        from .styles.registry import STYLES_REGISTRY, is_valid_style_id
+        if not is_valid_style_id(norm):
+            valid_ids = sorted(STYLES_REGISTRY.keys())
+            raise ValueError(f"Unknown visual style '{v}'. Valid styles: {valid_ids}")
+        return norm
+
+
+class VideoStyleUpdate(BaseModel):
+    visual_style_id: str
+
+    @field_validator("visual_style_id")
+    @classmethod
+    def validate_visual_style(cls, v: str) -> str:
+        norm = v.strip().lower()
+        from .styles.registry import STYLES_REGISTRY, is_valid_style_id
+        if not is_valid_style_id(norm):
+            valid_ids = sorted(STYLES_REGISTRY.keys())
+            raise ValueError(f"Unknown visual style '{v}'. Valid styles: {valid_ids}")
+        return norm
+
+
+class VisualStyleSummaryOut(BaseModel):
+    id: str
+    name: str
+    version: int
+    category: str
+    description: str
+    preview_image_path: str
+    is_default: bool = False
+
+
+class VisualStylesListOut(BaseModel):
+    default_style_id: str
+    styles: list[VisualStyleSummaryOut]
 
 
 class SubtitleStyleOut(BaseModel):
@@ -168,10 +243,13 @@ class VideoSummary(ORM):
     topic: str
     description: str | None
     status: str
+    visual_style_id: str | None = None
+    visual_style_version: int | None = None
     created_at: datetime
 
 
 class VideoDetail(VideoSummary):
+    visual_style_snapshot: dict | None = None
     steps: list[StepOut] = []
 
 
@@ -321,8 +399,10 @@ class VideoBibleOutput(BaseModel):
 
 class EntityBindings(BaseModel):
     character_id: str | None = None
+    secondary_character_ids: list[str] = Field(default_factory=list)
     environment_id: str | None = None
     object_ids: list[str] = Field(default_factory=list)
+    machine_ids: list[str] = Field(default_factory=list)
     concept_id: str | None = None
 
 

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from . import models  # noqa: F401  (register tables)
 from .config import settings
-from .routers import auth, channels, videos
+from .routers import auth, channels, styles, videos
 
 
 @asynccontextmanager
@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Shorts Studio", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(channels.router)
+app.include_router(styles.router)
 app.include_router(videos.router)
 
 

@@ -50,6 +50,7 @@ class Channel(TimestampMixin, Base):
     niche: Mapped[str | None] = mapped_column(String(120))
     handle: Mapped[str | None] = mapped_column(String(120))
     settings: Mapped[dict] = mapped_column(JSONType, default=dict)  # voice, style, music mood, ...
+    default_visual_style_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user: Mapped[User] = relationship(back_populates="channels")
     videos: Mapped[list["Video"]] = relationship(back_populates="channel", cascade="all, delete-orphan")
 
@@ -62,6 +63,9 @@ class Video(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|in_progress|completed|failed
     output_path: Mapped[str | None] = mapped_column(String(500))
+    visual_style_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    visual_style_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    visual_style_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     channel: Mapped[Channel] = relationship(back_populates="videos")
     steps: Mapped[list["VideoStep"]] = relationship(
         order_by="VideoStep.position", cascade="all, delete-orphan", lazy="selectin"

@@ -24,6 +24,7 @@ from app.images import (
 )
 from app.models import Video, VideoStep
 from app.steps.prompt_compose import compose_final_prompt
+from app.styles import ReferenceMetadata, VisualStylePreset, get_style, select_scene_references
 
 
 class PipelineError(Exception):
@@ -173,10 +174,99 @@ def generate_images_step(
         or (isinstance(prev, dict) and prev.get("video_bible"))
     )
 
+    # Resolve active visual preset (if video has visual style snapshot or id)
+    active_preset: VisualStylePreset | None = None
+    if getattr(video, "visual_style_snapshot", None):
+        try:
+            active_preset = VisualStylePreset(**video.visual_style_snapshot)
+        except Exception:
+            active_preset = None
+    elif getattr(video, "visual_style_id", None):
+        try:
+            active_preset = get_style(video.visual_style_id)
+        except Exception:
+            active_preset = None
+
     # 6. Prepare filesystem storage directory
     storage_root = Path(settings.storage_dir)
     images_dir = storage_root / str(video.id) / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect available reference assets from Video Bible and active preset
+    available_references: list[ReferenceMetadata] = []
+    vb_source = prev.get("video_bible") or (sb.get("video_bible") if isinstance(sb, dict) else None)
+    if isinstance(vb_source, dict):
+        raw_refs = vb_source.get("reference_assets") or []
+        for r in raw_refs:
+            try:
+                available_references.append(ReferenceMetadata.normalize(r))
+            except Exception:
+                pass
+    elif hasattr(vb_source, "reference_assets") and getattr(vb_source, "reference_assets"):
+        for r in vb_source.reference_assets:
+            try:
+                available_references.append(ReferenceMetadata.normalize(r))
+            except Exception:
+                pass
+
+    if active_preset and active_preset.assets:
+        if active_preset.assets.style_benchmark:
+            available_references.append(
+                ReferenceMetadata(
+                    entity_id="style_benchmark",
+                    role="style",
+                    asset_path=active_preset.assets.style_benchmark,
+                    visual_style_id=active_preset.id,
+                    style_version=active_preset.version,
+                    description="Preset global style benchmark",
+                )
+            )
+        if active_preset.assets.anatomy_reference:
+            available_references.append(
+                ReferenceMetadata(
+                    entity_id="anatomy_benchmark",
+                    role="style",
+                    asset_path=active_preset.assets.anatomy_reference,
+                    visual_style_id=active_preset.id,
+                    style_version=active_preset.version,
+                    description="Preset character anatomy turnaround",
+                )
+            )
+        if active_preset.assets.environment_reference:
+            available_references.append(
+                ReferenceMetadata(
+                    entity_id="environment_benchmark",
+                    role="style",
+                    asset_path=active_preset.assets.environment_reference,
+                    visual_style_id=active_preset.id,
+                    style_version=active_preset.version,
+                    description="Preset environment perspective benchmark",
+                )
+            )
+
+    def _select_and_load_references(target_ctx: dict[str, Any]) -> tuple[list[bytes], dict[str, Any] | None, list[str]]:
+        if not active_preset or not active_preset.capabilities.supports_reference_images:
+            return [], None, []
+        sel_result = select_scene_references(
+            scene=target_ctx,
+            preset=active_preset,
+            available_references=available_references,
+            check_file_exists=True,
+            storage_root=storage_root,
+        )
+        loaded_bytes: list[bytes] = []
+        selected_paths: list[str] = []
+        for sel in sel_result.selected_references:
+            p = Path(sel.asset_path)
+            if not p.is_absolute():
+                p = storage_root / p
+            if p.is_file():
+                try:
+                    loaded_bytes.append(p.read_bytes())
+                    selected_paths.append(sel.asset_path)
+                except Exception:
+                    pass
+        return loaded_bytes, sel_result.model_dump(), selected_paths
 
     # 7. Map previously generated items in this step for potential reuse
     existing_items = (
@@ -373,8 +463,14 @@ def generate_images_step(
                 raise PipelineError(
                     f"Image generation exceeded maximum attempt safety limit ({max_attempts}). Aborted to prevent infinite loops."
                 )
+            ref_bytes, ref_diag, ref_paths = _select_and_load_references(scene)
             try:
-                result = provider.generate(prompt=prompt_text, size=size, quality=quality)
+                result = provider.generate(
+                    prompt=prompt_text,
+                    size=size,
+                    quality=quality,
+                    reference_images=ref_bytes if ref_bytes else None,
+                )
                 file_abs_path.write_bytes(result.image_bytes)
 
                 items.append(
@@ -395,6 +491,8 @@ def generate_images_step(
                         "input_tokens": result.input_tokens,
                         "output_tokens": result.output_tokens,
                         "total_tokens": result.total_tokens,
+                        "reference_images": ref_paths,
+                        "reference_selection": ref_diag,
                         "error": None,
                     }
                 )
@@ -563,8 +661,14 @@ def generate_images_step(
                         raise PipelineError(
                             f"Image generation exceeded maximum attempt safety limit ({max_attempts}). Aborted to prevent infinite loops."
                         )
+                    b_ref_bytes, b_ref_diag, b_ref_paths = _select_and_load_references(beat)
                     try:
-                        b_result = provider.generate(prompt=b_prompt, size=size, quality=quality)
+                        b_result = provider.generate(
+                            prompt=b_prompt,
+                            size=size,
+                            quality=quality,
+                            reference_images=b_ref_bytes if b_ref_bytes else None,
+                        )
                         b_file_abs.write_bytes(b_result.image_bytes)
                         items.append(
                             {
@@ -585,6 +689,8 @@ def generate_images_step(
                                 "input_tokens": b_result.input_tokens,
                                 "output_tokens": b_result.output_tokens,
                                 "total_tokens": b_result.total_tokens,
+                                "reference_images": b_ref_paths,
+                                "reference_selection": b_ref_diag,
                                 "error": None,
                             }
                         )

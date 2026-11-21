@@ -22,8 +22,10 @@ from ..schemas import (
     SubtitleStyleOut,
     VideoCreate,
     VideoDetail,
+    VideoStyleUpdate,
     VideoSummary,
 )
+from ..styles import DEFAULT_STYLE_ID, get_style_by_id
 
 router = APIRouter(tags=["videos"])
 
@@ -32,7 +34,20 @@ router = APIRouter(tags=["videos"])
 
 @router.post("/channels/{channel_id}/videos", response_model=VideoSummary, status_code=201)
 def create_video(body: VideoCreate, channel: Channel = Depends(get_owned_channel), db: Session = Depends(get_db)):
-    video = Video(channel_id=channel.id, topic=body.topic, description=body.description)
+    selected_style_id = body.visual_style_id or channel.default_visual_style_id or DEFAULT_STYLE_ID
+    try:
+        preset = get_style_by_id(selected_style_id)
+    except KeyError:
+        raise HTTPException(400, f"Unknown visual style '{selected_style_id}'")
+
+    video = Video(
+        channel_id=channel.id,
+        topic=body.topic,
+        description=body.description,
+        visual_style_id=preset.id,
+        visual_style_version=preset.version,
+        visual_style_snapshot=preset.model_dump(),
+    )
     db.add(video)
     db.commit()
     return video
@@ -61,6 +76,29 @@ def get_subtitle_styles():
 
 @router.get("/videos/{video_id}", response_model=VideoDetail)
 def get_video(video: Video = Depends(get_owned_video)):
+    return video
+
+
+@router.patch("/videos/{video_id}/visual-style", response_model=VideoDetail)
+def update_video_visual_style(
+    body: VideoStyleUpdate,
+    video: Video = Depends(get_owned_video),
+    db: Session = Depends(get_db),
+):
+    """Update selected visual style for a video and freeze an immutable snapshot.
+
+    Pipeline steps are NOT invalidated or rerun in Phase 2 (reserved for Phase 4).
+    """
+    try:
+        preset = get_style_by_id(body.visual_style_id)
+    except KeyError:
+        raise HTTPException(400, f"Unknown visual style '{body.visual_style_id}'")
+
+    video.visual_style_id = preset.id
+    video.visual_style_version = preset.version
+    video.visual_style_snapshot = preset.model_dump()
+    db.commit()
+    db.refresh(video)
     return video
 
 
