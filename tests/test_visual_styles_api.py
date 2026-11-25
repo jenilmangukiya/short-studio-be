@@ -238,85 +238,64 @@ def test_channel_update_invalid_style_fails(client: TestClient, test_channel: Ch
 # 3. Video Creation & Visual Style Inheritance
 # ==============================================================================
 
-def test_video_creation_inherits_channel_default(client: TestClient, test_channel: Channel):
-    """New video inherits channel's default visual style, version, and stores snapshot."""
-    # test_channel has default_visual_style_id="stickman_tactical_explainer"
+def test_video_creation_missing_or_invalid_style_fails_422(
+    client: TestClient, test_channel: Channel
+):
+    """New video requires an explicit valid visual style; missing, null, empty, or invalid fails with HTTP 422."""
+    # 1. Missing visual_style_id fails with 422 even if channel has a default_visual_style_id
     resp = client.post(
         f"/channels/{test_channel.id}/videos",
         json={"topic": "How Jet Engines Work"},
     )
-    assert resp.status_code == 201
-    data = resp.json()
+    assert resp.status_code == 422
 
-    assert data["topic"] == "How Jet Engines Work"
-    assert data["visual_style_id"] == "stickman_tactical_explainer"
-    assert data["visual_style_version"] == 1
+    # 2. visual_style_id = None fails with 422
+    resp_none = client.post(
+        f"/channels/{test_channel.id}/videos",
+        json={"topic": "How Jet Engines Work", "visual_style_id": None},
+    )
+    assert resp_none.status_code == 422
 
-    # Fetch detail to verify versioned snapshot
-    detail_resp = client.get(f"/videos/{data['id']}")
-    assert detail_resp.status_code == 200
-    detail = detail_resp.json()
-    assert detail["visual_style_id"] == "stickman_tactical_explainer"
-    assert detail["visual_style_version"] == 1
-    assert detail["visual_style_snapshot"] is not None
-    assert detail["visual_style_snapshot"]["id"] == "stickman_tactical_explainer"
-    assert detail["visual_style_snapshot"]["version"] == 1
-    assert "rules" in detail["visual_style_snapshot"]
+    # 3. visual_style_id = "" (blank/whitespace) fails with 422
+    resp_empty = client.post(
+        f"/channels/{test_channel.id}/videos",
+        json={"topic": "How Jet Engines Work", "visual_style_id": "   "},
+    )
+    assert resp_empty.status_code == 422
+
+    # 4. Unknown visual_style_id fails with 422
+    resp_invalid = client.post(
+        f"/channels/{test_channel.id}/videos",
+        json={"topic": "How Jet Engines Work", "visual_style_id": "unknown_fantasy_art"},
+    )
+    assert resp_invalid.status_code == 422
 
 
-def test_video_creation_explicit_style_overrides_channel_default(
+def test_video_creation_succeeds_with_all_three_presets(
     client: TestClient, test_channel: Channel
 ):
-    """Explicit visual_style_id on video overrides channel default."""
-    resp = client.post(
-        f"/channels/{test_channel.id}/videos",
-        json={
-            "topic": "The Mystery of the Deep Ocean",
-            "visual_style_id": "stylized_2d_narrative",
-        },
-    )
-    assert resp.status_code == 201
-    data = resp.json()
+    """Each of the 3 canonical presets can be explicitly selected when creating a video."""
+    presets = ["legacy_default", "stickman_tactical_explainer", "stylized_2d_narrative"]
+    for style_id in presets:
+        resp = client.post(
+            f"/channels/{test_channel.id}/videos",
+            json={
+                "topic": f"Topic for {style_id}",
+                "visual_style_id": style_id,
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["visual_style_id"] == style_id
+        assert data["visual_style_version"] == 1
 
-    assert data["visual_style_id"] == "stylized_2d_narrative"
-    assert data["visual_style_version"] == 1
-
-    detail_resp = client.get(f"/videos/{data['id']}")
-    detail = detail_resp.json()
-    assert detail["visual_style_id"] == "stylized_2d_narrative"
-    assert detail["visual_style_snapshot"]["id"] == "stylized_2d_narrative"
-
-
-def test_new_video_creation_without_style_and_no_channel_default_resolves_to_legacy_default(
-    client: TestClient, db_session: Session, test_user: User
-):
-    """When channel has no default and video specifies no style, newly created video resolves to legacy_default."""
-    channel = Channel(
-        user_id=test_user.id,
-        name=f"Fallback Channel {uuid.uuid4().hex[:6]}",
-        platform="youtube",
-        default_visual_style_id=None,
-    )
-    db_session.add(channel)
-    db_session.commit()
-    db_session.refresh(channel)
-
-    resp = client.post(
-        f"/channels/{channel.id}/videos",
-        json={"topic": "Quantum Mechanics Simply Explained"},
-    )
-    assert resp.status_code == 201
-    data = resp.json()
-    assert data["visual_style_id"] == "legacy_default"
-    assert data["visual_style_version"] == 1
-
-    detail_resp = client.get(f"/videos/{data['id']}")
-    detail = detail_resp.json()
-    assert detail["visual_style_id"] == "legacy_default"
-    assert detail["visual_style_version"] == 1
-    assert detail["visual_style_snapshot"] is not None
-    assert detail["visual_style_snapshot"]["id"] == "legacy_default"
-    assert detail["visual_style_snapshot"]["display_name"] == LEGACY_DEFAULT_PRESET.display_name
+        detail_resp = client.get(f"/videos/{data['id']}")
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["visual_style_id"] == style_id
+        assert detail["visual_style_version"] == 1
+        assert detail["visual_style_snapshot"] is not None
+        assert detail["visual_style_snapshot"]["id"] == style_id
 
 
 def test_existing_legacy_video_with_null_style_fields_preserved_and_prompt_parity(
@@ -388,10 +367,10 @@ def test_channel_default_update_does_not_mutate_existing_videos(
     client: TestClient, db_session: Session, test_channel: Channel
 ):
     """Updating a channel's default visual style does not change already created videos."""
-    # 1. Create Video 1 with channel's initial default ("stickman_tactical_explainer")
+    # 1. Create Video 1 with explicit style ("stickman_tactical_explainer")
     resp1 = client.post(
         f"/channels/{test_channel.id}/videos",
-        json={"topic": "Video 1 - Old Channel Default"},
+        json={"topic": "Video 1 - Explicit Style", "visual_style_id": "stickman_tactical_explainer"},
     )
     v1_id = resp1.json()["id"]
 
@@ -401,10 +380,10 @@ def test_channel_default_update_does_not_mutate_existing_videos(
         json={"default_visual_style_id": "stylized_2d_narrative"},
     )
 
-    # 3. Create Video 2 with the new channel default
+    # 3. Create Video 2 with explicit style ("stylized_2d_narrative")
     resp2 = client.post(
         f"/channels/{test_channel.id}/videos",
-        json={"topic": "Video 2 - New Channel Default"},
+        json={"topic": "Video 2 - Explicit Style", "visual_style_id": "stylized_2d_narrative"},
     )
     v2_id = resp2.json()["id"]
 
@@ -460,7 +439,7 @@ def test_patch_video_visual_style_invalid_fails(client: TestClient, test_channel
     """PATCH with unknown visual style returns validation error."""
     resp = client.post(
         f"/channels/{test_channel.id}/videos",
-        json={"topic": "Ancient Civilizations"},
+        json={"topic": "Ancient Civilizations", "visual_style_id": "legacy_default"},
     )
     vid_id = resp.json()["id"]
 
@@ -607,7 +586,7 @@ def test_snapshot_stored_on_video_is_immutable_to_in_memory_preset_mutation(
     """Mutating preset objects or dictionaries in memory does not mutate stored video snapshots."""
     resp = client.post(
         f"/channels/{test_channel.id}/videos",
-        json={"topic": "Snapshot Immutability Check"},
+        json={"topic": "Snapshot Immutability Check", "visual_style_id": "legacy_default"},
     )
     vid_id = uuid.UUID(resp.json()["id"])
     video = db_session.get(Video, vid_id)

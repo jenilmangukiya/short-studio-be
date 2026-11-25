@@ -431,6 +431,8 @@ class TestSubtitleStylePersistenceAndExecution:
         """When subtitle_style is omitted in rerun, the previously selected style is preserved."""
         monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
         video, _ = _create_fixture_video(db_session)
+        for s in video.steps:
+            s.status = "done"
 
         sub_step = next(s for s in video.steps if s.name == "subtitles")
         sub_step.status = "done"

@@ -116,16 +116,16 @@ class ChannelOut(ORM):
 class VideoCreate(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
     description: str | None = None
-    visual_style_id: str | None = None
+    visual_style_id: str = Field(..., min_length=1, description="Explicit catalog visual style ID")
 
     @field_validator("visual_style_id")
     @classmethod
-    def validate_visual_style(cls, v: str | None) -> str | None:
+    def validate_visual_style(cls, v: str) -> str:
         if v is None:
-            return None
+            raise ValueError("visual_style_id is required")
         norm = v.strip().lower()
         if not norm:
-            return None
+            raise ValueError("visual_style_id must not be empty")
         from .styles.registry import STYLES_REGISTRY, is_valid_style_id
         if not is_valid_style_id(norm):
             valid_ids = sorted(STYLES_REGISTRY.keys())

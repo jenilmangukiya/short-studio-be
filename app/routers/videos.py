@@ -27,7 +27,7 @@ from ..schemas import (
     VideoSummary,
 )
 from ..steps.prompt_compose import recompute_final_prompts
-from ..styles import DEFAULT_STYLE_ID, canonical_snapshot_hash, get_style_by_id
+from ..styles import canonical_snapshot_hash, get_style_by_id
 
 router = APIRouter(tags=["videos"])
 
@@ -36,11 +36,10 @@ router = APIRouter(tags=["videos"])
 
 @router.post("/channels/{channel_id}/videos", response_model=VideoSummary, status_code=201)
 def create_video(body: VideoCreate, channel: Channel = Depends(get_owned_channel), db: Session = Depends(get_db)):
-    selected_style_id = body.visual_style_id or channel.default_visual_style_id or DEFAULT_STYLE_ID
     try:
-        preset = get_style_by_id(selected_style_id)
+        preset = get_style_by_id(body.visual_style_id)
     except KeyError:
-        raise HTTPException(400, f"Unknown visual style '{selected_style_id}'")
+        raise HTTPException(422, f"Unknown visual style '{body.visual_style_id}'")
 
     video = Video(
         channel_id=channel.id,

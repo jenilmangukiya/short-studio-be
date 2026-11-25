@@ -278,6 +278,23 @@ def approve_step(db: Session, video: Video, step_name: str) -> VideoStep:
     return step
 
 
+def _validate_images_ready_for_downstream(video: Video, target_step_name: str, action: str = "rerun") -> None:
+    """Validate that the upstream images step is ready before rerun or rollback of downstream steps.
+
+    Downstream steps (render, subtitles, subtitle) require completed images.
+    If the images step is missing, or not in 'done' status (e.g. stale, pending, running, failed),
+    a PipelineError is raised so callers return HTTP 409 Conflict.
+    """
+    if target_step_name in ("render", "subtitles", "subtitle"):
+        images_step = next((s for s in (video.steps or []) if s.name == "images"), None)
+        if not images_step:
+            raise PipelineError(f"Cannot {action} '{target_step_name}': images step is missing")
+        if images_step.status != "done":
+            raise PipelineError(
+                f"Cannot {action} '{target_step_name}': images step is not ready (status: {images_step.status})"
+            )
+
+
 def rerun_step(
     db: Session,
     video: Video,
@@ -287,6 +304,8 @@ def rerun_step(
 ):
     """Reset one step (with optional revision prompt) and mark downstream steps stale.
     Cancels any queued jobs and ensures no worker is actively executing."""
+    _validate_images_ready_for_downstream(video, step_name, action="rerun")
+
     if any(s.status == "running" for s in video.steps):
         raise PipelineError("A step is running; wait for it to finish")
 
@@ -424,6 +443,8 @@ def update_step_content(
 
 def rollback_step(db: Session, video: Video, step_name: str, target_version: int) -> VideoStep:
     """Roll back a step's output to a previously recorded revision version."""
+    _validate_images_ready_for_downstream(video, step_name, action="roll back")
+
     if any(s.status == "running" for s in video.steps):
         raise PipelineError("A step is running; wait for it to finish")
 
