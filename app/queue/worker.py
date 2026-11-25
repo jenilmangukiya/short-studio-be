@@ -136,6 +136,9 @@ class QueueWorker:
                 if not video or not step:
                     raise RuntimeError(f"Video {video_id} or step {step_name} not found")
 
+                step._job_id = job_id
+                step._lease_token = lease_token
+
                 prev_outputs = {
                     s.name: s.output for s in video.steps if s.status in ("done", "awaiting_approval") and s.output
                 }

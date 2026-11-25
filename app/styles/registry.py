@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
 from app.schemas import ArtDirection
 from .schemas import (
     StyleAssetBindings,
@@ -350,3 +354,106 @@ def list_styles() -> list[VisualStylePreset]:
         STICKMAN_TACTICAL_EXPLAINER_PRESET,
         STYLIZED_2D_NARRATIVE_PRESET,
     ]
+
+
+class VisualStyleResolutionError(ValueError):
+    """Raised when an explicit visual style snapshot or ID cannot be safely resolved."""
+    pass
+
+
+def canonical_snapshot_hash(snapshot: Any = None) -> str:
+    """Return a deterministic 64-char hex SHA-256 hash of a visual style snapshot.
+
+    Produces '' if snapshot is None or empty.
+    Handles dict, VisualStylePreset, or JSON string with sorted keys and compact separators.
+    """
+    if snapshot is None:
+        return ""
+    if isinstance(snapshot, VisualStylePreset):
+        data = snapshot.model_dump()
+    elif isinstance(snapshot, dict):
+        data = snapshot
+    elif isinstance(snapshot, str):
+        try:
+            parsed = json.loads(snapshot)
+            if isinstance(parsed, dict):
+                data = parsed
+            else:
+                return hashlib.sha256(snapshot.strip().encode("utf-8")).hexdigest()
+        except Exception:
+            return hashlib.sha256(snapshot.strip().encode("utf-8")).hexdigest()
+    else:
+        return ""
+
+    if not data:
+        return ""
+    try:
+        serialized = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def resolve_visual_style_preset(
+    snapshot: Any = None,
+    style_id: str | None = None,
+    style_version: int | None = None,
+) -> VisualStylePreset | None:
+    """Resolve a VisualStylePreset with fail-closed validation.
+
+    Rules:
+    1. Valid visual_style_snapshot exists:
+       - Use it as authoritative source. Do not substitute registry.
+    2. Snapshot exists but is malformed, invalid, or cannot be interpreted:
+       - Raise a clear VisualStyleResolutionError identifying the invalid snapshot.
+    3. Snapshot is missing (None), but visual_style_id exists:
+       - Resolve registry preset only if ID is valid and version is compatible.
+       - If version is missing (None), follow existing compatibility policy (accept candidate).
+       - If ID is unknown or version is incompatible, raise VisualStyleResolutionError.
+    4. Both snapshot and visual_style_id are NULL (None or blank):
+       - Preserve historical Clean 3D behavior (return None).
+       - Never dynamically inspect or inherit channel default.
+    """
+    # 1. Snapshot handling (fail-closed on malformed snapshot)
+    if snapshot is not None:
+        if isinstance(snapshot, VisualStylePreset):
+            return snapshot
+        if isinstance(snapshot, dict):
+            try:
+                return VisualStylePreset.model_validate(snapshot)
+            except Exception as exc:
+                raise VisualStyleResolutionError(
+                    f"Malformed or invalid visual style snapshot: {exc}"
+                ) from exc
+        if isinstance(snapshot, str):
+            try:
+                import json
+                parsed = json.loads(snapshot)
+                if isinstance(parsed, dict):
+                    return VisualStylePreset.model_validate(parsed)
+                raise ValueError("Parsed JSON is not a dictionary")
+            except Exception as exc:
+                raise VisualStyleResolutionError(
+                    f"Malformed visual style snapshot JSON string: {exc}"
+                ) from exc
+        raise VisualStyleResolutionError(
+            f"Malformed visual style snapshot of unexpected type '{type(snapshot).__name__}'"
+        )
+
+    # 2. Explicit style_id handling (fail-closed on unknown ID or incompatible version)
+    clean_style_id = str(style_id).strip() if style_id is not None else ""
+    if clean_style_id:
+        if not is_valid_style_id(clean_style_id):
+            raise VisualStyleResolutionError(
+                f"Unknown visual style ID '{clean_style_id}'. Valid styles: {sorted(STYLES_REGISTRY.keys())}"
+            )
+        candidate = get_style_by_id(clean_style_id)
+        if style_version is not None and candidate.version != style_version:
+            raise VisualStyleResolutionError(
+                f"Incompatible visual style version {style_version} for preset '{clean_style_id}' "
+                f"(current registry version is {candidate.version})"
+            )
+        return candidate
+
+    # 3. Both NULL: return None (historical Clean 3D legacy path)
+    return None

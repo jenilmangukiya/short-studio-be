@@ -542,6 +542,7 @@ def plan_beat_camera_motion(
     duration_seconds: float = 2.5,
     preferred_animation: AnimationType | None = None,
     prev_anim_type: str | None = None,
+    motion_scale: float = 1.0,
 ) -> BeatCameraPlan:
     """Plan smooth virtual camera movement within an evaluated beat crop region.
 
@@ -615,10 +616,11 @@ def plan_beat_camera_motion(
     fx = max(0.05, min(0.95, focal_x))
     fy = max(0.10, min(SUBTITLE_SAFETY_MAX_Y, focal_y))
 
-    # Determine zoom intensity based on duration:
-    # Over 4s: 1.07x (7%) provides meaningful, continuous motion across longer holds without visual stopping.
-    # 2.0s - 4.0s: 1.05x (5%) provides smooth, subtle cinematic motion.
-    zoom_delta = 1.07 if dur > 4.0 else 1.05
+    # Determine zoom intensity based on duration and style motion scale:
+    # Over 4s: (0.07 * motion_scale) provides meaningful, continuous motion across longer holds without visual stopping.
+    # <= 4.0s: (0.05 * motion_scale) provides smooth, subtle cinematic motion.
+    delta = 0.07 * motion_scale if dur > 4.0 else 0.05 * motion_scale
+    zoom_delta = round(1.0 + delta, 3)
 
     # 3. Calculate start_crop and end_crop based on animation motion
     if anim_type == "static":

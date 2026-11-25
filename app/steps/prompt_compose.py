@@ -10,6 +10,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.styles.adapter import adapt_character, adapt_concept, adapt_environment, adapt_object
+from app.styles.registry import (
+    VisualStyleResolutionError,
+    get_style,
+    is_valid_style_id,
+    resolve_visual_style_preset,
+)
+from app.styles.schemas import VisualStylePreset
+
 # Fixed composition and framing rules appended to every final prompt
 COMPOSITION_RULES: str = (
     "Vertical 9:16, main subject in the upper-middle of the frame, "
@@ -199,20 +208,62 @@ def _clean_conceptual_styling(text: str) -> str:
     return s.strip()
 
 
+def _resolve_preset(
+    preset: VisualStylePreset | dict[str, Any] | str | None = None,
+    context: Any = None,
+) -> VisualStylePreset | None:
+    """Resolve a VisualStylePreset from an explicit argument or a context dict/object with fail-closed rules."""
+    if preset is not None:
+        if isinstance(preset, VisualStylePreset):
+            return preset
+        if isinstance(preset, dict):
+            return resolve_visual_style_preset(snapshot=preset)
+        if isinstance(preset, str):
+            target_version = None
+            if isinstance(context, dict):
+                target_version = context.get("visual_style_version")
+            elif context is not None:
+                target_version = getattr(context, "visual_style_version", None)
+            return resolve_visual_style_preset(style_id=preset, style_version=target_version)
+
+    # Extract from context
+    snap = None
+    style_id = None
+    style_version = None
+
+    if isinstance(context, dict):
+        snap = context.get("visual_style_snapshot") or context.get("_visual_style_snapshot")
+        style_id = context.get("visual_style_id") or context.get("_visual_style_id")
+        style_version = context.get("visual_style_version") or context.get("_visual_style_version")
+    elif context is not None:
+        snap = getattr(context, "visual_style_snapshot", None)
+        style_id = getattr(context, "visual_style_id", None)
+        style_version = getattr(context, "visual_style_version", None)
+
+    return resolve_visual_style_preset(
+        snapshot=snap,
+        style_id=style_id,
+        style_version=style_version,
+    )
+
+
 def _compose_connected_final_prompt(
     scene: Any,
     video_bible: dict[str, Any] | Any,
     creative_direction: dict[str, Any] | Any | None = None,
+    preset: VisualStylePreset | dict[str, Any] | str | None = None,
 ) -> str:
     """Compose an image prompt deterministically from Video Bible entities and directorial intent.
 
     Applies:
-    - Global Art Direction (visual genre, lighting philosophy, rendering texture).
-    - ONLY the entities explicitly bound to this specific beat (character, environment, props, concept).
+    - Global Art Direction (visual genre, lighting philosophy, rendering texture) or visual style preset.
+    - ONLY the entities explicitly bound to this specific beat (character, environment, props, concept),
+      adapted to the visual style preset when active.
     - Camera direction, framing, and primary visual focal point.
     - Narrative transition rationale (e.g. cutaway framing).
-    - Art direction negative anchors and vertical 9:16 safe-zone rules.
+    - Art direction negative anchors, preset negative anchors, and vertical 9:16 safe-zone rules.
     """
+    resolved_preset = _resolve_preset(preset, context=scene)
     def _extract(obj: Any, field: str, default: Any = None) -> Any:
         if obj is None:
             return default
@@ -311,6 +362,129 @@ def _compose_connected_final_prompt(
     transition = str(_extract(scene, "transition_from_previous", "") or "").strip()
     visual_purpose = str(_extract(scene, "visual_purpose", "") or "").strip()
 
+    # Specialized Preset Branch (e.g. stickman_tactical_explainer, stylized_2d_narrative)
+    if resolved_preset is not None and resolved_preset.id != "legacy_default":
+        spec_segments: list[str] = []
+
+        # Segment 1: Preset Permanent Anchors & Lighting
+        preset_anchors = list(resolved_preset.permanent_prompt_anchors or [])
+        art_parts: list[str] = [", ".join(preset_anchors)] if preset_anchors else [f"{resolved_preset.display_name} visual style"]
+        lighting_rule = (
+            resolved_preset.rules.lighting_style
+            if resolved_preset.rules and resolved_preset.rules.lighting_style
+            else str(art_dir.get("lighting_philosophy", "")).strip()
+        )
+        if lighting_rule:
+            art_parts.append(f"Lighting: {lighting_rule}")
+        spec_segments.append(_clean_segment(". ".join(art_parts)))
+
+        # Segment 2: Bound Character (adapted via adapt_character)
+        if char_id and char_id in chars_by_id:
+            c_entry = chars_by_id[char_id]
+            adapted_c = adapt_character(c_entry, resolved_preset)
+            char_desc = adapted_c.adapted_description
+
+            if char_state:
+                pose = _extract(char_state, "pose_description")
+                expr = _extract(char_state, "expression_description")
+                action = _extract(char_state, "action_in_progress")
+                state_bits: list[str] = []
+                if pose:
+                    state_bits.append(f"pose: {pose}")
+                if expr:
+                    state_bits.append(f"expression: {expr}")
+                if action:
+                    state_bits.append(f"action: {action}")
+                if state_bits:
+                    char_desc += f". Character state: {', '.join(state_bits)}"
+            spec_segments.append(_clean_segment(char_desc))
+
+        # Segment 3: Bound Concept Diagram OR Bound Environment (adapted via adapt_concept / adapt_environment)
+        if concept_id and concept_id in concepts_by_id:
+            cp_entry = concepts_by_id[concept_id]
+            adapted_cp = adapt_concept(cp_entry, resolved_preset)
+            spec_segments.append(_clean_segment(adapted_cp.adapted_description))
+        elif env_id and env_id in envs_by_id:
+            e_entry = envs_by_id[env_id]
+            adapted_env = adapt_environment(e_entry, resolved_preset)
+            env_desc = adapted_env.adapted_description
+            if env_override:
+                env_desc += f". Condition: {env_override}"
+            spec_segments.append(_clean_segment(env_desc))
+        elif env_override:
+            spec_segments.append(_clean_segment(f"Environment setting: {env_override}"))
+
+        # Segment 4: Bound Props (adapted via adapt_object)
+        if obj_ids:
+            prop_descs: list[str] = []
+            for oid in obj_ids:
+                if oid in objs_by_id:
+                    adapted_o = adapt_object(objs_by_id[oid], resolved_preset)
+                    prop_descs.append(adapted_o.adapted_description)
+            if prop_descs:
+                spec_segments.append(_clean_segment("; ".join(prop_descs)))
+
+        # Segment 5: Camera Direction & Focal Point
+        cam_parts: list[str] = []
+        if shot_type and shot_type.lower() not in ("default", ""):
+            cam_parts.append(f"{shot_type.replace('_', ' ')} shot")
+        if camera_angle and camera_angle.lower() not in ("eye-level", "eye_level", "default", ""):
+            cam_parts.append(f"{camera_angle.replace('_', ' ')} angle")
+        if cam_parts:
+            spec_segments.append(_clean_segment(f"Camera direction: {', '.join(cam_parts)}"))
+        if focal_point and focal_point.lower() not in ("default", ""):
+            spec_segments.append(_clean_segment(f"Primary focal point: {focal_point}"))
+
+        # Segment 6: Narrative Transition Rationale & Visual Action
+        context_parts: list[str] = []
+        if transition == "explanatory_cutaway":
+            context_parts.append("Framing context: explanatory cutaway transition")
+        elif transition == "surreal_metaphor":
+            context_parts.append("Framing context: surreal visual metaphor")
+
+        visual_desc = str(_extract(scene, "visual_description", "") or "").strip()
+        action_text = visual_desc or visual_purpose
+        if action_text and len(action_text.split()) >= 3:
+            context_parts.append(f"Visual moment: {action_text}")
+
+        if context_parts:
+            spec_segments.append(_clean_segment(". ".join(context_parts)))
+
+        # Segment 7: Color Palette & Style Drawing Rules
+        palette_rule = (
+            resolved_preset.rules.color_and_shading
+            if resolved_preset.rules and resolved_preset.rules.color_and_shading
+            else ""
+        )
+        palette_list = resolved_preset.default_palette_hex or art_dir.get("primary_palette_hex") or []
+        palette_parts: list[str] = []
+        if palette_list:
+            palette_parts.append(", ".join(str(p) for p in palette_list))
+        if palette_rule:
+            palette_parts.append(palette_rule)
+        if palette_parts:
+            spec_segments.append(_clean_segment(f"Color palette: {'; '.join(palette_parts)}"))
+
+        # Segment 8: Negative Constraints & Avoidances
+        neg_anchors: list[str] = list(resolved_preset.negative_prompt_anchors or [])
+        if char_id and char_id in chars_by_id:
+            c_entry = chars_by_id[char_id]
+            c_mutations = _extract(c_entry, "forbidden_mutations") or []
+            for mut in c_mutations:
+                m_str = str(mut).strip()
+                if m_str and m_str not in neg_anchors:
+                    neg_anchors.append(m_str)
+
+        if neg_anchors:
+            spec_segments.append(_clean_segment(f"Avoid: {', '.join(neg_anchors)}"))
+
+        # Segment 9: Fixed Composition Rules
+        spec_segments.append(_clean_segment(COMPOSITION_RULES))
+
+        spec_joined = " ".join(spec_segments)
+        return re.sub(r"\s+", " ", spec_joined).strip()
+
+    # Legacy / Unconfigured Default Path (Exact historical implementation)
     segments: list[str] = []
 
     is_standalone_concept = bool(concept_id and not char_id)
@@ -530,13 +704,17 @@ def compose_final_prompt(
     next_scene: Any | None = None,
     video_bible: dict[str, Any] | Any | None = None,
     creative_direction: dict[str, Any] | Any | None = None,
+    preset: VisualStylePreset | dict[str, Any] | str | None = None,
 ) -> str:
     """Compose the final image prompt for a scene with rich visual context.
 
     When a Video Bible is provided (8-step pipeline), deterministically composes
-    the prompt using bound entities, art direction, and camera instructions.
+    the prompt using bound entities, art direction, and camera instructions,
+    adapting entities to the active visual style preset if present.
     When Video Bible is absent (legacy 6-step videos), preserves legacy composition.
     """
+    resolved_preset = _resolve_preset(preset, context=scene)
+
     # Check for Video Bible presence (explicit or attached to scene dict)
     resolved_vb = video_bible
     if resolved_vb is None and isinstance(scene, dict):
@@ -547,6 +725,7 @@ def compose_final_prompt(
             scene=scene,
             video_bible=resolved_vb,
             creative_direction=creative_direction,
+            preset=resolved_preset,
         )
         if connected_result:
             return connected_result
@@ -623,7 +802,12 @@ def compose_final_prompt(
             segments.append(_clean_segment(f"Visual technique: {visual_technique}"))
 
     # 8. Adaptive Visual Style
-    if visual_style:
+    if resolved_preset is not None and resolved_preset.id != "legacy_default":
+        style_text = ", ".join(resolved_preset.permanent_prompt_anchors)
+        cleaned_style = _clean_segment(style_text)
+        if cleaned_style:
+            segments.append(cleaned_style)
+    elif visual_style:
         adapted_style = adapt_visual_style(
             visual_style=visual_style,
             environment=effective_env,
@@ -635,6 +819,14 @@ def compose_final_prompt(
             segments.append(cleaned_style)
 
     # 9. Fixed Composition Rules & Negative Constraints
+    if (
+        resolved_preset is not None
+        and resolved_preset.id != "legacy_default"
+        and resolved_preset.negative_prompt_anchors
+    ):
+        neg_str = f"Avoid: {', '.join(resolved_preset.negative_prompt_anchors)}"
+        segments.append(_clean_segment(neg_str))
+
     cleaned_rules = _clean_segment(COMPOSITION_RULES)
     if cleaned_rules:
         segments.append(cleaned_rules)
@@ -648,11 +840,13 @@ def recompute_final_prompts(
     visual_style: str | None = None,
     video_bible: dict[str, Any] | Any | None = None,
     creative_direction: dict[str, Any] | Any | None = None,
+    preset: VisualStylePreset | dict[str, Any] | str | None = None,
 ) -> dict[str, Any]:
-    """Rebuild every scene's final_prompt from its component parts.
+    """Rebuild every scene's final_prompt from its component parts deterministically.
 
     Can be invoked on the root step output (e.g. step.output) or directly
     on the inner storyboard dict. Updates scenes in-place and returns the dict.
+    Preserves all semantic storyboard data (narration, sequence, timing, actions, bindings).
     """
     target = (
         storyboard.get("storyboard")
@@ -660,7 +854,33 @@ def recompute_final_prompts(
         else storyboard
     )
 
-    style = visual_style or target.get("visual_style") or ""
+    resolved_preset = _resolve_preset(preset, context=target)
+    if resolved_preset is None and isinstance(storyboard, dict):
+        resolved_preset = _resolve_preset(preset, context=storyboard)
+
+    if resolved_preset is not None:
+        target["visual_style_id"] = resolved_preset.id
+        target["visual_style_snapshot"] = (
+            resolved_preset.model_dump()
+            if hasattr(resolved_preset, "model_dump")
+            else dict(resolved_preset)
+        )
+        if visual_style is None:
+            if resolved_preset.id != "legacy_default":
+                anchors_str = ", ".join(resolved_preset.permanent_prompt_anchors)
+                rules_str = (
+                    f"Linework: {resolved_preset.rules.linework_and_outlines}. "
+                    f"Shading: {resolved_preset.rules.color_and_shading}."
+                )
+                style = f"{resolved_preset.display_name}: {anchors_str}. {rules_str}"
+            else:
+                style = target.get("visual_style") or ""
+        else:
+            style = visual_style
+        target["visual_style"] = style
+    else:
+        style = visual_style or target.get("visual_style") or ""
+
     anchor = target.get("subject_anchor") or ""
     env_anchor = target.get("environment_anchor") or ""
     vb = video_bible or target.get("video_bible")
@@ -679,6 +899,7 @@ def recompute_final_prompts(
             next_scene=next_s,
             video_bible=vb,
             creative_direction=cd,
+            preset=resolved_preset,
         )
         s["final_prompt"] = scene_prompt
 
@@ -695,6 +916,23 @@ def recompute_final_prompts(
                     next_scene=next_s,
                     video_bible=vb,
                     creative_direction=cd,
+                    preset=resolved_preset,
                 )
+
+    flat_beats = target.get("beats") or []
+    for fb in flat_beats:
+        if isinstance(fb, dict):
+            sc_idx = fb.get("scene_index", 1)
+            matching_sc = next((sc for sc in scenes if sc.get("index") == sc_idx), {})
+            fb_ctx = {**matching_sc, **fb}
+            fb["final_prompt"] = compose_final_prompt(
+                scene=fb_ctx,
+                subject_anchor=anchor,
+                visual_style=style,
+                environment_anchor=env_anchor,
+                video_bible=vb,
+                creative_direction=cd,
+                preset=resolved_preset,
+            )
 
     return storyboard

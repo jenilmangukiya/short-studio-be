@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .models import PipelineJob, Video, VideoStep, VideoStepRevision
+from .styles import canonical_snapshot_hash
 
 STEPS = [
     "creative_direction",
@@ -32,6 +33,14 @@ class PipelineError(Exception):
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+def _normalize_dt(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _dir(video: Video) -> Path:
@@ -162,13 +171,61 @@ def execute(video_id, step_name: str, run_all: bool = False):
             )
             step = next(s for s in video.steps if s.name == name)
             prev = {s.name: s.output for s in video.steps if s.status in ("done", "awaiting_approval") and s.output}
+            if step.status != "running" or step.started_at is None:
+                step.status = "running"
+                step.started_at = _now()
+                step.error = None
+                db.commit()
+            start_started_at = _normalize_dt(step.started_at)
+            start_snapshot_hash = canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None))
+            start_style_id = getattr(video, "visual_style_id", None)
             try:
                 step.output = HANDLERS[name](video, prev, step)
                 step.error = None
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                video = db.scalar(
+                    select(Video).where(Video.id == video_id).execution_options(populate_existing=True)
+                )
+                step = next((s for s in (video.steps if video else []) if s.name == name), None)
+                if not video or not step:
+                    return
+
+                curr_snapshot_hash = canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None))
+                curr_style_id = getattr(video, "visual_style_id", None)
+                curr_started_at = _normalize_dt(step.started_at)
+                is_superseded = (
+                    step.status != "running"
+                    or (start_started_at is not None and curr_started_at != start_started_at)
+                    or (start_snapshot_hash and curr_snapshot_hash != start_snapshot_hash)
+                    or (start_style_id and curr_style_id != start_style_id)
+                )
+                if is_superseded:
+                    return
+
                 step.status, step.error, step.finished_at = "failed", str(exc)[:2000], _now()
                 video.status = "failed"
                 db.commit()
+                return
+
+            # Concurrency Protection: verify step hasn't become stale or execution superseded
+            step_state = db.execute(
+                select(VideoStep.status, VideoStep.started_at).where(VideoStep.id == step.id)
+            ).first()
+            video_state = db.execute(
+                select(Video.visual_style_snapshot, Video.visual_style_id).where(Video.id == video_id)
+            ).first()
+            curr_status = step_state[0] if step_state else None
+            curr_started_at = _normalize_dt(step_state[1]) if step_state else None
+            curr_snapshot_hash = canonical_snapshot_hash(video_state[0] if video_state else None)
+            curr_style_id = video_state[1] if video_state else None
+
+            if (
+                curr_status != "running"
+                or (start_started_at is not None and curr_started_at != start_started_at)
+                or (start_snapshot_hash and curr_snapshot_hash != start_snapshot_hash)
+                or (start_style_id and curr_style_id != start_style_id)
+            ):
                 return
 
             step.finished_at = _now()

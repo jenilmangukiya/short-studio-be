@@ -18,10 +18,13 @@ from .registry import (
     STICKMAN_TACTICAL_EXPLAINER_PRESET,
     STYLES_REGISTRY,
     STYLIZED_2D_NARRATIVE_PRESET,
+    VisualStyleResolutionError,
+    canonical_snapshot_hash,
     get_style,
     get_style_by_id,
     is_valid_style_id,
     list_styles,
+    resolve_visual_style_preset,
 )
 from .schemas import (
     ReferenceMetadata,

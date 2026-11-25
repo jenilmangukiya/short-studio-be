@@ -23,6 +23,7 @@ from sqlalchemy.orm import object_session
 
 from app.config import settings
 from app.models import Video, VideoStep
+from app.styles import canonical_snapshot_hash
 from app.subtitles import (
     BaseSubtitleProvider,
     SubtitleError,
@@ -33,6 +34,7 @@ from app.subtitles import (
     get_subtitle_provider,
     load_cached_alignment,
 )
+from app.db import atomic_promote_file
 
 
 class PipelineError(Exception):
@@ -157,6 +159,8 @@ def generate_subtitles_step(
     Returns:
         Structured dictionary conforming to the pipeline handler interface.
     """
+    subtitles_start_snapshot_hash = canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None))
+    subtitles_start_style_id = getattr(video, "visual_style_id", None)
     start_time = time.perf_counter()
 
     # 1. Validate render step precondition
@@ -306,9 +310,22 @@ def generate_subtitles_step(
     burn_succeeded = False
     input_video_path = getattr(video, "output_path", None)
     if not input_video_path or not Path(input_video_path).is_file():
-        candidate = video_dir / "final_video.mp4"
-        if candidate.is_file():
-            input_video_path = str(candidate)
+        render_data = prev.get("render") if isinstance(prev, dict) else {}
+        if isinstance(render_data, dict):
+            r_rel = render_data.get("video_path") or render_data.get("video_file")
+            if r_rel:
+                cand = (storage_root / r_rel).resolve() if not Path(r_rel).is_absolute() else Path(r_rel)
+                if cand.is_file():
+                    input_video_path = str(cand)
+        if not input_video_path or not Path(input_video_path).is_file():
+            render_step = next((s for s in (getattr(video, "steps", None) or []) if s.name == "render"), None)
+            # Fall back to canonical filename ONLY if render step is completed and not stale, or legacy video
+            if (render_step and render_step.status in ("done", "awaiting_approval")) or (
+                not getattr(video, "visual_style_id", None) and not getattr(video, "visual_style_snapshot", None)
+            ):
+                candidate = video_dir / "final_video.mp4"
+                if candidate.is_file():
+                    input_video_path = str(candidate)
 
     if input_video_path and Path(input_video_path).is_file():
         temp_captioned_path = video_dir / f"tmp_burn_{uuid.uuid4().hex[:8]}.mp4"
@@ -335,11 +352,30 @@ def generate_subtitles_step(
                 check=True,
                 timeout=timeout_sec,
             )
-            if temp_captioned_path.is_file() and temp_captioned_path.stat().st_size > 0:
-                shutil.move(str(temp_captioned_path), str(captioned_abs_path))
-                burn_succeeded = True
-            else:
-                warnings.append("FFmpeg produced an empty captioned video output.")
+
+            sess = None
+            try:
+                sess = object_session(video)
+            except Exception:
+                sess = None
+
+            execution_id = getattr(step, "_execution_id", None) or uuid.uuid4().hex[:12]
+            if step is not None:
+                setattr(step, "_execution_id", execution_id)
+
+            promoted_path = atomic_promote_file(
+                temp_path=temp_captioned_path,
+                final_path=captioned_abs_path,
+                session=sess,
+                video_id=video.id,
+                expected_hash=subtitles_start_snapshot_hash,
+                expected_style_id=subtitles_start_style_id,
+                expected_execution_id=execution_id,
+                step_name="subtitles",
+            )
+            captioned_abs_path = Path(promoted_path)
+            captioned_rel_path = str(captioned_abs_path.relative_to(storage_root))
+            burn_succeeded = True
         except subprocess.CalledProcessError as exc:
             err_tail = exc.stderr[-500:] if exc.stderr else "Unknown error"
             warnings.append(f"Subtitle burning failed: {err_tail.strip()}")
@@ -397,6 +433,8 @@ def generate_subtitles_step(
             "duration_seconds": result.total_duration_seconds,
             "captioned_burned": is_captioned_ready,
             "latency_seconds": total_latency,
+            "visual_style_id": getattr(video, "visual_style_id", None),
+            "visual_style_snapshot_hash": canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None)),
         },
     }
 
@@ -406,12 +444,42 @@ def generate_subtitles_step(
 
     # 12. Persist step output and commit if session attached
     if step is not None:
-        step.output = payload
         sess = None
         try:
             sess = object_session(step)
         except Exception:
             sess = None
+
+        if sess is not None:
+            try:
+                curr_vid = sess.get(Video, step.video_id)
+                if curr_vid is not None:
+                    curr_hash = canonical_snapshot_hash(getattr(curr_vid, "visual_style_snapshot", None))
+                    curr_id = getattr(curr_vid, "visual_style_id", None)
+                    if (subtitles_start_snapshot_hash and curr_hash != subtitles_start_snapshot_hash) or (
+                        subtitles_start_style_id and curr_id != subtitles_start_style_id
+                    ):
+                        raise PipelineError("Subtitle job was superseded by visual style change; output discarded")
+            except PipelineError:
+                raise
+            except Exception:
+                pass
+
+        if getattr(step, "status", None) == "stale":
+            raise PipelineError("Subtitle job was superseded by visual style change; output discarded")
+
+        if sess is not None:
+            try:
+                curr_step = sess.get(VideoStep, step.id)
+                if curr_step and isinstance(curr_step.output, dict):
+                    curr_cap = curr_step.output.get("captioned_video_path") or curr_step.output.get("subtitles", {}).get("captioned_video_path")
+                    if curr_cap and curr_cap != str(captioned_abs_path):
+                        logger.warning("Subtitle job superseded by newer generation")
+                        return payload
+            except Exception:
+                pass
+
+        step.output = payload
         if sess is not None:
             try:
                 sess.commit()

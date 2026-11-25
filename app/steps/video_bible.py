@@ -14,8 +14,8 @@ from typing import Any
 
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
-from app.pipeline import PipelineError
 from app.schemas import VideoBibleOutput
+from app.styles import VisualStylePreset, resolve_visual_style_preset
 
 PROMPT_FILE_PATH = Path(__file__).resolve().parent.parent / "prompts" / "video_bible.md"
 
@@ -38,6 +38,7 @@ def build_video_bible_prompt(
     channel_visual_style: str | None = None,
     previous_bible: dict[str, Any] | None = None,
     revision_instruction: str | None = None,
+    visual_style: VisualStylePreset | None = None,
 ) -> str:
     """Build the prompt for Video Bible generation."""
     sections: list[str] = [rules_text, "\n## Project Ground Truth"]
@@ -69,7 +70,35 @@ def build_video_bible_prompt(
         if constraints:
             sections.append("- **Creative Constraints**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
 
-    if channel_visual_style and channel_visual_style.strip():
+    if visual_style is not None:
+        art = getattr(visual_style, "art_direction", None)
+        rules = getattr(visual_style, "rules", None)
+        sections.append("\n### Visual Style Art Direction")
+        sections.append(
+            f"The video is bound to the visual style preset: **{visual_style.display_name}**.\n"
+            "This preset governs visual presentation, rendering texture, linework, and color palette. "
+            "It controls visual form and aesthetic constraints only; it must NOT alter narrative thesis, character roles, story events, or semantic content.\n"
+            "PRIORITY: The visual presentation rules below strictly supersede any conflicting generic visual genre suggestions from Creative Direction."
+        )
+        if art:
+            if art.style_family:
+                sections.append(f"- **Style Family**: {art.style_family}")
+            if art.visual_genre:
+                sections.append(f"- **Visual Genre**: {art.visual_genre}")
+            if art.rendering_texture:
+                sections.append(f"- **Rendering Texture**: {art.rendering_texture}")
+            if art.lighting_philosophy:
+                sections.append(f"- **Lighting Philosophy**: {art.lighting_philosophy}")
+            if art.primary_palette_hex:
+                sections.append(f"- **Primary Color Palette**: {', '.join(art.primary_palette_hex)}")
+        if rules:
+            if rules.character_anatomy:
+                sections.append(f"- **Character Drawing Constraints**: {rules.character_anatomy}")
+            if rules.environment_and_perspective:
+                sections.append(f"- **Environment & Perspective Rules**: {rules.environment_and_perspective}")
+        if art and art.negative_anchors:
+            sections.append(f"- **Forbidden Visual Elements**: {', '.join(art.negative_anchors)}")
+    elif channel_visual_style and channel_visual_style.strip():
         sections.append(f"\n### Channel Visual Style Reference\n{channel_visual_style.strip()}")
 
     if previous_bible and revision_instruction:
@@ -121,6 +150,8 @@ def generate_video_bible_step(
 
     Signature conforms to pipeline handler interface: (video, prev, step) -> dict.
     """
+    from app.pipeline import PipelineError
+
     # 1. Precondition: Script must be completed
     script_step = prev.get("script")
     if not isinstance(script_step, dict):
@@ -134,18 +165,25 @@ def generate_video_bible_step(
     cd_step = prev.get("creative_direction")
     cd_data = cd_step.get("creative_direction") if isinstance(cd_step, dict) else None
 
-    # 3. Channel Visual Style
+    # 3. Resolve Visual Style Preset (fail-closed on invalid snapshot or ID)
+    visual_style = resolve_visual_style_preset(
+        snapshot=getattr(video, "visual_style_snapshot", None),
+        style_id=getattr(video, "visual_style_id", None),
+        style_version=getattr(video, "visual_style_version", None),
+    )
+
+    # 4. Channel Visual Style Fallback (only used when visual style preset is absent)
     channel = getattr(video, "channel", None)
     channel_settings = getattr(channel, "settings", None) if channel else None
     channel_style = None
-    if isinstance(channel_settings, dict):
+    if visual_style is None and isinstance(channel_settings, dict):
         channel_style = (
             channel_settings.get("visual_style")
             or channel_settings.get("style_prompt")
             or channel_settings.get("visual_direction")
         )
 
-    # 4. Check revision mode
+    # 5. Check revision mode
     previous_bible = None
     if step.user_prompt and isinstance(step.output, dict) and step.output.get("video_bible"):
         previous_bible = step.output["video_bible"]
@@ -160,6 +198,7 @@ def generate_video_bible_step(
         channel_visual_style=channel_style,
         previous_bible=previous_bible,
         revision_instruction=step.user_prompt,
+        visual_style=visual_style,
     )
 
     llm = get_llm(task="video_bible")
@@ -174,6 +213,20 @@ def generate_video_bible_step(
         raise LLMError(f"Video Bible generation failed: {exc}") from exc
 
     vb_output: VideoBibleOutput = result.output
+
+    # When a visual style is active, deterministically align presentation-layer art direction
+    # while strictly preserving all narrative-specific entities (characters, environments, objects, concepts)
+    if visual_style is not None and visual_style.art_direction:
+        p_art = visual_style.art_direction
+        vb_output.art_direction.style_family = p_art.style_family
+        vb_output.art_direction.visual_genre = p_art.visual_genre
+        vb_output.art_direction.rendering_texture = p_art.rendering_texture
+        vb_output.art_direction.lighting_philosophy = p_art.lighting_philosophy
+        if p_art.primary_palette_hex:
+            vb_output.art_direction.primary_palette_hex = list(p_art.primary_palette_hex)
+        if p_art.negative_anchors:
+            vb_output.art_direction.negative_anchors = list(p_art.negative_anchors)
+
     warnings = validate_video_bible(vb_output, cd_data=cd_data)
 
     return {

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import PipelineJob, Video, VideoStep
 from app.pipeline import HANDLERS, PipelineError, record_revision
+from app.styles import canonical_snapshot_hash
 
 
 class QueueError(Exception):
@@ -161,6 +162,24 @@ def complete_job(
     """Complete a job and apply step status transitions with Phase 4 gatekeeping.
     Fails safely if the worker's lease expired before completion."""
     now = _now()
+    # 1. Lookup job metadata without holding locks to determine aggregate root
+    target_video_id = db.scalar(
+        select(PipelineJob.video_id).where(
+            PipelineJob.id == job_id,
+            PipelineJob.lease_token == lease_token,
+            PipelineJob.status == "running",
+        )
+    )
+    if not target_video_id:
+        return False
+
+    # 2. Strict lock hierarchy: Acquire Video lock FIRST
+    from ..db import acquire_video_publication_lock
+    video = acquire_video_publication_lock(db, target_video_id)
+    if not video:
+        return False
+
+    # 3. Acquire PipelineJob lock SECOND
     job = db.scalar(
         select(PipelineJob)
         .where(
@@ -174,15 +193,51 @@ def complete_job(
         # Fencing token revoked! An expired lease was recovered by another worker
         return False
 
-    video = db.scalar(
-        select(Video).where(Video.id == job.video_id).with_for_update().execution_options(populate_existing=True)
-    )
-    if not video:
-        return False
-
     step = next((s for s in video.steps if s.name == job.step_name), None)
     if not step:
         return False
+
+    # Check if a newer job exists for this step
+    newer_job = db.scalar(
+        select(PipelineJob).where(
+            PipelineJob.video_id == job.video_id,
+            PipelineJob.step_name == job.step_name,
+            PipelineJob.id != job.id,
+            PipelineJob.scheduled_at >= job.scheduled_at,
+            PipelineJob.status.in_(["queued", "running", "completed"]),
+        )
+    )
+
+    # Phase 4B Concurrency Protection: Reject stale jobs from overwriting current state
+    if job.step_name in ("images", "render", "subtitles", "subtitle"):
+        curr_snap_hash = canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None))
+        curr_style_id = getattr(video, "visual_style_id", None)
+
+        output_meta = (
+            output.get("meta")
+            if isinstance(output, dict) and isinstance(output.get("meta"), dict)
+            else {}
+        )
+        out_snap_hash = output_meta.get("visual_style_snapshot_hash")
+        out_style_id = output_meta.get("visual_style_id")
+
+        is_stale = False
+        if step.status == "stale":
+            is_stale = True
+        elif out_snap_hash is not None and out_snap_hash != curr_snap_hash:
+            is_stale = True
+        elif out_style_id is not None and out_style_id != curr_style_id:
+            is_stale = True
+        elif newer_job is not None:
+            is_stale = True
+
+        if is_stale:
+            job.status = "cancelled"
+            job.finished_at = now
+            job.lease_token = None
+            job.lease_expires_at = None
+            db.commit()
+            return False
 
     # Apply step output and save version revision
     step.output = output
@@ -245,6 +300,22 @@ def fail_job(
 ) -> bool:
     """Record job failure with exponential backoff retry or dead-letter transition."""
     now = _now()
+    # 1. Lookup job metadata without holding locks
+    target_video_id = db.scalar(
+        select(PipelineJob.video_id).where(
+            PipelineJob.id == job_id,
+            PipelineJob.lease_token == lease_token,
+            PipelineJob.status == "running",
+        )
+    )
+    if not target_video_id:
+        return False
+
+    # 2. Strict lock hierarchy: Acquire Video lock FIRST
+    from ..db import acquire_video_publication_lock
+    video = acquire_video_publication_lock(db, target_video_id) if target_video_id else None
+
+    # 3. Acquire PipelineJob lock SECOND
     job = db.scalar(
         select(PipelineJob)
         .where(
@@ -257,8 +328,30 @@ def fail_job(
     if not job:
         return False
 
-    video = db.scalar(select(Video).where(Video.id == job.video_id).with_for_update())
     step = next((s for s in (video.steps if video else []) if s.name == job.step_name), None)
+
+    # Check if a newer job was scheduled for this video step
+    newer_job = None
+    if video:
+        newer_job = db.scalar(
+            select(PipelineJob).where(
+                PipelineJob.video_id == job.video_id,
+                PipelineJob.step_name == job.step_name,
+                PipelineJob.id != job.id,
+                PipelineJob.scheduled_at >= job.scheduled_at,
+                PipelineJob.status.in_(["queued", "running", "completed"]),
+            )
+        )
+
+    # If the step is stale or superseded by a newer job, cancel without failing the newer step
+    if job.step_name in ("images", "render", "subtitles", "subtitle"):
+        if (step and step.status == "stale") or newer_job is not None:
+            job.status = "cancelled"
+            job.finished_at = now
+            job.lease_token = None
+            job.lease_expires_at = None
+            db.commit()
+            return False
 
     # Clean error summary: truncate excessive stack traces and sanitize
     clean_error = str(error_message).strip()[:1000]
@@ -310,11 +403,21 @@ def reap_dead_jobs(
     else:
         select_stmt = select_stmt.with_for_update()
 
+    from ..db import acquire_video_publication_lock
+
     dead_jobs = db.scalars(select_stmt).all()
     reaped_count = 0
 
-    for job in dead_jobs:
-        video = db.scalar(select(Video).where(Video.id == job.video_id).with_for_update())
+    for dead_job in dead_jobs:
+        # Strict lock hierarchy: Video first, then Job
+        video = acquire_video_publication_lock(db, dead_job.video_id) if dead_job.video_id else None
+        job = db.scalar(
+            select(PipelineJob)
+            .where(PipelineJob.id == dead_job.id, PipelineJob.status == "running")
+            .with_for_update()
+        )
+        if not job:
+            continue
         step = next((s for s in (video.steps if video else []) if s.name == job.step_name), None)
         worker_info = job.worker_id or "unknown worker"
         diagnostic = f"Lease expired (worker {worker_info} stopped heartbeats at {job.last_heartbeat_at})"

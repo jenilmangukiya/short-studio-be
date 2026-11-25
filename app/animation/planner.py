@@ -51,6 +51,7 @@ def plan_scene_animation(
     image_path: Path | str | None = None,
     duration_seconds: float = 2.5,
     prev_anim_type: str | None = None,
+    motion_scale: float = 1.0,
 ) -> AnimationPlan:
     """Create a restrained, AI-directed animation plan customized for a scene's composition.
 
@@ -68,10 +69,14 @@ def plan_scene_animation(
         image_path: Optional path to the rendered scene image on disk.
         duration_seconds: Duration of the audio/scene in seconds.
         prev_anim_type: Animation type used in the previous scene (informational).
+        motion_scale: Multiplier from visual style render profile (default 1.0).
 
     Returns:
         Validated, coordinate-clamped AnimationPlan instance.
     """
+    zoom_delta = round(0.05 * motion_scale, 3)
+    target_zoom_scale = round(1.0 + zoom_delta, 3)
+
     # 1. If explicit animation metadata is already present in scene_data, validate and calibrate it
     raw_anim = scene_data.get("animation")
     if isinstance(raw_anim, dict) and raw_anim.get("animation_type"):
@@ -104,14 +109,14 @@ def plan_scene_animation(
         elif atype == "zoom-in":
             if existing_plan.end_scale <= existing_plan.start_scale + 0.005:
                 existing_plan.start_scale = 1.00
-                existing_plan.end_scale = 1.05
+                existing_plan.end_scale = target_zoom_scale
             existing_plan.start_x = existing_plan.focal_x
             existing_plan.end_x = existing_plan.focal_x
             existing_plan.start_y = existing_plan.focal_y
             existing_plan.end_y = existing_plan.focal_y
         elif atype == "zoom-out":
             if existing_plan.start_scale <= existing_plan.end_scale + 0.005:
-                existing_plan.start_scale = 1.05
+                existing_plan.start_scale = target_zoom_scale
                 existing_plan.end_scale = 1.00
             existing_plan.start_x = existing_plan.focal_x
             existing_plan.end_x = existing_plan.focal_x
@@ -191,7 +196,7 @@ def plan_scene_animation(
     # 4. Conservative Animation Selection
     anim_type: AnimationType = "zoom-in"
     start_scale = 1.00
-    end_scale = 1.05
+    end_scale = target_zoom_scale
     start_x, start_y = fx, fy
     end_x, end_y = fx, fy
     intensity = "subtle"
@@ -201,7 +206,7 @@ def plan_scene_animation(
     # Gentle pull-out to reveal surrounding context without cropping edges
     if shot_type in ("extreme-close-up", "close-up", "macro") or re.search(r"\b(macro|extreme close|close up|close-up)\b", combined_desc):
         anim_type = "zoom-out"
-        start_scale = 1.05
+        start_scale = target_zoom_scale
         end_scale = 1.00
         start_x, start_y = fx, fy
         end_x, end_y = fx, fy
@@ -227,7 +232,7 @@ def plan_scene_animation(
     else:
         anim_type = "zoom-in"
         start_scale = 1.00
-        end_scale = 1.05
+        end_scale = target_zoom_scale
         start_x, start_y = fx, fy
         end_x, end_y = fx, fy
         intensity = "subtle"

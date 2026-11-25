@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_db
 from app.deps import current_user, get_owned_channel, get_owned_video
 from app.main import app
-from app.models import Channel, User, Video
+from app.models import Channel, PipelineJob, User, Video, VideoStepRevision
 from app.pipeline import init_steps
 from app.styles import (
     DEFAULT_STYLE_ID,
@@ -469,6 +469,109 @@ def test_patch_video_visual_style_invalid_fails(client: TestClient, test_channel
         json={"visual_style_id": "unknown_pixel_art"},
     )
     assert patch_resp.status_code == 422
+
+
+def test_patch_video_visual_style_same_style_is_idempotent_noop(
+    client: TestClient, db_session: Session, test_channel: Channel
+):
+    """PATCH with already active canonical style is an idempotent no-op that preserves outputs and jobs."""
+    # Create video with stickman style
+    resp = client.post(
+        f"/channels/{test_channel.id}/videos",
+        json={"topic": "Quantum Computing", "visual_style_id": "stickman_tactical_explainer"},
+    )
+    vid_id = resp.json()["id"]
+
+    video = db_session.get(Video, uuid.UUID(vid_id))
+    init_steps(db_session, video)
+
+    # Populate steps with outputs and done status, mark video completed
+    for step in video.steps:
+        step.status = "done"
+        step.output = {step.name: {"data": f"mock_{step.name}_output"}}
+    video.status = "completed"
+    video.output_path = f"storage/{video.id}/final_video_captioned.mp4"
+
+    # Enqueue a running pipeline job for images
+    job = PipelineJob(
+        video_id=video.id,
+        step_name="images",
+        status="running",
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(video)
+
+    # Count revisions before PATCH
+    revs_before = len(db_session.query(VideoStepRevision).all())
+
+    # Send same-style PATCH
+    patch_resp = client.patch(
+        f"/videos/{vid_id}/visual-style",
+        json={"visual_style_id": "stickman_tactical_explainer"},
+    )
+    assert patch_resp.status_code == 200
+    data = patch_resp.json()
+    assert data["visual_style_id"] == "stickman_tactical_explainer"
+
+    # Verify no-op preservation
+    db_session.refresh(video)
+    db_session.refresh(job)
+
+    assert video.status == "completed"
+    assert video.output_path == f"storage/{video.id}/final_video_captioned.mp4"
+
+    step_map = {s.name: s for s in video.steps}
+    assert step_map["images"].status == "done"
+    assert step_map["images"].output == {"images": {"data": "mock_images_output"}}
+    assert step_map["render"].status == "done"
+    assert step_map["render"].output == {"render": {"data": "mock_render_output"}}
+    assert step_map["subtitles"].status == "done"
+    assert step_map["subtitles"].output == {"subtitles": {"data": "mock_subtitles_output"}}
+
+    # Job must NOT be cancelled
+    assert job.status == "running"
+
+    # Revisions must NOT increase
+    revs_after = len(db_session.query(VideoStepRevision).all())
+    assert revs_after == revs_before
+
+
+def test_patch_video_visual_style_legacy_null_to_legacy_default_freezes_snapshot(
+    client: TestClient, db_session: Session, test_channel: Channel
+):
+    """PATCH from legacy NULL fields to legacy_default must NOT be short-circuited and must freeze snapshot."""
+    # Create legacy video with all style fields NULL
+    video = Video(
+        channel_id=test_channel.id,
+        topic="Pre-Style Era Video",
+        visual_style_id=None,
+        visual_style_version=None,
+        visual_style_snapshot=None,
+    )
+    db_session.add(video)
+    db_session.commit()
+    db_session.refresh(video)
+    init_steps(db_session, video)
+
+    # Patch to explicit legacy_default
+    patch_resp = client.patch(
+        f"/videos/{video.id}/visual-style",
+        json={"visual_style_id": "legacy_default"},
+    )
+    assert patch_resp.status_code == 200
+    data = patch_resp.json()
+
+    assert data["visual_style_id"] == "legacy_default"
+    assert data["visual_style_version"] == 1
+    assert data["visual_style_snapshot"] is not None
+    assert data["visual_style_snapshot"]["id"] == "legacy_default"
+
+    # Verify database model is updated
+    db_session.refresh(video)
+    assert video.visual_style_id == "legacy_default"
+    assert video.visual_style_version == 1
+    assert video.visual_style_snapshot == LEGACY_DEFAULT_PRESET.model_dump()
 
 
 # ==============================================================================

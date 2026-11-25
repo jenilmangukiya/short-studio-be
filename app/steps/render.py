@@ -34,7 +34,9 @@ from app.animation.crop import (
     plan_beat_camera_motion,
 )
 from app.config import settings
+from app.db import atomic_promote_file
 from app.models import Video, VideoStep
+from app.styles import canonical_snapshot_hash, resolve_visual_style_preset
 from app.subtitles import (
     SubtitleError,
     compute_aligned_scene_timings,
@@ -634,6 +636,34 @@ def generate_render_step(
         Structured dictionary conforming to the pipeline handler interface.
     """
     render_start = time.perf_counter()
+    render_start_snapshot_hash = canonical_snapshot_hash(getattr(video, "visual_style_snapshot", None))
+    render_start_style_id = getattr(video, "visual_style_id", None)
+
+    active_preset = resolve_visual_style_preset(
+        snapshot=getattr(video, "visual_style_snapshot", None),
+        style_id=getattr(video, "visual_style_id", None),
+        style_version=getattr(video, "visual_style_version", None),
+    )
+
+    if active_preset is not None:
+        render_profile = getattr(active_preset, "render_profile", None)
+        if render_profile is None:
+            motion_scale = 1.0
+        else:
+            raw_scale = getattr(render_profile, "motion_scale", 1.0)
+            if raw_scale is None:
+                motion_scale = 1.0
+            else:
+                try:
+                    motion_scale = float(raw_scale)
+                except (ValueError, TypeError) as exc:
+                    raise PipelineError(f"Invalid motion_scale in visual style snapshot: {exc}") from exc
+                if motion_scale <= 0.0 or motion_scale > 2.0:
+                    raise PipelineError(
+                        f"Unsupported motion_scale {motion_scale} in visual style snapshot; must be within (0.0, 2.0]"
+                    )
+    else:
+        motion_scale = 1.0
 
     # 1. Validate images step
     img_data = prev.get("images", {})
@@ -945,6 +975,7 @@ def generate_render_step(
                             duration_seconds=b_dur,
                             preferred_animation=explicit_anim,
                             prev_anim_type=prev_anim_type,
+                            motion_scale=motion_scale,
                         )
                         anim_plan = camera_plan.to_animation_plan(
                             focal_desc=str(beat.get("focal_point") or ""),
@@ -971,6 +1002,7 @@ def generate_render_step(
                             duration_seconds=b_dur,
                             preferred_animation=explicit_anim,
                             prev_anim_type=prev_anim_type,
+                            motion_scale=motion_scale,
                         )
                         anim_plan = camera_plan.to_animation_plan(
                             focal_desc=str(beat.get("focal_point") or ""),
@@ -996,6 +1028,7 @@ def generate_render_step(
                                 duration_seconds=b_dur,
                                 preferred_animation=explicit_anim,
                                 prev_anim_type=prev_anim_type,
+                                motion_scale=motion_scale,
                             )
                             anim_plan = camera_plan.to_animation_plan(
                                 focal_desc=str(beat.get("focal_point") or ""),
@@ -1017,6 +1050,7 @@ def generate_render_step(
                                 duration_seconds=b_dur,
                                 preferred_animation=explicit_anim,
                                 prev_anim_type=prev_anim_type,
+                                motion_scale=motion_scale,
                             )
                             anim_plan = camera_plan.to_animation_plan(
                                 focal_desc=str(beat.get("focal_point") or ""),
@@ -1115,6 +1149,7 @@ def generate_render_step(
                     image_path=img_abs,
                     duration_seconds=scene_dur,
                     prev_anim_type=prev_anim_type,
+                    motion_scale=motion_scale,
                 )
 
                 z_expr, x_expr, y_expr, filter_chain, resolved_anim = build_ffmpeg_zoompan_filter(
@@ -1296,22 +1331,29 @@ def generate_render_step(
                 f"Rendered audio stream duration ({a_stream_dur}s) was truncated below narration audio duration ({continuous_duration}s)"
             )
 
-        # 10. Promote temp output to final destination atomically
-        shutil.move(str(temp_final_mp4), str(final_mp4_path))
-
-        # 11. Update Video model output_path and commit session if attached
-        video.output_path = str(final_mp4_path)
+        # 10. Check staleness and promote file under atomic database lock
         sess = None
         try:
             sess = object_session(video)
         except Exception:
             sess = None
 
-        if sess is not None:
-            try:
-                sess.commit()
-            except Exception:
-                sess.rollback()
+        execution_id = getattr(step, "_execution_id", None) or uuid.uuid4().hex[:12]
+        if step is not None:
+            setattr(step, "_execution_id", execution_id)
+
+        promoted_path = atomic_promote_file(
+            temp_path=temp_final_mp4,
+            final_path=final_mp4_path,
+            session=sess,
+            video_id=video.id,
+            expected_hash=render_start_snapshot_hash,
+            expected_style_id=render_start_style_id,
+            expected_execution_id=execution_id,
+            step_name="render",
+        )
+        final_mp4_path = Path(promoted_path)
+        video.output_path = str(final_mp4_path)
 
         render_latency = round(time.perf_counter() - render_start, 3)
         total_beats_rendered = sum(1 for a in rendered_animations if a.get("render_mode") == "visual_beat")
@@ -1352,6 +1394,9 @@ def generate_render_step(
             "meta": {
                 "task": "render",
                 "scenes_count": len(all_indices),
+                "visual_style_id": render_start_style_id,
+                "visual_style_snapshot_hash": render_start_snapshot_hash,
+                "motion_scale": motion_scale,
                 "beats_rendered": total_beats_rendered,
                 "render_mode": render_mode,
                 "beat_fallback_reasons": beat_fallbacks,

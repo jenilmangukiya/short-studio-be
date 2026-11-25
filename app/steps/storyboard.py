@@ -33,6 +33,13 @@ from app.steps.prompt_compose import (
     recompute_final_prompts,
 )
 from app.steps.storyboard_validation import validate_connected_storyboard
+from app.styles.registry import (
+    VisualStyleResolutionError,
+    get_style,
+    is_valid_style_id,
+    resolve_visual_style_preset,
+)
+from app.styles.schemas import VisualStylePreset
 
 # Single source of truth for allowed shot framing types
 ALLOWED_SHOT_TYPES: tuple[str, ...] = (
@@ -1742,7 +1749,7 @@ def build_storyboard_prompt(
         if channel_niche:
             sections.append(f"- **Niche**: {channel_niche}")
 
-    if not video_bible_data:
+    if visual_style:
         sections.append("\n### Target Visual Style (Context Only)")
         sections.append(
             f"The visual style applied during rendering will be:\n\"{visual_style}\"\n"
@@ -1809,21 +1816,41 @@ def generate_storyboard_step(
     channel_name = getattr(channel, "name", None) if channel else None
     channel_niche = getattr(channel, "niche", None) if channel else None
 
+    # Authoritative fail-closed visual style resolution:
+    # 1. video.visual_style_snapshot (authoritative if valid; raises VisualStyleResolutionError if malformed)
+    # 2. video.visual_style_id (safe, version-aware fallback; raises VisualStyleResolutionError if unknown/incompatible)
+    # 3. Both NULL: preserve historical Clean 3D behavior (active_preset = None)
+    # Note: Never dynamically inherits channel.default_visual_style_id for an existing video.
+    active_preset = resolve_visual_style_preset(
+        snapshot=getattr(video, "visual_style_snapshot", None),
+        style_id=getattr(video, "visual_style_id", None),
+        style_version=getattr(video, "visual_style_version", None),
+    )
+
     visual_style: str
-    style_source: Literal["channel", "default"]
-    raw_style = None
-    if isinstance(channel_settings, dict):
-        raw_style = (
-            channel_settings.get("visual_style")
-            or channel_settings.get("style_prompt")
-            or channel_settings.get("visual_direction")
+    style_source: Literal["channel", "default", "preset"]
+    if active_preset is not None and active_preset.id != "legacy_default":
+        anchors_str = ", ".join(active_preset.permanent_prompt_anchors)
+        rules_str = (
+            f"Linework: {active_preset.rules.linework_and_outlines}. "
+            f"Shading: {active_preset.rules.color_and_shading}."
         )
-    if isinstance(raw_style, str) and raw_style.strip():
-        visual_style = raw_style.strip()
-        style_source = "channel"
+        visual_style = f"{active_preset.display_name}: {anchors_str}. {rules_str}"
+        style_source = "preset"
     else:
-        visual_style = load_default_visual_style()
-        style_source = "default"
+        raw_style = None
+        if isinstance(channel_settings, dict):
+            raw_style = (
+                channel_settings.get("visual_style")
+                or channel_settings.get("style_prompt")
+                or channel_settings.get("visual_direction")
+            )
+        if isinstance(raw_style, str) and raw_style.strip():
+            visual_style = raw_style.strip()
+            style_source = "channel"
+        else:
+            visual_style = load_default_visual_style()
+            style_source = "default"
 
     # 4. Check Revision Mode (previous storyboard comes ONLY from step.output["storyboard"])
     is_revision = False
@@ -1969,6 +1996,7 @@ def generate_storyboard_step(
             next_scene=next_s,
             video_bible=vb_data,
             creative_direction=cd_data,
+            preset=active_preset,
         )
 
         # Extract or resolve animation plan for this scene
@@ -2053,6 +2081,7 @@ def generate_storyboard_step(
                     next_scene=next_s,
                     video_bible=vb_data,
                     creative_direction=cd_data,
+                    preset=active_preset,
                 )
             else:
                 # Beats without separate visual direction reuse the scene-level prompt
@@ -2153,18 +2182,27 @@ def generate_storyboard_step(
         warnings.extend(continuity_warnings)
 
     # 9. Return structured payload
+    output_storyboard: dict[str, Any] = {
+        "visual_style": visual_style,
+        "style_source": style_source,
+        "subject_anchor": subject_anchor,
+        "environment_anchor": environment_anchor,
+        "scenes": final_scenes,
+        "beats": flat_beats,
+        "video_bible": vb_data,
+        "total_seconds": total_seconds,
+        "total_visual_beats": total_visual_beats,
+    }
+    if active_preset is not None:
+        output_storyboard["visual_style_id"] = active_preset.id
+        output_storyboard["visual_style_snapshot"] = (
+            active_preset.model_dump()
+            if hasattr(active_preset, "model_dump")
+            else dict(active_preset)
+        )
+
     return {
-        "storyboard": {
-            "visual_style": visual_style,
-            "style_source": style_source,
-            "subject_anchor": subject_anchor,
-            "environment_anchor": environment_anchor,
-            "scenes": final_scenes,
-            "beats": flat_beats,
-            "video_bible": vb_data,
-            "total_seconds": total_seconds,
-            "total_visual_beats": total_visual_beats,
-        },
+        "storyboard": output_storyboard,
         "warnings": warnings,
         "meta": {
             "prompt_version": prompt_version,

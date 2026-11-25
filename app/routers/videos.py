@@ -1,5 +1,6 @@
-import re
+import copy
 import os
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,7 +26,8 @@ from ..schemas import (
     VideoStyleUpdate,
     VideoSummary,
 )
-from ..styles import DEFAULT_STYLE_ID, get_style_by_id
+from ..steps.prompt_compose import recompute_final_prompts
+from ..styles import DEFAULT_STYLE_ID, canonical_snapshot_hash, get_style_by_id
 
 router = APIRouter(tags=["videos"])
 
@@ -87,17 +89,112 @@ def update_video_visual_style(
 ):
     """Update selected visual style for a video and freeze an immutable snapshot.
 
-    Pipeline steps are NOT invalidated or rerun in Phase 2 (reserved for Phase 4).
+    Phase 4B: Deterministically recomposes storyboard prompts, invalidates downstream visual
+    outputs (images, render, subtitles), cancels running jobs for invalidated steps,
+    and preserves non-visual steps (creative_direction, script, video_bible, voiceover).
     """
     try:
         preset = get_style_by_id(body.visual_style_id)
     except KeyError:
         raise HTTPException(400, f"Unknown visual style '{body.visual_style_id}'")
 
-    video.visual_style_id = preset.id
-    video.visual_style_version = preset.version
-    video.visual_style_snapshot = preset.model_dump()
-    db.commit()
+    try:
+        from ..db import acquire_video_publication_lock
+        locked_vid = acquire_video_publication_lock(db, video.id)
+        if locked_vid is not None:
+            video = locked_vid
+
+        # Same-Style PATCH Idempotency: no-op if style ID, version, and snapshot hash match
+        if (
+            video.visual_style_id == preset.id
+            and video.visual_style_version == preset.version
+            and video.visual_style_snapshot is not None
+            and canonical_snapshot_hash(video.visual_style_snapshot) == canonical_snapshot_hash(preset.model_dump())
+        ):
+            return video
+
+        video.visual_style_id = preset.id
+        video.visual_style_version = preset.version
+        video.visual_style_snapshot = preset.model_dump()
+
+        steps = list(video.steps or [])
+        if steps:
+            # 1. Cancel any active or queued background jobs for invalidated visual steps
+            active_jobs = db.scalars(
+                select(PipelineJob).where(
+                    PipelineJob.video_id == video.id,
+                    PipelineJob.step_name.in_(["images", "render", "subtitles", "subtitle"]),
+                    PipelineJob.status.in_(["queued", "running"]),
+                ).with_for_update()
+            ).all()
+            for j in active_jobs:
+                j.status = "cancelled"
+
+            # 2. Deterministically recompose storyboard prompts if storyboard has output
+            storyboard_step = next((s for s in steps if s.name == "storyboard"), None)
+            if storyboard_step and storyboard_step.output:
+                from sqlalchemy.orm.attributes import flag_modified
+
+                vb_step = next((s for s in steps if s.name == "video_bible"), None)
+                cd_step = next((s for s in steps if s.name == "creative_direction"), None)
+                vb_data = (
+                    vb_step.output.get("video_bible")
+                    if vb_step and isinstance(vb_step.output, dict)
+                    else None
+                )
+                cd_data = (
+                    cd_step.output.get("creative_direction")
+                    if cd_step and isinstance(cd_step.output, dict)
+                    else None
+                )
+
+                recomputed = copy.deepcopy(storyboard_step.output)
+                recomputed = recompute_final_prompts(
+                    storyboard=recomputed,
+                    preset=preset,
+                    video_bible=vb_data,
+                    creative_direction=cd_data,
+                )
+                storyboard_step.output = recomputed
+                flag_modified(storyboard_step, "output")
+                pipeline.record_revision(
+                    db=db,
+                    step=storyboard_step,
+                    output=storyboard_step.output,
+                    change_summary=f"Recomputed visual prompts for style '{preset.id}'",
+                    user_prompt=storyboard_step.user_prompt,
+                )
+
+            # 3. Invalidate visual downstream steps: images, render, subtitles
+            for s in steps:
+                if s.name in ("images", "render", "subtitles", "subtitle"):
+                    if s.output:
+                        pipeline.record_revision(
+                            db=db,
+                            step=s,
+                            output=s.output,
+                            change_summary=f"Invalidated by visual style change to '{preset.id}'",
+                            user_prompt=s.user_prompt,
+                        )
+                        s.output = None
+                    s.status = "stale"
+                    s.error = None
+
+            # 4. Clear obsolete rendered video output path
+            video.output_path = None
+
+            # 5. Transition completed videos back to in_progress
+            if video.status == "completed":
+                video.status = "in_progress"
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(500, f"Failed to update visual style: {exc}") from exc
+
     db.refresh(video)
     return video
 
@@ -261,8 +358,16 @@ def download(
 ):
     storage_root = getattr(settings, "resolved_storage_dir", Path(settings.storage_dir).resolve())
     video_dir = storage_root / str(video.id)
-    captioned_file = video_dir / "final_video_captioned.mp4"
-    original_file = Path(video.output_path) if video.output_path else (video_dir / "final_video.mp4")
+    captioned_file = None
+    original_file = None
+
+    # Resolve authoritative original video path
+    if video.output_path and Path(video.output_path).is_file():
+        original_file = Path(video.output_path)
+    elif not getattr(video, "visual_style_id", None) and not getattr(video, "visual_style_snapshot", None):
+        cand = video_dir / "final_video.mp4"
+        if cand.is_file():
+            original_file = cand
 
     # Clean topic slug for friendly filename in download header
     topic_slug = re.sub(r"[^a-zA-Z0-9]+", "-", (video.topic or "video").lower()).strip("-") or "video"
@@ -313,7 +418,19 @@ def download(
             ):
                 raise HTTPException(404, "Captioned video output not available yet")
 
-        if captioned_file.is_file() and captioned_file.stat().st_size > 0:
+        if subtitles_step and isinstance(subtitles_step.output, dict):
+            sub_dict = subtitles_step.output.get("subtitles") or {}
+            cap_cand = sub_dict.get("captioned_video_path") or subtitles_step.output.get("captioned_video_path")
+            if cap_cand and Path(cap_cand).is_file():
+                captioned_file = Path(cap_cand)
+
+        # Fallback to canonical filename ONLY for legacy unconfigured videos without visual style
+        if not captioned_file and not getattr(video, "visual_style_id", None) and not getattr(video, "visual_style_snapshot", None):
+            cand = video_dir / "final_video_captioned.mp4"
+            if cand.is_file():
+                captioned_file = cand
+
+        if captioned_file and captioned_file.is_file() and captioned_file.stat().st_size > 0:
             headers = {
                 "Content-Disposition": f'attachment; filename="{topic_slug}-captioned.mp4"',
                 "Cache-Control": "private, no-store",
@@ -346,7 +463,7 @@ def download(
             if render_step.status not in ("done", "awaiting_approval"):
                 raise HTTPException(404, "Original uncaptioned video not available yet")
 
-        if original_file.is_file() and original_file.stat().st_size > 0:
+        if original_file and original_file.is_file() and original_file.stat().st_size > 0:
             headers = {
                 "Content-Disposition": f'attachment; filename="{topic_slug}-original.mp4"',
                 "Cache-Control": "private, no-store",
@@ -364,7 +481,7 @@ def download(
 def get_scene_image(index: int, video: Video = Depends(get_owned_video)):
     """Serve a scene image by integer index if it has status 'ok', regardless of overall step status."""
     step = next((s for s in video.steps if s.name == "images"), None)
-    if not step or not step.output or not isinstance(step.output, dict):
+    if not step or not step.output or not isinstance(step.output, dict) or step.status == "stale":
         raise HTTPException(404, f"No images found for video {video.id}")
 
     items = step.output.get("images", {}).get("items", [])
