@@ -1,7 +1,7 @@
 """Verified End-to-End Execution Script with Character Gating.
 
 Runs the eight-step pipeline with explicit programmatic verification gates:
-1. creative_direction: asserts character_count == 'single' and a human sleeper archetype is chosen.
+1. creative_direction: asserts human_presence in ('single', 'contextual') and a human sleeper archetype is chosen.
 2. script: conversational narration.
 3. video_bible: asserts characters catalog contains the human sleeper with visual/apparel anchors.
 4. storyboard: asserts character is bound across physical bedroom scenes.
@@ -114,17 +114,17 @@ def main():
     cd_out = _run_step("creative_direction")
     cd_data = cd_out.get("creative_direction", {})
     prot_cfg = cd_data.get("protagonist_config", {})
-    char_count = prot_cfg.get("character_count")
+    human_presence = prot_cfg.get("human_presence")
     arch_summary = prot_cfg.get("archetype_summary")
     cd_warnings = cd_out.get("warnings", [])
 
     print("\n[VERIFICATION GATE 1: Creative Direction Character Selection]")
-    print(f"  character_count:    {char_count}")
+    print(f"  human_presence:     {human_presence}")
     print(f"  archetype_summary:  {arch_summary}")
     print(f"  advisory warnings:  {cd_warnings}")
 
-    if char_count == "none":
-        print("\n[STOPPING CONDITION MET]: Creative Direction selected character_count='none' for human sleep topic.")
+    if human_presence == "none":
+        print("\n[STOPPING CONDITION MET]: Creative Direction selected human_presence='none' for human sleep topic.")
         print("Stopping pipeline before image generation as requested by user instructions.")
         sys.exit(2)
 

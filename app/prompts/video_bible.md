@@ -1,4 +1,4 @@
-version: video-bible-v1
+version: video-bible-v2
 
 # Video Bible Guidelines for Short-Form Video
 
@@ -11,25 +11,30 @@ The Entity Catalog is the registry of reusable visual assets for this video.
 Only define entities that are genuinely used by the narration script. Avoid extraneous clutter.
 
 ### Characters (`characters`)
-- Define characters ONLY if the Creative Direction (`protagonist_config.character_count != "none"`) and script actually call for them.
-- If the script is purely mechanical, cosmic, or abstract, leave `characters` as an empty list `[]`.
+- Define characters ONLY if the Creative Direction has `human_presence != "none"` and the narration script calls for them.
+- If `human_presence == "single"` or `"ensemble"`: define the recurring protagonist(s) with full continuity anchors.
+- If `human_presence == "contextual"`: define representative contextual archetype(s) (e.g. `char_peasant_witness`, `char_cabin_passenger`) to anchor consistent visual appearance across human moments without creating a false single hero.
+- If the script is purely mechanical, cosmic, or abstract (`human_presence == "none"`), leave `characters` as an empty list `[]`.
 - For each character:
-  - `id`: Unique slug, e.g., `char_alex`.
+  - `id`: Unique slug, e.g., `char_alex`, `char_peasant_witness`.
   - `name`: Human name or role.
-  - `role`: Function in story (e.g., "The Relatable Sleeper").
+  - `role`: Function in story (e.g., "The Relatable Sleeper", "19th-Century European Farm Family").
   - `visual_anchor`: Distinctive physical silhouette: age, facial features, hair style and color, skin undertone, and render texture finish.
   - `apparel_anchor`: Exact clothing items, colors, collars, and textures that stay consistent.
-  - `forbidden_mutations`: 3 to 5 explicit negative constraints (e.g., "never change hoodie color", "no eyeglasses", "no facial hair").
+  - `forbidden_mutations`: 3 to 5 explicit negative constraints (e.g., "never change hoodie color", "no eyeglasses", "no facial hair", "no modern fabrics").
 
 ### Environments (`environments`)
-- Define the physical or surreal spaces where the narration takes place. Most short-form videos need 1 or 2 distinct spaces.
+- Define as many distinct physical, atmospheric, or surreal spaces as the narrative genuinely requires. Do not limit to an arbitrary count.
+- Reuse environments when meaningful across connected scenes.
+- Allow interiors, exteriors, macro perspectives, atmospheric spaces, and conceptual environments.
+- Separate stable environment identity (atmosphere, lighting, world era, and boundaries) from transient local props.
 - For each environment:
-  - `id`: Unique slug, e.g., `env_bedroom_night`.
+  - `id`: Unique slug, e.g., `env_bedroom_night`, `env_tambora_caldera`, `env_stratospheric_plume`, `env_rural_storeroom`.
   - `name`: Descriptive name.
-  - `spatial_layout`: Room/space geometry, boundaries, and primary orientation.
-  - `lighting_setup`: Key light direction, color temperature in Kelvin (e.g. 2700K amber vs 6500K moonlight), fill light, and ambient shadows.
-  - `persistent_props`: Specific anchor objects that remain in this space across shots (e.g., bedside lamp, clock, window).
-  - `time_of_day`: Specific time or lighting condition.
+  - `spatial_layout`: Stable macro spatial layout, boundary, and landscape or architectural geometry.
+  - `lighting_setup`: Key light direction, color temperature in Kelvin (e.g. 2200K firelight vs 6500K overcast daylight), fill light, and ambient shadows.
+  - `persistent_props`: Specific permanent world props associated with this environment (e.g., bedside lamp, summit caldera rim). Avoid listing local or temporary items that belong only to a specific close-up.
+  - `time_of_day`: Specific time or atmospheric condition.
 
 ### Objects & Machines (`objects`)
 - Define key physical items, tools, devices, or engineered components that play a role in the narration.

@@ -120,7 +120,7 @@ SAMPLE_CD_DATA = {
     "central_thesis": "Sensory signal confusion during sleep onset.",
     "tone": "engaging",
     "visual_genre": "photorealistic_cinematic",  # generic suggestion that should be superseded by preset
-    "protagonist_config": {"character_count": "none"},
+    "protagonist_config": {"human_presence": "none"},
     "creative_constraints": ["No sudden flashes"],
 }
 
@@ -209,11 +209,11 @@ def test_legacy_video_byte_for_byte_preservation_with_channel_style():
         "- **Central Thesis**: ",
         "- **Tone**: conversational",
         "- **Visual Genre**: styled_3d",
-        "- **Protagonist Configuration**: none",
+        "- **Human Presence**: none",
         "\n### Channel Visual Style Reference\nCinematic channel style",
         "\n## Instructions\nGenerate a structured VideoBibleOutput adhering strictly to the schema. "
         "Create an Entity Catalog containing only entities directly utilized by the narration. "
-        "Define at least one primary environment. Do NOT create characters if the creative direction specified character_count='none'.",
+        "Define at least one primary environment. Do NOT create characters if the creative direction specified human_presence='none'.",
     ]
     expected_prompt = "\n".join(expected_lines)
 
@@ -242,7 +242,7 @@ def test_legacy_video_byte_for_byte_preservation_without_channel_style():
         "- **Locked Narration Script**:\nIn 476 AD, Rome fell.",
         "\n## Instructions\nGenerate a structured VideoBibleOutput adhering strictly to the schema. "
         "Create an Entity Catalog containing only entities directly utilized by the narration. "
-        "Define at least one primary environment. Do NOT create characters if the creative direction specified character_count='none'.",
+        "Define at least one primary environment. Do NOT create characters if the creative direction specified human_presence='none'.",
     ]
     expected_prompt = "\n".join(expected_lines)
 

@@ -96,7 +96,7 @@ def test_build_script_prompt_isolates_backstage_directives():
         "central_thesis": "Mount Tambora's eruption caused global climate disruption.",
         "tone": "gripping and immersive",
         "protagonist_config": {
-            "character_count": "single_protagonist",
+            "human_presence": "single",
             "archetype_summary": "An 1816 New England farmer witnessing crop frost in July (keep fictional and representative)",
         },
         "creative_constraints": [

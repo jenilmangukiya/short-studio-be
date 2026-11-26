@@ -118,7 +118,7 @@ def _create_sample_bible():
     )
 
 
-def _create_sample_creative_direction(character_count="single"):
+def _create_sample_creative_direction(human_presence="single"):
     return CreativeDirectionOutput(
         format_archetype="explainer_myth_bust",
         storytelling_angle="The brain misinterpreting muscle relaxation as a free fall",
@@ -126,8 +126,8 @@ def _create_sample_creative_direction(character_count="single"):
         tone="curious, scientifically grounded, reassuring",
         visual_genre="photorealistic_cinematic",
         protagonist_config=ProtagonistConfig(
-            character_count=character_count,
-            archetype_summary="Relatable sleeper experiencing the sensation" if character_count != "none" else None,
+            human_presence=human_presence,
+            archetype_summary="Relatable sleeper experiencing the sensation" if human_presence != "none" else None,
         ),
         emotional_progression=[],
         creative_constraints=["No jump scares", "Do not depict medical seizures"],
@@ -156,7 +156,7 @@ def _create_sample_script():
 def test_compose_prompt_physical_scene_with_character_and_environment():
     """Physical bedroom scene includes character, pose, environment, and bound props."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="single")
+    cd = _create_sample_creative_direction(human_presence="single")
 
     scene = {
         "entity_bindings": {
@@ -213,7 +213,7 @@ def test_compose_prompt_physical_scene_with_character_and_environment():
 def test_compose_prompt_standalone_conceptual_diagram():
     """Standalone diagram scene includes concept and style, but NO bedroom, NO Alex, NO clock."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="single")
+    cd = _create_sample_creative_direction(human_presence="single")
 
     diagram_scene = {
         "entity_bindings": {
@@ -255,9 +255,9 @@ def test_compose_prompt_standalone_conceptual_diagram():
 
 
 def test_compose_prompt_character_free_story():
-    """When creative direction specifies character_count='none', prompts never include human subjects."""
+    """When creative direction specifies human_presence='none', prompts never include human subjects."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="none")
+    cd = _create_sample_creative_direction(human_presence="none")
 
     scene = {
         "entity_bindings": {
@@ -289,7 +289,7 @@ def test_compose_prompt_character_free_story():
 def test_validation_passes_on_coherent_storyboard():
     """Valid connected storyboard produces 0 continuity warnings."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="single")
+    cd = _create_sample_creative_direction(human_presence="single")
 
     scenes = [
         {
@@ -429,7 +429,7 @@ def test_generate_storyboard_step_consumes_all_three_upstream_outputs(db_session
     step = video.steps[3]  # storyboard step
 
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="single")
+    cd = _create_sample_creative_direction(human_presence="single")
     script = _create_sample_script()
 
     prev = {
@@ -512,12 +512,12 @@ def test_legacy_six_step_storyboard_compatibility(db_session, monkeypatch):
 # 5. Character Prohibition & Scientific Uncertainty Tests
 # =========================================================================
 
-def test_character_cannot_be_introduced_when_character_count_none():
-    """When character_count='none', introducing a character is flagged and stripped from prompt."""
+def test_character_cannot_be_introduced_when_human_presence_none():
+    """When human_presence='none', introducing a character is flagged and stripped from prompt."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="none")
+    cd = _create_sample_creative_direction(human_presence="none")
 
-    # An invalid scene attempting to bind a character despite character_count='none'
+    # An invalid scene attempting to bind a character despite human_presence='none'
     invalid_scene = {
         "index": 1,
         "entity_bindings": {
@@ -535,7 +535,7 @@ def test_character_cannot_be_introduced_when_character_count_none():
 
     # 1. Validation must flag the forbidden character binding and character_state
     warnings = validate_connected_storyboard([invalid_scene], video_bible=bible, creative_direction=cd)
-    assert any("character_count='none'" in w for w in warnings)
+    assert any("human_presence='none'" in w for w in warnings)
     assert any("no character is permitted" in w for w in warnings)
 
     # 2. Prompt composition must strictly strip the character
@@ -549,7 +549,7 @@ def test_character_cannot_be_introduced_when_character_count_none():
 def test_character_not_in_video_bible_rejected():
     """Referencing a character not in the Video Bible entity catalog is flagged and excluded."""
     bible = _create_sample_bible()
-    cd = _create_sample_creative_direction(character_count="single")
+    cd = _create_sample_creative_direction(human_presence="single")
 
     scene_with_unregistered_char = {
         "index": 1,
@@ -572,9 +572,9 @@ def test_character_not_in_video_bible_rejected():
 
 
 def test_build_storyboard_prompt_enforces_character_prohibition_and_scientific_uncertainty():
-    """Prompt builder injects explicit rules for character_count='none' and scientific uncertainty preservation."""
+    """Prompt builder injects explicit rules for human_presence='none' and scientific uncertainty preservation."""
     bible = _create_sample_bible()
-    cd_none = _create_sample_creative_direction(character_count="none")
+    cd_none = _create_sample_creative_direction(human_presence="none")
     script = _create_sample_script()
 
     rules_text = "Base Storyboard Rules"
@@ -589,7 +589,7 @@ def test_build_storyboard_prompt_enforces_character_prohibition_and_scientific_u
 
     # 1. Strict character prohibition rule injected
     assert "CRITICAL CHARACTER RULE" in prompt_text
-    assert "Character count is NONE" in prompt_text
+    assert "Human presence is NONE" in prompt_text
     assert "MUST NOT introduce, invent, or name any protagonist, person, or character" in prompt_text
 
     # 2. Scientific uncertainty preservation rule injected

@@ -930,7 +930,7 @@ def build_script_prompt(
         constraints = creative_direction_data.get("creative_constraints", [])
         has_protagonist = (
             isinstance(protagonist, dict)
-            and protagonist.get("character_count") != "none"
+            and protagonist.get("human_presence") not in (None, "none")
             and protagonist.get("archetype_summary")
         )
 

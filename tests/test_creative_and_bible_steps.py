@@ -121,7 +121,7 @@ def test_creative_direction_validation_soft_checks():
         central_thesis="Hypnic jerks are benign misfires.",
         tone="engaging",
         visual_genre="photorealistic_cinematic",
-        protagonist_config=ProtagonistConfig(character_count="none"),
+        protagonist_config=ProtagonistConfig(human_presence="none"),
         emotional_progression=[
             EmotionalBeat(phase="hook", target_emotion="Curiosity", visual_intent="Macro close-up"),
             EmotionalBeat(phase="complication", target_emotion="Intrigue", visual_intent="Sudden tilt"),
@@ -139,7 +139,7 @@ def test_creative_direction_validation_soft_checks():
         central_thesis="Thesis",
         tone="tone",
         visual_genre="styled_3d",
-        protagonist_config=ProtagonistConfig(character_count="single", archetype_summary=None),
+        protagonist_config=ProtagonistConfig(human_presence="single", archetype_summary=None),
         emotional_progression=[],
         creative_constraints=[],
     )
@@ -221,7 +221,7 @@ def test_generate_video_bible_step_mock(db_session, monkeypatch):
                 "central_thesis": "Sensory signal confusion during sleep onset.",
                 "tone": "engaging",
                 "visual_genre": "photorealistic_cinematic",
-                "protagonist_config": {"character_count": "none"},
+                "protagonist_config": {"human_presence": "none"},
                 "emotional_progression": [],
                 "creative_constraints": ["No sudden flashes"],
             }
@@ -247,7 +247,7 @@ def test_generate_video_bible_step_mock(db_session, monkeypatch):
 def test_video_bible_validation_soft_checks():
     # Protagonist count > 0 but 0 characters defined -> warning
     cd_dict = {
-        "protagonist_config": {"character_count": "single"},
+        "protagonist_config": {"human_presence": "single"},
     }
     vb = VideoBibleOutput.model_validate({
         "bible_id": "vb_test",

@@ -1,4 +1,4 @@
-version: creative-direction-v1
+version: creative-direction-v2
 
 # Creative Direction Guidelines for Short-Form Video
 
@@ -26,22 +26,26 @@ Select the visual presentation that fits the topic and audience:
 
 ## 3. Character & Subject Configuration
 Determine whether the visual storytelling benefits from a character or subject:
-- `character_count`: "none" | "single" | "ensemble"
+- `human_presence`: "none" | "contextual" | "single" | "ensemble" (REQUIRED)
 
 ### Balanced Selection Guidelines:
 1. **Human Physical, Sensory & Psychological Experiences** (Strongly consider `single` or `ensemble`):
    - When topics explore human bodily sensations, sleep, dreams, emotions, perception, physical reflexes, or everyday routines (e.g., hypnic jerks, yawning, brain freeze, deja vu, goosebumps, adrenaline).
-   - A relatable human subject (e.g., a sleeper, an office worker, a commuter) anchors viewer empathy, physical cause-and-effect, and emotional progression.
-2. **Animal & Wildlife Topics** (Consider an appropriate animal subject, setting `single`):
+   - A relatable human subject (e.g., a sleeper, an office worker, a commuter) anchors viewer empathy, physical cause-and-effect, and emotional progression. Set `human_presence: single` or `ensemble`, and specify archetype in `archetype_summary`.
+2. **Historical, Crisis, Disaster, Societal & Work Events** (Strongly consider `contextual`):
+   - When topics involve historical crises, natural disasters, famines, labor, voyages, engineering feats, or societal impacts (e.g., Year Without a Summer, Titanic, volcanic eruptions, factory shifts, airplane passengers, mission control engineers).
+   - Depict contextual humans (witnesses, workers, passengers, affected populations, observers) in relevant beats to provide scale, empathy, and emotional consequence, WITHOUT requiring a single recurring hero protagonist. Set `human_presence: contextual`, and summarize the contextual group/role in `archetype_summary`.
+3. **Animal & Wildlife Topics** (Consider an appropriate animal subject, setting `single`):
    - When topics focus on animal biology, instincts, or physical mechanics (e.g., cats landing on feet, bird navigation, dog senses), define the animal subject in `archetype_summary`.
-3. **Inanimate, Technical, Cosmic & Abstract Topics** (Set `none`):
-   - Inanimate mechanical engineering (airplane bleed holes, locks, zippers), astronomical phenomena (black holes, orbits), geological events, chemical reactions, or pure material science (why honey never spoils).
-   - Do NOT introduce unnecessary or decorative characters into topics where machines, celestial bodies, physical environments, or scientific diagrams carry the visual storytelling. Set `character_count` to "none" and `archetype_summary` to null.
-4. **Clarification on "Faceless Video"**:
+4. **Inanimate, Technical, Cosmic & Abstract Topics** (Set `none`):
+   - Purely inanimate mechanical engineering (airplane bleed holes, locks, zippers), astronomical phenomena (black holes, orbits), planetary formation, chemical reactions, or pure material science (why honey never spoils).
+   - Do NOT introduce unnecessary or decorative characters into topics where machines, celestial bodies, physical environments, or scientific diagrams carry the visual storytelling. Set `human_presence` to "none" and `archetype_summary` to null.
+5. **Clarification on "Faceless Video"**:
    - In short-form video production, a "faceless video" or "faceless channel" means the *content creator / host* does not appear on camera as a live talking-head presenter.
    - It does NOT prohibit human beings, characters, or animated subjects from appearing in the visual narrative when the topic is about human experiences!
-5. **Archetype Specification**:
+6. **Archetype Specification**:
    - If "single" or "ensemble", specify a distinct, memorable archetype in `archetype_summary` (e.g., age range, role, recognizable visual silhouette, clothing style) that will anchor downstream Video Bible consistency.
+   - If "contextual", specify the representative witness or community profile in `archetype_summary` (e.g., "19th century European farming families and rural workers").
 
 ## 4. Emotional Progression
 Map out the viewer's psychological trajectory across 5 phases:

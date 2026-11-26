@@ -1,4 +1,4 @@
-version: storyboard-v5
+version: storyboard-v6
 
 # Storyboard Creation Rules: Faceless Vertical Short Videos
 
@@ -123,40 +123,61 @@ Each scene must feature its own tailored camera animation plan (`animation`) ref
   - `focal_x`, `focal_y`: Normalized coordinates [0.0, 1.0]. Keep focal Y in the upper-middle area (0.30 - 0.55), keeping the lower third (Y > 0.68) clear for subtitles.
 - **Restrained Scales**: Keep zoom scales between 1.00 and 1.08 to prevent digital pixelation and extreme cropping.
 
-## 9. Dynamic Visual Beats Planning (2 to 5 Seconds Per Beat)
+## 9. Dynamic Visual Beats Planning & Structured Visual Intent
 A Scene represents a complete narrative unit (approx 2.0 to 7.0 seconds of spoken narration).
 Within each scene, divide the visual presentation into 1 to 3 ordered `visual_beats`, each representing an individual visual moment generally lasting **2 to 5 seconds**:
-- **Pacing & Meaningful Alignment**:
-  - Align visual changes with narration, natural pauses, and shifts in meaning (e.g. contrast, question, surprise, explanation, proof).
-  - Do NOT force a new beat at every fixed interval. Short scenes (<3.0 seconds) covering one idea need only 1 visual beat.
-  - Scenes covering 3.0 to 7.0 seconds with multiple thoughts, clauses, or reactions should break into 2 or 3 dynamic visual beats.
+
+### Structured Visual Intent (`visual_intent`):
+Every visual beat MUST specify a valid structured `visual_intent` chosen from the canonical taxonomy:
+- `establishing`: Wide world context, scale, geographical or architectural orientation.
+- `action_event`: Physical event, dynamic impact, eruption, blast, movement, or sudden onset of action.
+- `environmental_context`: Landscape, regional weather, environmental atmosphere, setting condition.
+- `mechanism_explanation`: Cutaway, diagram, schematic flow, functional breakdown (used only when a diagram genuinely aids understanding).
+- `human_experience`: Human reaction, consequence, labor, emotional response, community or individual impact.
+- `detail_focus`: Macro close-up on a specific object, crop, tool, instrument, or material texture.
+- `abstract_visualization`: Surreal visual metaphor, invisible forces (e.g. electromagnetic waves, neural signals).
+- `narrative_resolution`: Reflective concluding imagery, aftermath, lasting takeaway, visual closure.
+
+`visual_intent` is an explicit, required directorial decision for every beat. There is no automatic default; you must choose the intent that best advances the visual storytelling.
+
+- **Pacing & Meaningful Progression**:
+  - Vary visual intent and subject across consecutive beats to create narrative progression.
+  - Avoid repeating the same subject and composition without introducing new information.
+  - Allow intentional subject repetition when necessary for continuity or explanation.
+  - Avoid unnecessary splitting of emotionally important moments.
+  - Opening beats should visually support the narration hook; ending beats should provide meaningful resolution without blindly looping back to the opening anchor object.
+- **Directorial Perspective vs. Character Perception**:
+  - Narration describing what story characters or historical figures experienced, saw, or did not see (e.g., 'a volcano they had never seen') describes character perception, NOT viewer perspective.
+  - The viewer can see what characters could not see (e.g., cutting to a dramatic visual reveal, a celestial or global viewpoint, or an explanatory cutaway), OR the visual composition can focus on the local human consequence.
+  - Do NOT automatically suppress subjects merely because characters in the story were unaware of them. Direct what belongs in the current visual composition based on your storytelling goal.
 - **One Unique Image Per Visual Beat**:
   - `new_image`: Default behavior for all visual beats. Every visual beat must have its own unique, dedicated generated image.
-  - Never automatically reuse the previous beat's image. Automatic inference or carry-forward of previous images is disabled.
-- **Visual Distinctness Across Beats**:
-  - Consecutive visual beats must be visually distinct.
-  - Vary perspective, camera angle (eye-level -> low-angle -> top-down -> isometric), framing (wide -> medium -> close-up -> macro), composition, subject position, and action between consecutive beats.
-  - Avoid generating nearly identical images or repeating the same focal point and framing for consecutive beats.
 - **Narration Synchronization (`narration_text`)**:
   - Each visual beat must specify `narration_text`: the exact phrase or clause from this scene's narration spoken during this visual beat.
   - Slices across all beats in a scene must together cover the scene's narration verbatim, in order.
-- **Expected Beat Count**:
-  - For a typical 40 to 45-second Short, the storyboard will naturally contain roughly **12 to 18 total visual beats** (~2 to 5 seconds each), giving viewers an engaging, high-retention visual cadence.
 
 ## 10. Connected Storyboard & Video Bible Directorial Intent
 When Creative Direction and Video Bible are active in the project:
 1. **Entity Bindings (`entity_bindings`)**:
    - Reference ONLY exact entity IDs defined in the Video Bible:
-     - `character_id`: string ID from characters (e.g. `char_alex`) or null if no character is featured.
-     - `environment_id`: string ID from environments (e.g. `env_bedroom_night`) or null for standalone conceptual diagrams.
+     - `character_id`: string ID from characters (e.g. `char_alex`, `char_peasant_witness`) or null if no character is featured.
+     - `environment_id`: string ID from environments (e.g. `env_bedroom_night`, `env_rural_storeroom`) or null for standalone conceptual diagrams.
      - `object_ids`: array of string IDs from objects_and_props (e.g. `["obj_bedside_clock"]`).
      - `concept_id`: string ID from concepts_and_diagrams (e.g. `cpt_sleep_signal_diagram`) for schematic/explanatory beats.
-   - Do NOT invent imaginary IDs not present in the Video Bible. The storyboard CANNOT introduce or reference any character not defined in the Video Bible.
-   - STRICT CHARACTER CONSTRAINT: If Creative Direction specified `character_count: "none"` or no characters are defined in the Video Bible:
-     - You MUST NOT introduce, invent, or name any protagonist, person, or character.
-     - `character_id` MUST be null on ALL scenes and beats.
-     - `character_state` MUST be null on ALL scenes and beats.
-     - Use other visual approaches: first-person POV, environment details, object close-ups, macro photography, physical phenomena, or conceptual diagrams.
+   - Do NOT invent imaginary IDs not present in the Video Bible.
+   - **Environment Selection & Slicing**:
+     - The Video Bible defines environments. The Storyboard must select the specific, appropriate `environment_id` for each beat.
+     - If a beat depicts an interior scene (such as a farmhouse storeroom, cellar, or cabin), select an interior environment entity if defined in the Video Bible. If no dedicated interior environment exists, specify the interior setting clearly in `environment_state_override` and set `shot_type: interior`.
+     - Prompt composition refines the selected environment, ensuring interior compositions do not inherit outdoor farmland names, distant mountain layouts, or daylight lighting.
+   - **Human Presence Rules**:
+     - If Creative Direction specified `human_presence: "none"`:
+       You MUST NOT introduce, invent, or name any protagonist, person, or character. `character_id` and `character_state` MUST be null.
+     - If Creative Direction specified `human_presence: "contextual"`:
+       You MAY bind contextual witness characters defined in the Video Bible (e.g. `char_peasant_witness`) or depict contextual human figures (e.g. workers, villagers, observers) in `human_experience` beats without creating a single recurring hero protagonist.
+     - If Creative Direction specified `human_presence: "single"` or `"ensemble"`:
+       You MUST bind the designated recurring protagonist(s) from the Video Bible on character-driven beats.
+   - **Local Setting vs. Macro Environment**:
+     - Distinguish entities required for broad world continuity from what actually appears in this specific beat. If a beat is an interior room or a macro detail close-up, specify the local setting in `environment` and focal point rather than forcing wide outdoor landscape props.
    - Do NOT bind bedroom environments or physical props to standalone conceptual diagrams.
 2. **Camera Direction (`camera`)**:
    - `shot_type`: 'extreme_close_up', 'close_up', 'medium_close_up', 'medium', 'wide', 'extreme_wide'.
@@ -168,7 +189,7 @@ When Creative Direction and Video Bible are active in the project:
      - `pose_description`: Physical body position.
      - `expression_description`: Micro-expression / facial cues.
      - `action_in_progress`: Action taking place during this moment.
-   - Set to null when no character is bound or when `character_count: "none"`.
+   - Set to null when no character is bound or when `human_presence: "none"`.
 4. **Motivated Transitions (`transition_from_previous`)**:
    - Choose from: 'establishing', 'same_scene_reframe', 'action_reaction', 'spatial_cutaway', 'location_change', 'explanatory_cutaway', 'surreal_metaphor', 'resolution_return'.
    - Never declare 'same_scene_reframe' or 'action_reaction' if the environment changes.
@@ -186,6 +207,7 @@ Return structured JSON matching the StoryboardLLMOutput schema:
 - `environment_anchor`: Core recurring environment/setting description (or empty).
 - `scenes`: Array of 8 to 12 scenes, each containing:
   - `narration`: Exact spoken words for this beat.
+  - `visual_intent`: Structured intent ('establishing', 'action_event', 'environmental_context', 'mechanism_explanation', 'human_experience', 'detail_focus', 'abstract_visualization', 'narrative_resolution').
   - `visual_purpose`: The visual story beat or viewer takeaway.
   - `shot_type`: Chosen framing from the allowed list.
   - `camera_angle`: Camera angle or perspective.

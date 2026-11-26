@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class ORM(BaseModel):
@@ -281,10 +281,12 @@ class EmotionalBeat(BaseModel):
 
 
 class ProtagonistConfig(BaseModel):
-    character_count: Literal["none", "single", "ensemble"]
+    human_presence: Literal["none", "contextual", "single", "ensemble"] = Field(
+        description="Human presence level: 'none' (purely inanimate/scientific), 'contextual' (witnesses/workers/communities without recurring hero), 'single' (featured recurring protagonist), 'ensemble' (featured recurring ensemble).",
+    )
     archetype_summary: str | None = Field(
         default=None,
-        description="Summary of character role if character_count is single or ensemble; None if none",
+        description="Summary of character or contextual witness role; None if human_presence is none",
     )
 
 
@@ -319,10 +321,11 @@ class CharacterEntity(BaseModel):
 class EnvironmentEntity(BaseModel):
     id: str
     name: str
-    spatial_layout: str = Field(description="Room/landscape geometry, major boundaries, orientation")
-    lighting_setup: str = Field(description="Key light source, ambient color temperature, mood")
-    persistent_props: list[str] = Field(default_factory=list, description="Specific props that remain in this space")
+    spatial_layout: str = Field(description="Stable macro spatial layout, boundary, and landscape/architectural geometry")
+    lighting_setup: str = Field(description="Key light source, ambient color temperature, atmospheric mood")
+    persistent_props: list[str] = Field(default_factory=list, description="Permanent world props associated with this environment")
     time_of_day: str = "unspecified"
+    environment_type: Literal["exterior", "interior", "atmospheric", "macro_surface", "conceptual_void"] = "exterior"
 
 
 class ObjectEntity(BaseModel):
@@ -446,12 +449,25 @@ class FoleyCue(BaseModel):
     relative_volume: float = 1.0
 
 
+VisualIntentType = Literal[
+    "establishing",
+    "action_event",
+    "environmental_context",
+    "mechanism_explanation",
+    "human_experience",
+    "detail_focus",
+    "abstract_visualization",
+    "narrative_resolution",
+]
+
+
 class StoryboardBeat(BaseModel):
     beat_id: str
     scene_index: int
     order: int
     narration_slice: str
     duration_est_seconds: float
+    visual_intent: VisualIntentType = Field(description="Required structured visual intent")
     entity_bindings: EntityBindings
     transition_from_previous: Literal[
         "establishing",

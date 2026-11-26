@@ -15,6 +15,7 @@ from app.steps.prompt_compose import (
 )
 from app.steps.storyboard import (
     ALLOWED_SHOT_TYPES,
+    ALLOWED_VISUAL_INTENTS,
     DEFAULT_MOCK_SUBJECT_ANCHOR,
     FORBIDDEN_PROMPT_WORDS,
     FORBIDDEN_WORDS_REGEX,
@@ -88,9 +89,11 @@ def _make_valid_scenes(script_narration: str, count: int = 8) -> list[SceneInput
     for i in range(count):
         chunk_words = words[boundaries[i]:boundaries[i + 1]]
         shot_type = ALLOWED_SHOT_TYPES[i % len(ALLOWED_SHOT_TYPES)]
+        visual_intent = ALLOWED_VISUAL_INTENTS[i % len(ALLOWED_VISUAL_INTENTS)]
         scenes.append(
             SceneInput(
                 narration=" ".join(chunk_words),
+                visual_intent=visual_intent,
                 image_prompt=f"A mechanical component for scene {i+1} illustrating operation",
                 shot_type=shot_type,
                 uses_anchor=(i + 1) not in (2, 5),
@@ -185,12 +188,14 @@ def test_validator_normalizes_quotes_and_whitespace_for_narration_match():
     scenes = [
         SceneInput(
             narration="Don’t ignore the window—",
+            visual_intent="environmental_context",
             image_prompt="A passenger window",
             shot_type="close-up",
             uses_anchor=True,
         ),
         SceneInput(
             narration="it balances cabin pressure.",
+            visual_intent="mechanism_explanation",
             image_prompt="Pressure bleed hole",
             shot_type="macro",
             uses_anchor=False,
@@ -206,6 +211,7 @@ def test_validator_reports_first_difference_on_narration_mismatch():
     scenes = [
         SceneInput(
             narration="The outer pane carries the primary pressure load.",
+            visual_intent="detail_focus",
             image_prompt="Acrylic window pane",
             shot_type="close-up",
             uses_anchor=True,
@@ -493,7 +499,7 @@ def test_full_storyboard_step_mock(monkeypatch):
     assert meta["provider"] == "mock"
     assert meta["task"] == "storyboard"
     assert meta["revision"] is False
-    assert "storyboard-v5:" in meta["prompt_version"] or "storyboard-v4:" in meta["prompt_version"]
+    assert "storyboard-v6:" in meta["prompt_version"] or "storyboard-v5:" in meta["prompt_version"] or "storyboard-v4:" in meta["prompt_version"]
 
 
 def test_full_storyboard_step_revision_mode(monkeypatch):
@@ -1099,6 +1105,7 @@ def test_airplane_window_story_progression():
     airplane_scenes = [
         SceneInput(
             narration=chunks[0],
+            visual_intent="establishing",
             visual_purpose="Establish the subject with wide scale",
             shot_type="aerial",
             camera_angle="high-angle aerial",
@@ -1109,6 +1116,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[1],
+            visual_intent="environmental_context",
             visual_purpose="Direct attention to the passenger window",
             shot_type="medium",
             camera_angle="exterior 45-degree angle",
@@ -1119,6 +1127,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[2],
+            visual_intent="detail_focus",
             visual_purpose="Reveal the tiny bleed hole detail",
             shot_type="macro",
             camera_angle="extreme close-up 90-degree",
@@ -1129,6 +1138,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[3],
+            visual_intent="human_experience",
             visual_purpose="Show the perspective from inside cabin",
             shot_type="interior",
             camera_angle="passenger-perspective eye-level",
@@ -1139,6 +1149,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[4],
+            visual_intent="mechanism_explanation",
             visual_purpose="Explain window construction and 3-pane assembly",
             shot_type="cutaway",
             camera_angle="isometric technical cutaway",
@@ -1149,6 +1160,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[5],
+            visual_intent="mechanism_explanation",
             visual_purpose="Explain airflow and pressure equalization mechanism",
             shot_type="diagram",
             camera_angle="side cross-section schematic",
@@ -1159,6 +1171,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[6],
+            visual_intent="action_event",
             visual_purpose="Demonstrate moisture and frost prevention proof",
             shot_type="close-up",
             camera_angle="low-angle close-up",
@@ -1169,6 +1182,7 @@ def test_airplane_window_story_progression():
         ),
         SceneInput(
             narration=chunks[7],
+            visual_intent="narrative_resolution",
             visual_purpose="Finish with a memorable visual conclusion",
             shot_type="wide",
             camera_angle="wide cinematic horizon",

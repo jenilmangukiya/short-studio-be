@@ -11,7 +11,7 @@ from app.steps.creative_direction import (
 
 
 def _make_sample_cd(
-    character_count="single",
+    human_presence="single",
     archetype_summary="A relatable adult sleeper",
     topic_summary="Explaining the hypnic jerk during sleep onset",
 ) -> CreativeDirectionOutput:
@@ -22,8 +22,8 @@ def _make_sample_cd(
         tone="Curious, reassuring, and engaging",
         visual_genre="styled_3d",
         protagonist_config=ProtagonistConfig(
-            character_count=character_count,
-            archetype_summary=archetype_summary if character_count != "none" else None,
+            human_presence=human_presence,
+            archetype_summary=archetype_summary if human_presence != "none" else None,
         ),
         emotional_progression=[
             EmotionalBeat(phase="hook", target_emotion="Curiosity and recognition", visual_intent="Show the sudden jolt"),
@@ -41,7 +41,7 @@ def _make_sample_cd(
 # ==============================================================================
 
 def test_advisory_warning_triggers_on_human_sensory_topic_with_no_character():
-    """When a topic involves human sleep/sensory reflexes but character_count='none', emit advisory warning."""
+    """When a topic involves human sleep/sensory reflexes but human_presence='none', emit advisory warning."""
     sensory_topics = [
         "Why Do We Sometimes Feel Like We're Falling Just Before Falling Asleep?",
         "What Causes a Hypnic Jerk?",
@@ -52,26 +52,26 @@ def test_advisory_warning_triggers_on_human_sensory_topic_with_no_character():
         "Why do we get goosebumps when we are cold or scared?",
     ]
 
-    cd_none = _make_sample_cd(character_count="none")
+    cd_none = _make_sample_cd(human_presence="none")
 
     for topic in sensory_topics:
         warnings = validate_creative_direction(cd_none, topic=topic)
         assert any("human physical or sensory experience" in w.lower() for w in warnings), (
-            f"Expected advisory warning for topic '{topic}' with character_count='none'"
+            f"Expected advisory warning for topic '{topic}' with human_presence='none'"
         )
 
 
 def test_advisory_warning_does_not_trigger_when_character_is_provided():
-    """When character_count is 'single' with archetype summary, no advisory warning is produced."""
+    """When human_presence is 'single' with archetype summary, no advisory warning is produced."""
     topic = "Why Do We Sometimes Feel Like We're Falling Just Before Falling Asleep?"
-    cd_single = _make_sample_cd(character_count="single", archetype_summary="A relatable adult sleeper in simple sleepwear")
+    cd_single = _make_sample_cd(human_presence="single", archetype_summary="A relatable adult sleeper in simple sleepwear")
 
     warnings = validate_creative_direction(cd_single, topic=topic)
     assert not any("human physical or sensory experience" in w.lower() for w in warnings)
 
 
 def test_advisory_warning_does_not_trigger_on_non_sensory_topics_with_no_character():
-    """Mechanical, cosmic, chemical, and animal topics with character_count='none' must NOT trigger sensory warnings."""
+    """Mechanical, cosmic, chemical, and animal topics with human_presence='none' must NOT trigger sensory warnings."""
     non_sensory_topics = [
         "Why Do Airplane Windows Have a Tiny Hole?",
         "5 Mind Blowing Facts About Black Holes",
@@ -83,7 +83,7 @@ def test_advisory_warning_does_not_trigger_on_non_sensory_topics_with_no_charact
 
     for topic in non_sensory_topics:
         cd_none = _make_sample_cd(
-            character_count="none",
+            human_presence="none",
             topic_summary=f"Scientific principles behind {topic}",
         )
         warnings = validate_creative_direction(cd_none, topic=topic)
@@ -164,11 +164,11 @@ def test_build_creative_direction_prompt_injects_balanced_framework():
 def test_topic_category_model_conformance(topic, expected_char_count, expected_archetype):
     """Verify that CreativeDirectionOutput parses and validates cleanly across all topic archetypes."""
     cd = _make_sample_cd(
-        character_count=expected_char_count,
+        human_presence=expected_char_count,
         archetype_summary=expected_archetype,
         topic_summary=f"Core explanation for: {topic}",
     )
-    assert cd.protagonist_config.character_count == expected_char_count
+    assert cd.protagonist_config.human_presence == expected_char_count
     if expected_char_count != "none":
         assert cd.protagonist_config.archetype_summary == expected_archetype
     else:

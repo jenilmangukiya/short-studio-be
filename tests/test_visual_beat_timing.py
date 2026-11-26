@@ -32,6 +32,7 @@ def test_correct_mapping_of_beat_to_aligned_narration_words():
             id="beat_1_1",
             scene_id="1",
             order=1,
+            visual_intent="environmental_context",
             narration_text="Because the answer takes",
             visual_description="Establish question context",
         ),
@@ -39,6 +40,7 @@ def test_correct_mapping_of_beat_to_aligned_narration_words():
             id="beat_1_2",
             scene_id="1",
             order=2,
+            visual_intent="detail_focus",
             narration_text="powerful computer chips,",
             visual_description="Close-up of computer chips",
         ),
@@ -91,6 +93,7 @@ def test_repeated_words_and_phrases_at_multiple_positions():
             id="beat_1_1",
             scene_id="1",
             order=1,
+            visual_intent="environmental_context",
             narration_text="Because the answer takes powerful computer chips,",
             visual_description="Wide shot of motherboard with processor",
         ),
@@ -98,6 +101,7 @@ def test_repeated_words_and_phrases_at_multiple_positions():
             id="beat_1_2",
             scene_id="1",
             order=2,
+            visual_intent="detail_focus",
             narration_text="and those chips use electricity",
             visual_description="Close-up of processor core die drawing power",
         ),
@@ -105,6 +109,7 @@ def test_repeated_words_and_phrases_at_multiple_positions():
             id="beat_1_3",
             scene_id="1",
             order=3,
+            visual_intent="detail_focus",
             narration_text="every time they work.",
             visual_description="Macro shot of glowing electrical traces",
         ),
@@ -152,6 +157,7 @@ def test_correct_timing_derived_from_aligned_word_timestamps():
             id="b1",
             scene_id="1",
             order=1,
+            visual_intent="environmental_context",
             narration_text="Why does one question",
             visual_description="Hook question",
         ),
@@ -159,6 +165,7 @@ def test_correct_timing_derived_from_aligned_word_timestamps():
             id="b2",
             scene_id="1",
             order=2,
+            visual_intent="environmental_context",
             narration_text="cost so much?",
             visual_description="Cost graph",
         ),
@@ -200,9 +207,9 @@ def test_ordered_beat_timing_and_non_overlapping_intervals():
     ]
 
     beats = [
-        VisualBeat(id="b1", scene_id="1", order=1, narration_text="Inside modern data centers,", visual_description="Aisle"),
-        VisualBeat(id="b2", scene_id="1", order=2, narration_text="rows of high-density server racks", visual_description="Racks"),
-        VisualBeat(id="b3", scene_id="1", order=3, narration_text="operate continuously.", visual_description="Lights"),
+        VisualBeat(id="b1", scene_id="1", order=1, visual_intent="environmental_context", narration_text="Inside modern data centers,", visual_description="Aisle"),
+        VisualBeat(id="b2", scene_id="1", order=2, visual_intent="environmental_context", narration_text="rows of high-density server racks", visual_description="Racks"),
+        VisualBeat(id="b3", scene_id="1", order=3, visual_intent="environmental_context", narration_text="operate continuously.", visual_description="Lights"),
     ]
 
     aligned = align_scene_visual_beats(
@@ -251,8 +258,8 @@ def test_unmatched_or_ambiguous_narration_phrases_fallback():
 
     # Beat phrases have completely hallucinated or mismatched words
     beats = [
-        VisualBeat(id="b1", scene_id="1", order=1, narration_text="completely unrelated phrase", visual_description="desc1"),
-        VisualBeat(id="b2", scene_id="1", order=2, narration_text="another alien sentence", visual_description="desc2"),
+        VisualBeat(id="b1", scene_id="1", order=1, visual_intent="environmental_context", narration_text="completely unrelated phrase", visual_description="desc1"),
+        VisualBeat(id="b2", scene_id="1", order=2, visual_intent="environmental_context", narration_text="another alien sentence", visual_description="desc2"),
     ]
 
     aligned = align_scene_visual_beats(
@@ -281,8 +288,8 @@ def test_punctuation_and_continuous_speech_boundary_handling():
     ]
 
     beats = [
-        VisualBeat(id="b1", scene_id="1", order=1, narration_text="red", visual_description="Red glow"),
-        VisualBeat(id="b2", scene_id="1", order=2, narration_text="hot metal.", visual_description="Metal structure"),
+        VisualBeat(id="b1", scene_id="1", order=1, visual_intent="environmental_context", narration_text="red", visual_description="Red glow"),
+        VisualBeat(id="b2", scene_id="1", order=2, visual_intent="environmental_context", narration_text="hot metal.", visual_description="Metal structure"),
     ]
 
     aligned = align_scene_visual_beats(
@@ -458,8 +465,8 @@ def test_more_beats_than_words_fallback():
     words = [_make_word("Single", 0.1, 0.5)]
 
     beats = [
-        VisualBeat(id="b1", scene_id="1", order=1, narration_text="Single", visual_description="v1"),
-        VisualBeat(id="b2", scene_id="1", order=2, narration_text="", visual_description="v2"),
+        VisualBeat(id="b1", scene_id="1", order=1, visual_intent="environmental_context", narration_text="Single", visual_description="v1"),
+        VisualBeat(id="b2", scene_id="1", order=2, visual_intent="environmental_context", narration_text="", visual_description="v2"),
     ]
 
     aligned = align_scene_visual_beats(

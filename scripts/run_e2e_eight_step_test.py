@@ -152,7 +152,7 @@ def main():
                 print(f"  Tone:                {cd.get('tone')}")
                 print(f"  Visual Genre:        {cd.get('visual_genre')}")
                 prot = cd.get("protagonist_config", {})
-                print(f"  Protagonist Config:  character_count={prot.get('character_count')}, summary={prot.get('archetype_summary')}")
+                print(f"  Protagonist Config:  human_presence={prot.get('human_presence')}, summary={prot.get('archetype_summary')}")
                 print(f"  Constraints:         {cd.get('creative_constraints')}")
 
             elif step_name == "script":

@@ -72,8 +72,8 @@ def validate_connected_storyboard(
     protagonist_cfg = cd_dict.get("protagonist_config") if cd_dict else {}
     if hasattr(protagonist_cfg, "model_dump"):
         protagonist_cfg = protagonist_cfg.model_dump()
-    expected_char_count = (
-        protagonist_cfg.get("character_count", "none")
+    human_presence = (
+        protagonist_cfg.get("human_presence", "none")
         if isinstance(protagonist_cfg, dict)
         else "none"
     )
@@ -111,14 +111,14 @@ def validate_connected_storyboard(
                 warnings.append(
                     f"Scene {idx} references character_id '{char_id}' which does not exist in the Video Bible entity catalog."
                 )
-            if expected_char_count == "none" or not known_character_ids:
+            if human_presence == "none" or not known_character_ids:
                 warnings.append(
-                    f"Scene {idx} binds character '{char_id}', but Creative Direction specified character_count='none'."
+                    f"Scene {idx} binds character '{char_id}', but Creative Direction specified human_presence='none'."
                 )
 
         # Check A2: Character state without permitted character
         char_state = _get("character_state")
-        if char_state and (expected_char_count == "none" or not known_character_ids or not char_id):
+        if char_state and (human_presence == "none" or not known_character_ids or not char_id):
             warnings.append(
                 f"Scene {idx} specifies character_state, but no character is permitted or bound."
             )
@@ -184,9 +184,9 @@ def validate_connected_storyboard(
                 last_shot_type = shot_type
 
     # Check G: Character role adherence across video
-    if expected_char_count in ("single", "ensemble") and known_character_ids and character_occurrences == 0:
+    if human_presence in ("single", "ensemble") and known_character_ids and character_occurrences == 0:
         warnings.append(
-            f"Creative Direction specified character_count='{expected_char_count}', but no scenes bound a character."
+            f"Creative Direction specified featured characters (human_presence='{human_presence}'), but no scenes bound a character."
         )
 
     # Check H: Global framing diversity

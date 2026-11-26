@@ -195,12 +195,12 @@ def test_schemas_instantiation():
         central_thesis="Hypnic jerk is a motor transition twitch",
         tone="conversational",
         visual_genre="styled_3d",
-        protagonist_config={"character_count": "single", "archetype_summary": "Alex the sleeper"},
+        protagonist_config={"human_presence": "single", "archetype_summary": "Alex the sleeper"},
         emotional_progression=[{"phase": "hook", "target_emotion": "curiosity", "visual_intent": "dark bedroom"}],
         creative_constraints=["Keep in bedroom"],
     )
     assert cd.visual_genre == "styled_3d"
-    assert cd.protagonist_config.character_count == "single"
+    assert cd.protagonist_config.human_presence == "single"
 
     vb = VideoBibleOutput(
         bible_id="bible_123",
@@ -234,6 +234,7 @@ def test_schemas_instantiation():
         order=1,
         narration_slice="Why do we fall",
         duration_est_seconds=2.5,
+        visual_intent="establishing",
         entity_bindings={"character_id": "char_alex", "environment_id": "env_bedroom"},
         transition_from_previous="establishing",
         continuity_intent="Opening establishing shot",

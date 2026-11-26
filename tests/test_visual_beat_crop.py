@@ -162,12 +162,14 @@ def test_feasibility_safe_reuse_same_or_slightly_tighter_shot():
         id="beat_1_1",
         scene_id="1",
         order=1,
+        visual_intent="detail_focus",
         narration_text="Here is the chip.",
         visual_description="A close-up of the silicon core.",
         shot_type="close-up",
         camera_angle="eye-level",
     )
     parent = SceneInput(
+        visual_intent="environmental_context",
         narration="Here is the chip, powering modern computing.",
         image_prompt="Cinematic view of a computer processor on a motherboard.",
         shot_type="medium",
@@ -188,12 +190,14 @@ def test_feasibility_questionable_reuse_high_zoom():
         id="beat_1_2",
         scene_id="1",
         order=2,
+        visual_intent="detail_focus",
         narration_text="Looking closely at the transistors.",
         visual_description="Close framing on the microchip.",
         shot_type="close-up",  # 1.50
         camera_angle="eye-level",
     )
     parent = SceneInput(
+        visual_intent="establishing",
         narration="A wide view of the entire laboratory.",
         image_prompt="Wide establishing shot of modern research facility.",
         shot_type="wide",  # 1.00 -> 1.50 / 1.00 = 1.50x
@@ -213,12 +217,14 @@ def test_feasibility_new_image_needed_extreme_zoom():
         id="beat_1_3",
         scene_id="1",
         order=3,
+        visual_intent="detail_focus",
         narration_text="Deep inside the atomic structure.",
         visual_description="Extreme macro shot of microscopic silicon traces.",
         shot_type="macro",  # 1.90 -> 1.90 / 1.00 = 1.90x > 1.65x
         camera_angle="eye-level",
     )
     parent = SceneInput(
+        visual_intent="establishing",
         narration="Wide landscape of the semiconductor fab.",
         image_prompt="Panoramic wide landscape of the industrial complex.",
         shot_type="wide",  # 1.00
@@ -237,11 +243,13 @@ def test_feasibility_new_image_needed_widening_beyond_source():
         id="beat_2_1",
         scene_id="2",
         order=1,
+        visual_intent="establishing",
         narration_text="Seeing the entire facility.",
         visual_description="Wide establishing shot of the entire room.",
         shot_type="wide",  # 1.00
     )
     parent = SceneInput(
+        visual_intent="detail_focus",
         narration="A tight view of the technician's hands.",
         image_prompt="Close shot of hands working with delicate tweezers.",
         shot_type="close-up",  # 1.50 -> 1.00 / 1.50 = 0.667 < 0.95
@@ -258,12 +266,14 @@ def test_feasibility_new_image_needed_angle_conflict():
         id="beat_3_1",
         scene_id="3",
         order=1,
+        visual_intent="environmental_context",
         narration_text="From directly above.",
         visual_description="Top-down flat lay view.",
         shot_type="medium",
         camera_angle="top-down",
     )
     parent = SceneInput(
+        visual_intent="environmental_context",
         narration="Eye-level view of the device on a desk.",
         image_prompt="Eye-level perspective of a gadget on wooden desk.",
         shot_type="medium",
@@ -281,12 +291,14 @@ def test_feasibility_new_image_needed_technique_mismatch():
         id="beat_4_1",
         scene_id="4",
         order=1,
+        visual_intent="mechanism_explanation",
         narration_text="Looking at the internal schematic.",
         visual_description="Cross-section diagram illustrating internal logic gates.",
         shot_type="cutaway",
         visual_technique="cutaway-diagram",
     )
     parent = SceneInput(
+        visual_intent="environmental_context",
         narration="Photo of the computer case exterior.",
         image_prompt="Clean studio photo of a sleek aluminum computer chassis.",
         shot_type="medium",
@@ -304,11 +316,13 @@ def test_feasibility_explicit_image_strategy():
         id="beat_5_1",
         scene_id="5",
         order=1,
+        visual_intent="environmental_context",
         narration_text="A completely different subject.",
         visual_description="A bustling city street at night.",
         image_strategy="new_image",
     )
     parent = SceneInput(
+        visual_intent="environmental_context",
         narration="Inside a quiet office room.",
         image_prompt="Quiet modern office room with ambient warm lamps.",
         shot_type="medium",
@@ -325,6 +339,7 @@ def test_feasibility_subtitle_safety_adjustment():
         id="beat_6_1",
         scene_id="6",
         order=1,
+        visual_intent="detail_focus",
         narration_text="Looking at the bottom edge.",
         visual_description="Bottom edge connectors.",
         focal_point="bottom edge connectors",
@@ -437,6 +452,7 @@ def test_beat_camera_plan_to_animation_plan_compatibility():
 def test_evaluate_scene_beats_crop_plan_legacy_scene_empty():
     """Verify legacy scenes lacking visual beats return an empty list without error."""
     scene_without_beats = SceneInput(
+        visual_intent="environmental_context",
         narration="This is a classic scene without visual beats.",
         image_prompt="A classic cinematic frame showing subject in office.",
         shot_type="medium",
@@ -452,6 +468,7 @@ def test_evaluate_scene_beats_crop_plan_multi_beat_evaluation():
             id="beat_1_1",
             scene_id="1",
             order=1,
+            visual_intent="detail_focus",
             narration_text="The processor sits at the center.",
             visual_description="Medium shot of processor socket.",
             shot_type="medium",
@@ -460,12 +477,14 @@ def test_evaluate_scene_beats_crop_plan_multi_beat_evaluation():
             id="beat_1_2",
             scene_id="1",
             order=2,
+            visual_intent="detail_focus",
             narration_text="Its millions of pathways carry signals.",
             visual_description="Close-up of the silicon core.",
             shot_type="close-up",
         ),
     ]
     scene = SceneInput(
+        visual_intent="detail_focus",
         narration="The processor sits at the center, its millions of pathways carrying signals.",
         image_prompt="High tech macro view of silicon computer chip on circuit board.",
         shot_type="medium",

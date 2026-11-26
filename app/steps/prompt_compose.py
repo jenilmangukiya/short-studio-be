@@ -28,6 +28,426 @@ COMPOSITION_RULES: str = (
 # Maximum sensible length for a code-assembled final prompt
 MAX_FINAL_PROMPT_LENGTH: int = 1500
 
+# Regex patterns for detecting scarcity, famine, and crop failure
+SCARCITY_CROP_PATTERNS: tuple[str, ...] = (
+    r"\b(?:harvests?|crops?)\s+(?:failed|failing|ruined|damaged|destroyed|rotted|spoiled|withered|curled)\b",
+    r"\b(?:failed|failing|ruined|damaged|spoiled|meager|scanty|sparse)\s+(?:harvests?|crops?)\b",
+    r"\bcrops?\s+(?:suffered|froze|dying)\b",
+    r"\b(?:crop|harvest)\s+failure\b",
+    r"\blittle\s+usable\s+harvest\b",
+    r"\bspoilage\b",
+)
+
+SCARCITY_FOOD_PATTERNS: tuple[str, ...] = (
+    r"\bfood\s+(?:grew\s+)?(?:scarce|scarcity|shortage|ran\s+out)\b",
+    r"\b(?:famine|starvation|starving|hunger|hungry|malnutrition)\b",
+    r"\b(?:empty|bare|depleted)\s+(?:\w+\s+)*(?:baskets?|shelves|storerooms?|granar(?:y|ies)|pantr(?:y|ies))\b",
+    r"\bdwindling\s+(?:\w+\s+)*(?:provisions|food|supplies|rations)\b",
+    r"\bsparse\s+food\b",
+)
+
+CONCEPT_STOPWORDS: frozenset[str] = frozenset({
+    "the", "and", "for", "with", "from", "that", "this", "into", "onto", "over", "under",
+    "about", "shows", "showing", "look", "looking", "clean", "upper", "lower", "frame",
+    "middle", "background", "foreground", "through", "across", "along", "against", "around",
+    "behind", "between", "while", "where", "small", "large", "their", "other", "another",
+    "visual", "moment", "view", "scene", "beat", "shot", "angle", "high", "deep", "dramatic",
+    "subtle", "distinct", "style", "render", "diagram", "cutaway", "schematic", "illustration",
+    "illustrating", "simplified", "narrative", "clear", "callouts", "some", "than", "more",
+    "less", "rather", "link", "links", "below", "above", "beside", "within", "become", "becomes",
+})
+
+
+def extract_scarcity_negative_constraints(text: str) -> list[str]:
+    """Extract targeted negative anchors preventing contradictory visuals of abundance.
+
+    Applied strictly to beats describing crop failures, famine, or food scarcity.
+    """
+    negatives: list[str] = []
+    if not text:
+        return negatives
+
+    is_crop_failure = any(re.search(pat, text, re.IGNORECASE) for pat in SCARCITY_CROP_PATTERNS)
+    is_food_scarcity = any(re.search(pat, text, re.IGNORECASE) for pat in SCARCITY_FOOD_PATTERNS)
+
+    if is_crop_failure:
+        for term in (
+            "no abundant harvest",
+            "no lush crops",
+            "no healthy vegetables",
+            "no overflowing produce",
+            "no vibrant green fields",
+        ):
+            if term not in negatives:
+                negatives.append(term)
+
+    if is_food_scarcity:
+        for term in (
+            "no abundant food",
+            "no full baskets",
+            "no overflowing pantry",
+            "no plentiful feast",
+        ):
+            if term not in negatives:
+                negatives.append(term)
+
+    return negatives
+
+
+def slice_concept_for_beat(
+    concept: Any,
+    beat_context: Any,
+) -> tuple[list[str], str | None, str | None]:
+    """Slice a multi-stage concept to identify elements and text relevant to a specific beat.
+
+    Returns:
+        tuple of (sliced_graphical_elements, focused_explanation, focused_analogy)
+    """
+    def _extract_val(obj: Any, field: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return getattr(obj, field, default)
+
+    raw_elements = _extract_val(concept, "graphical_elements") or []
+    explained = str(_extract_val(concept, "concept_explained") or "").strip()
+    analogy = str(_extract_val(concept, "visual_analogy") or "").strip()
+
+    # If the concept is already atomic/compact (<= 2 elements), preserve all elements
+    if len(raw_elements) <= 2:
+        return list(raw_elements), None, None
+
+    # Collect beat contextual intent
+    desc = str(_extract_val(beat_context, "visual_description", "") or "").strip()
+    focal = str(_extract_val(beat_context, "focal_point", "") or "").strip()
+    camera = _extract_val(beat_context, "camera")
+    if not focal and isinstance(camera, dict):
+        focal = str(camera.get("focal_point_description", "") or "").strip()
+    elif not focal and hasattr(camera, "focal_point_description"):
+        focal = str(getattr(camera, "focal_point_description", "") or "").strip()
+    purpose = str(_extract_val(beat_context, "visual_purpose", "") or "").strip()
+
+    beat_narr = str(
+        _extract_val(beat_context, "narration_text", "")
+        or _extract_val(beat_context, "narration_slice", "")
+        or _extract_val(beat_context, "beat_narration", "")
+        or ""
+    ).strip()
+    scene_narr = str(
+        _extract_val(beat_context, "scene_narration", "")
+        or _extract_val(beat_context, "narration", "")
+        or ""
+    ).strip()
+
+    if not beat_narr:
+        cand_narr = str(_extract_val(beat_context, "narration", "") or "").strip()
+        explicit_scene_narr = str(_extract_val(beat_context, "scene_narration", "") or "").strip()
+        if cand_narr and cand_narr != explicit_scene_narr:
+            beat_narr = cand_narr
+
+    is_beat_narr_empty_or_scene_dup = (
+        not beat_narr
+        or (scene_narr and beat_narr.strip() == scene_narr.strip() and len(scene_narr.split()) > 8)
+    )
+
+    primary_intent_text = f"{desc} {focal} {purpose}".lower()
+    if not is_beat_narr_empty_or_scene_dup and beat_narr:
+        primary_intent_text += f" {beat_narr.lower()}"
+
+    primary_intent_words = set(re.findall(r"\b[a-z]{3,}\b", primary_intent_text)) - CONCEPT_STOPWORDS
+    scene_narr_words = set(re.findall(r"\b[a-z]{3,}\b", scene_narr.lower())) - CONCEPT_STOPWORDS
+
+    scored: list[tuple[int, str]] = []
+    for elem in raw_elements:
+        elem_words = set(re.findall(r"\b[a-z]{3,}\b", str(elem).lower())) - CONCEPT_STOPWORDS
+        score = 0
+        for ew in elem_words:
+            if ew in focal.lower() or ew in desc.lower():
+                score += 5
+            elif ew in purpose.lower() or (not is_beat_narr_empty_or_scene_dup and ew in beat_narr.lower()):
+                score += 3
+            elif any(ew.startswith(bw[:4]) or bw.startswith(ew[:4]) for bw in primary_intent_words if len(bw) >= 4 and len(ew) >= 4):
+                score += 2
+            elif ew in scene_narr_words:
+                score += 1 if is_beat_narr_empty_or_scene_dup else 2
+        scored.append((score, str(elem)))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    matching = [elem for score, elem in scored if score > 0]
+
+    if matching:
+        top_score = scored[0][0]
+        sliced_elements = [scored[0][1]]
+        if len(scored) > 1 and scored[1][0] > 0 and scored[1][0] >= top_score * 0.45:
+            sliced_elements.append(scored[1][1])
+    else:
+        sliced_elements = []
+
+    # Identify downstream elements strictly after the selected elements in the causal chain
+    selected_indices = [
+        idx for idx, elem in enumerate(raw_elements) if elem in sliced_elements
+    ]
+    max_selected_idx = max(selected_indices) if selected_indices else -1
+    downstream_elements = [
+        raw_elements[idx]
+        for idx in range(len(raw_elements))
+        if idx > max_selected_idx
+    ]
+    unrelated_downstream_words: set[str] = set()
+    for de in downstream_elements:
+        unrelated_downstream_words.update(
+            set(re.findall(r"\b[a-z]{3,}\b", str(de).lower())) - CONCEPT_STOPWORDS
+        )
+    selected_words: set[str] = set()
+    for se in sliced_elements:
+        selected_words.update(
+            set(re.findall(r"\b[a-z]{3,}\b", str(se).lower())) - CONCEPT_STOPWORDS
+        )
+    unrelated_downstream_words = unrelated_downstream_words - selected_words - primary_intent_words
+
+    # Focused explanation: select matching sentence prioritizing primary visual intent
+    focused_explained: str | None = None
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", explained) if s.strip()]
+    if len(sentences) > 1:
+        s_scored: list[tuple[int, str]] = []
+        for s in sentences:
+            s_words = set(re.findall(r"\b[a-z]{3,}\b", s.lower())) - CONCEPT_STOPWORDS
+            score = sum(4 for w in s_words if w in focal.lower() or w in desc.lower())
+            score += sum(2 for w in s_words if w in purpose.lower() or (not is_beat_narr_empty_or_scene_dup and w in beat_narr.lower()))
+            if is_beat_narr_empty_or_scene_dup:
+                score += sum(1 for w in s_words if w in scene_narr_words and w not in unrelated_downstream_words)
+            else:
+                score += sum(1 for w in s_words if w in scene_narr_words)
+            s_scored.append((score, s))
+        s_scored.sort(key=lambda x: x[0], reverse=True)
+        if s_scored[0][0] > 0:
+            focused_explained = s_scored[0][1]
+
+    # Focused analogy: guard against compound analogy leakage
+    focused_analogy: str | None = None
+    a_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", analogy) if s.strip()]
+    if a_sentences:
+        clean_units: list[tuple[int, int, str]] = []
+        for s in a_sentences:
+            s_words = set(re.findall(r"\b[a-z]{3,}\b", s.lower())) - CONCEPT_STOPWORDS
+            pos = sum(4 for w in s_words if w in focal.lower() or w in desc.lower())
+            pos += sum(3 for w in s_words if w in selected_words)
+            pos += sum(1 for w in s_words if w in primary_intent_words)
+            neg = sum(5 for w in s_words if w in unrelated_downstream_words)
+
+            if pos > 0 and neg == 0:
+                clean_units.append((pos, len(s), s))
+                continue
+
+            parts = re.split(
+                r"(,\s*(?:then\s+(?:shows|illustrates)?|and then|while|before)\s+|\s+before\s+)",
+                s,
+                flags=re.IGNORECASE,
+            )
+            if len(parts) > 1:
+                for end_idx in range(0, len(parts), 2):
+                    prefix = "".join(parts[: end_idx + 1]).strip().rstrip(".")
+                    if len(prefix.split()) < 4:
+                        continue
+                    p_words = set(re.findall(r"\b[a-z]{3,}\b", prefix.lower())) - CONCEPT_STOPWORDS
+                    p_pos = sum(4 for w in p_words if w in focal.lower() or w in desc.lower())
+                    p_pos += sum(3 for w in p_words if w in selected_words)
+                    p_pos += sum(1 for w in p_words if w in primary_intent_words)
+                    p_neg = sum(5 for w in p_words if w in unrelated_downstream_words)
+
+                    if p_pos > 0 and p_neg == 0:
+                        clean_units.append((p_pos, len(prefix), prefix))
+
+        if clean_units:
+            clean_units.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            best = clean_units[0][2].strip().rstrip(".")
+            if best:
+                focused_analogy = f"{best[0].upper()}{best[1:]}."
+        else:
+            focused_analogy = None
+
+    return sliced_elements, focused_explained, focused_analogy
+
+
+def _has_bedroom_context(
+    entities: dict[str, Any],
+    creative_direction: dict[str, Any] | None = None,
+    video_topic: str | None = None,
+    art_dir: dict[str, Any] | None = None,
+) -> bool:
+    """Check whether the video topic or production entities actually involve a bedroom or sleep setting."""
+    def _extract_val(obj: Any, field: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return getattr(obj, field, default)
+
+    # 1. Check environments
+    envs = entities.get("environments") or []
+    for e in envs:
+        e_str = (
+            f"{_extract_val(e, 'id', '')} {_extract_val(e, 'name', '')} {_extract_val(e, 'spatial_layout', '')}"
+        ).lower()
+        if any(term in e_str for term in ("bedroom", "bedside", "bedding", "mattress", "pillow", "duvet")):
+            return True
+
+    # 2. Check concepts
+    concepts = entities.get("concepts") or entities.get("concepts_and_diagrams") or []
+    for cp in concepts:
+        cp_str = (
+            f"{_extract_val(cp, 'name', '')} {_extract_val(cp, 'concept_explained', '')} {_extract_val(cp, 'visual_analogy', '')}"
+        ).lower()
+        if any(term in cp_str for term in ("bedroom", "bedside", "bedding", "sleeper", "sleep onset", "in the bed", "into the bed")):
+            return True
+
+    # 3. Check art direction
+    if art_dir:
+        ad_str = (
+            f"{art_dir.get('rendering_texture', '')} {' '.join(str(a) for a in art_dir.get('negative_anchors', []))}"
+        ).lower()
+        if any(term in ad_str for term in ("bedroom", "bedding", "sleeper")):
+            return True
+
+    # 4. Check creative direction and topic
+    cd_dict = (
+        creative_direction.model_dump()
+        if hasattr(creative_direction, "model_dump")
+        else dict(creative_direction) if creative_direction else {}
+    )
+    story_angle = str(cd_dict.get("storytelling_angle", "")).lower()
+    thesis = str(cd_dict.get("central_thesis", "")).lower()
+    topic_str = str(video_topic or "").lower()
+
+    return any(
+        term in story_angle or term in thesis or term in topic_str
+        for term in ("bedroom", "sleep", "hypnic", "sleeper", "insomnia", "bedtime")
+    )
+
+
+INTERIOR_LOCATION_REGEX = re.compile(
+    r"\b(?:"
+    r"interior|inside|indoor|"
+    r"storeroom|cellar|room|bedroom|cabin|cockpit|"
+    r"hall|kitchen|pantry|granary|office|laboratory|lab|"
+    r"parlor|attic|basement|workshop|hangar|shed|inn|tavern|"
+    r"cottage\s+interior|house\s+interior"
+    r")\b",
+    re.IGNORECASE,
+)
+
+OUTDOOR_LANDSCAPE_REGEX = re.compile(
+    r"\b(?:"
+    r"landscape|fields?|crops?|furrows?|slopes?|mountain|volcano|"
+    r"valley|hills?|coastline|shore|ocean|sea|plains?|pasture|"
+    r"ridges?|open\s+sky|aerial|exterior"
+    r")\b",
+    re.IGNORECASE,
+)
+
+def slice_environment_for_beat(
+    env: Any,
+    beat_context: Any,
+) -> tuple[list[str], bool, str | None, list[str]]:
+    """Slice environment properties to select only elements appropriate for a specific beat.
+
+    Prevents outdoor landscape layouts and outdoor lighting from contaminating interior shots,
+    prevents wide-angle framing from overriding close-ups, and refines persistent props to those
+    relevant to the beat composition.
+
+    Returns:
+        tuple of (relevant_props, include_spatial_layout, local_setting, additional_negatives)
+    """
+    def _extract_val(obj: Any, field: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return getattr(obj, field, default)
+
+    intent = str(_extract_val(beat_context, "visual_intent", "") or "").strip().lower()
+    shot_type = str(_extract_val(beat_context, "shot_type", "") or "").strip().lower()
+    camera = _extract_val(beat_context, "camera")
+    if isinstance(camera, dict) and camera.get("shot_type"):
+        shot_type = str(camera["shot_type"]).lower()
+    elif hasattr(camera, "shot_type") and getattr(camera, "shot_type", None):
+        shot_type = str(getattr(camera, "shot_type")).lower()
+
+    desc = str(_extract_val(beat_context, "visual_description", "") or "").strip()
+    focal = str(_extract_val(beat_context, "focal_point", "") or "").strip()
+    local_env = str(_extract_val(beat_context, "environment", "") or "").strip()
+
+    combined_context = f"{desc} {focal} {local_env}".lower()
+
+    raw_props = _extract_val(env, "persistent_props") or []
+    spatial_layout = str(_extract_val(env, "spatial_layout", "") or "").strip()
+    env_name = str(_extract_val(env, "name", "") or "").strip()
+    is_parent_outdoor = bool(OUTDOOR_LANDSCAPE_REGEX.search(f"{env_name} {spatial_layout}"))
+
+    relevant_props = [str(p) for p in raw_props]
+    include_spatial_layout = True
+    local_setting: str | None = None
+    additional_negatives: list[str] = []
+
+    # 1. Interior Isolation Check
+    is_interior_shot = (
+        shot_type in ("interior",)
+        or bool(INTERIOR_LOCATION_REGEX.search(combined_context))
+    )
+
+    if is_interior_shot:
+        include_spatial_layout = False
+        if local_env:
+            local_setting = local_env
+        elif is_parent_outdoor:
+            if INTERIOR_LOCATION_REGEX.search(desc):
+                m_interior = INTERIOR_LOCATION_REGEX.search(desc)
+                local_setting = m_interior.group(0).capitalize() if m_interior else "Interior setting"
+            else:
+                local_setting = "Interior setting"
+
+        # Filter out persistent props describing outdoor landscape features
+        relevant_props = [
+            p for p in relevant_props
+            if not OUTDOOR_LANDSCAPE_REGEX.search(p)
+            and any(w in combined_context for w in re.findall(r"\b[a-z]{3,}\b", p.lower()))
+        ]
+        if is_parent_outdoor:
+            additional_negatives.append("no outdoor landscape")
+            additional_negatives.append("no outdoor sky")
+
+    # 2. Close-up / Macro / Detail Focus Isolation
+    is_close_up = (
+        shot_type in ("close-up", "extreme-close-up", "macro", "close_up", "extreme_close_up")
+        or intent == "detail_focus"
+    )
+    if is_close_up:
+        include_spatial_layout = False
+        # Only keep persistent props that are explicitly mentioned or relevant to focal/desc
+        relevant_props = [
+            p for p in relevant_props
+            if any(w in f"{focal} {desc}".lower() for w in re.findall(r"\b[a-z]{3,}\b", p.lower()))
+        ]
+
+    # 3. General prop relevance slicing (prevent overloading non-wide beats with irrelevant props)
+    is_wide_establishing = (
+        shot_type in ("wide", "exterior", "aerial")
+        and intent in ("establishing", "environmental_context", "action_event")
+    )
+    if not is_wide_establishing and len(relevant_props) > 2:
+        context_words = set(re.findall(r"\b[a-z]{3,}\b", combined_context))
+        filtered = [
+            p for p in relevant_props
+            if any(w in context_words for w in re.findall(r"\b[a-z]{3,}\b", p.lower()))
+        ]
+        if filtered:
+            relevant_props = filtered
+        else:
+            relevant_props = relevant_props[:1]
+
+    return relevant_props, include_spatial_layout, local_setting, additional_negatives
+
 
 def _clean_segment(text: str) -> str:
     """Normalize whitespace and ensure clean sentence-ending punctuation."""
@@ -326,16 +746,17 @@ def _compose_connected_final_prompt(
     video_bible: dict[str, Any] | Any,
     creative_direction: dict[str, Any] | Any | None = None,
     preset: VisualStylePreset | dict[str, Any] | str | None = None,
+    video_topic: str | None = None,
 ) -> str:
     """Compose an image prompt deterministically from Video Bible entities and directorial intent.
 
     Applies:
     - Global Art Direction (visual genre, lighting philosophy, rendering texture) or visual style preset.
     - ONLY the entities explicitly bound to this specific beat (character, environment, props, concept),
-      adapted to the visual style preset when active.
+      adapted to the visual style preset when active, with multi-stage concepts sliced to beat-relevant elements.
     - Camera direction, framing, and primary visual focal point.
     - Narrative transition rationale (e.g. cutaway framing).
-    - Art direction negative anchors, preset negative anchors, and vertical 9:16 safe-zone rules.
+    - Art direction negative anchors, preset negative anchors, scarcity constraints, and vertical 9:16 safe-zone rules.
     """
     resolved_preset = _resolve_preset(preset, context=scene)
     def _extract(obj: Any, field: str, default: Any = None) -> Any:
@@ -390,7 +811,7 @@ def _compose_connected_final_prompt(
     raw_obj_ids = bindings.get("object_ids") or []
     obj_ids = [str(o).strip() for o in raw_obj_ids if str(o).strip()]
 
-    # Enforce strict character prohibition when character_count is 'none' or no characters in catalog
+    # Enforce strict character prohibition when human_presence is 'none' or no characters in catalog
     cd_dict = (
         creative_direction.model_dump()
         if hasattr(creative_direction, "model_dump")
@@ -399,8 +820,8 @@ def _compose_connected_final_prompt(
     protagonist_cfg = cd_dict.get("protagonist_config") or {}
     if hasattr(protagonist_cfg, "model_dump"):
         protagonist_cfg = protagonist_cfg.model_dump()
-    expected_char_count = str(protagonist_cfg.get("character_count", "")).lower()
-    if expected_char_count == "none" or not chars_by_id:
+    expected_presence = str(protagonist_cfg.get("human_presence", "")).lower()
+    if expected_presence == "none" or not chars_by_id:
         char_id = None
 
     # 3. Extract camera direction
@@ -435,6 +856,11 @@ def _compose_connected_final_prompt(
     env_override = _extract(scene, "environment_state_override")
     transition = str(_extract(scene, "transition_from_previous", "") or "").strip()
     visual_purpose = str(_extract(scene, "visual_purpose", "") or "").strip()
+    narr = str(
+        _extract(scene, "narration_text", "")
+        or _extract(scene, "narration", "")
+        or ""
+    ).strip()
 
     # Specialized Preset Branch (e.g. stickman_tactical_explainer, stylized_2d_narrative)
     if resolved_preset is not None and resolved_preset.id != "legacy_default":
@@ -474,17 +900,49 @@ def _compose_connected_final_prompt(
             spec_segments.append(_clean_segment(char_desc))
 
         # Segment 3: Bound Concept Diagram OR Bound Environment (adapted via adapt_concept / adapt_environment)
+        # Check whether this beat needs a concept diagram or is an environmental/narrative moment
+        is_diagram_beat = False
         if concept_id and concept_id in concepts_by_id:
+            shot_type_lower = shot_type.lower()
+            tech_lower = str(_extract(scene, "visual_technique", "") or "").lower()
+            trans_lower = transition.lower()
+            is_explicit_diagram = (
+                shot_type_lower in ("diagram", "cutaway", "cross-section")
+                or any(t in tech_lower for t in ("diagram", "schematic", "cutaway", "cross-section", "technical", "infographic"))
+                or trans_lower in ("explanatory_cutaway", "surreal_metaphor")
+            )
+            # If no environment is bound, concept diagram acts as the primary spatial setting
+            is_diagram_beat = is_explicit_diagram or not (env_id and env_id in envs_by_id)
+
+        env_additional_negs: list[str] = []
+        if concept_id and concept_id in concepts_by_id and is_diagram_beat:
             cp_entry = concepts_by_id[concept_id]
-            adapted_cp = adapt_concept(cp_entry, resolved_preset)
+            sliced_elems, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
+            adapted_cp = adapt_concept(
+                cp_entry,
+                resolved_preset,
+                relevant_elements=sliced_elems,
+                focused_explanation=foc_exp,
+                focused_analogy=foc_ana,
+            )
             spec_segments.append(_clean_segment(adapted_cp.adapted_description))
         elif env_id and env_id in envs_by_id:
             e_entry = envs_by_id[env_id]
-            adapted_env = adapt_environment(e_entry, resolved_preset)
+            sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
+            light_override = env_override if (env_override and any(w in str(env_override).lower() for w in ("light", "shadow", "dark", "glow", "torch", "candle", "lamp", "sun", "moon"))) else None
+            adapted_env = adapt_environment(
+                e_entry,
+                resolved_preset,
+                relevant_props=sliced_props,
+                include_spatial_layout=incl_layout,
+                local_setting=local_set,
+                lighting_override=light_override,
+            )
             env_desc = adapted_env.adapted_description
-            if env_override:
+            if env_override and not light_override:
                 env_desc += f". Condition: {env_override}"
             spec_segments.append(_clean_segment(env_desc))
+            env_additional_negs = env_negs
         elif env_override:
             spec_segments.append(_clean_segment(f"Environment setting: {env_override}"))
 
@@ -520,6 +978,12 @@ def _compose_connected_final_prompt(
         action_text = visual_desc or visual_purpose
         if action_text and len(action_text.split()) >= 3:
             context_parts.append(f"Visual moment: {action_text}")
+
+        intent_val = str(_extract(scene, "visual_intent", "") or "").strip().lower()
+        if intent_val == "human_experience" and not char_id and not any("human" in c.lower() for c in context_parts):
+            context_parts.append("Framing context: human reaction and community experience")
+        elif intent_val == "narrative_resolution" and not any("resolution" in c.lower() for c in context_parts):
+            context_parts.append("Framing context: narrative resolution")
 
         if context_parts:
             spec_segments.append(_clean_segment(". ".join(context_parts)))
@@ -566,10 +1030,35 @@ def _compose_connected_final_prompt(
                 if m_str and m_str not in neg_anchors:
                     neg_anchors.append(m_str)
 
-        # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements
-        if is_standalone_concept:
+        # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements ONLY when bedroom context exists
+        has_bedroom = _has_bedroom_context(
+            entities=entities,
+            creative_direction=creative_direction,
+            video_topic=video_topic,
+            art_dir=art_dir,
+        )
+        if is_standalone_concept and has_bedroom:
             if not any("bedroom" in r.lower() for r in neg_anchors):
                 neg_anchors.append("no bedroom setting")
+
+        # Scarcity / famine / crop failure targeted negative constraints
+        beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
+        scarcity_negatives = extract_scarcity_negative_constraints(beat_full_text)
+        for sn in scarcity_negatives:
+            clean_sn = sn.strip()
+            lower_sn = clean_sn.lower()
+            norm_sn = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_sn)
+            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
+            if norm_sn not in existing_norms:
+                neg_anchors.append(clean_sn)
+
+        for en in env_additional_negs:
+            clean_en = en.strip()
+            lower_en = clean_en.lower()
+            norm_en = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_en)
+            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
+            if norm_en not in existing_norms:
+                neg_anchors.append(clean_en)
 
         if neg_anchors:
             spec_segments.append(_clean_segment(f"Avoid: {', '.join(neg_anchors)}"))
@@ -655,15 +1144,31 @@ def _compose_connected_final_prompt(
         segments.append(_clean_segment(char_desc))
 
     # Segment 3: Bound Concept Diagram OR Bound Environment
+    is_diagram_beat = False
+    env_additional_negs: list[str] = []
     if concept_id and concept_id in concepts_by_id:
+        shot_type_lower = shot_type.lower()
+        tech_lower = str(_extract(scene, "visual_technique", "") or "").lower()
+        trans_lower = transition.lower()
+        is_explicit_diagram = (
+            shot_type_lower in ("diagram", "cutaway", "cross-section")
+            or any(t in tech_lower for t in ("diagram", "schematic", "cutaway", "cross-section", "technical", "infographic"))
+            or trans_lower in ("explanatory_cutaway", "surreal_metaphor")
+        )
+        is_diagram_beat = is_explicit_diagram or not (env_id and env_id in envs_by_id)
+
+    if concept_id and concept_id in concepts_by_id and is_diagram_beat:
         cp_entry = concepts_by_id[concept_id]
         cp_name = _extract(cp_entry, "name", "")
-        cp_style = _extract(cp_entry, "visual_analogy") or _extract(cp_entry, "diagram_style", "")
-        cp_rules = _extract(cp_entry, "concept_explained") or _extract(cp_entry, "labeling_rules", "")
+        sliced_elems, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
+        cp_style = foc_ana or _extract(cp_entry, "visual_analogy") or _extract(cp_entry, "diagram_style", "")
+        cp_rules = foc_exp or _extract(cp_entry, "concept_explained") or _extract(cp_entry, "labeling_rules", "")
         if is_standalone_concept:
             cp_style = _clean_conceptual_analogy(str(cp_style))
             cp_rules = _clean_conceptual_styling(str(cp_rules))
         cpt_desc = f"Visual diagram concept: {cp_name}, {cp_style}"
+        if sliced_elems:
+            cpt_desc += f", graphical elements: {', '.join(str(e) for e in sliced_elems)}"
         if cp_rules:
             cpt_desc += f". Styling: {cp_rules}"
         segments.append(_clean_segment(cpt_desc))
@@ -672,16 +1177,21 @@ def _compose_connected_final_prompt(
         e_name = _extract(e_entry, "name", "")
         e_desc = _extract(e_entry, "spatial_layout") or _extract(e_entry, "description", "")
         e_light = _extract(e_entry, "lighting_setup") or _extract(e_entry, "lighting", "")
-        e_props = _extract(e_entry, "persistent_props") or []
+        sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
 
-        env_desc = f"Environment setting: {e_name}, {e_desc}"
-        if e_props:
-            env_desc += f". Persistent props: {'; '.join(str(p) for p in e_props)}"
+        setting_name = local_set or e_name
+        setting_desc = e_desc if (incl_layout and not local_set) else ""
+        env_desc = f"Environment setting: {setting_name}"
+        if setting_desc:
+            env_desc += f", {setting_desc}"
+        if sliced_props:
+            env_desc += f". Persistent props: {'; '.join(str(p) for p in sliced_props)}"
         if env_override:
             env_desc += f". Condition: {env_override}"
         if e_light and e_light.lower() not in lighting_phil.lower():
             env_desc += f". Lighting: {e_light}"
         segments.append(_clean_segment(env_desc))
+        env_additional_negs = env_negs
     elif env_override:
         segments.append(_clean_segment(f"Environment setting: {env_override}"))
     elif lighting_phil:
@@ -773,10 +1283,29 @@ def _compose_connected_final_prompt(
             if clean_m not in negative_rules:
                 negative_rules.append(clean_m)
 
-    # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements
-    if concept_id and not char_id:
+    # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements ONLY when bedroom context exists
+    has_bedroom = _has_bedroom_context(
+        entities=entities,
+        creative_direction=creative_direction,
+        video_topic=video_topic,
+        art_dir=art_dir,
+    )
+    if concept_id and not char_id and has_bedroom:
         if not any("bedroom" in r.lower() for r in negative_rules):
             negative_rules.append("no bedroom setting")
+
+    # Scarcity / famine / crop failure targeted negative constraints
+    beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
+    scarcity_negatives = extract_scarcity_negative_constraints(beat_full_text)
+    for sn in scarcity_negatives:
+        clean_sn = sn if any(sn.lower().startswith(p) for p in prohibitive_prefixes) else f"no {sn}"
+        if clean_sn not in negative_rules:
+            negative_rules.append(clean_sn)
+
+    for en in env_additional_negs:
+        clean_en = en if any(en.lower().startswith(p) for p in prohibitive_prefixes) else f"no {en}"
+        if clean_en not in negative_rules:
+            negative_rules.append(clean_en)
 
     if continuity_rules:
         segments.append(_clean_segment(f"Continuity rules: {', '.join(continuity_rules)}"))
@@ -824,6 +1353,7 @@ def compose_final_prompt(
             video_bible=resolved_vb,
             creative_direction=creative_direction,
             preset=resolved_preset,
+            video_topic=video_topic,
         )
         if connected_result:
             return connected_result
@@ -983,6 +1513,9 @@ def recompute_final_prompts(
     env_anchor = target.get("environment_anchor") or ""
     vb = video_bible or target.get("video_bible")
     cd = creative_direction or target.get("creative_direction")
+    topic = target.get("topic") or target.get("video_topic") or ""
+    if not topic and isinstance(vb, dict):
+        topic = vb.get("topic_summary") or ""
 
     scenes = target.get("scenes") or []
     for idx, s in enumerate(scenes):
@@ -993,6 +1526,7 @@ def recompute_final_prompts(
             subject_anchor=anchor,
             visual_style=style,
             environment_anchor=env_anchor,
+            video_topic=topic,
             prev_scene=prev_s,
             next_scene=next_s,
             video_bible=vb,
@@ -1005,11 +1539,14 @@ def recompute_final_prompts(
         for b in beats:
             if isinstance(b, dict):
                 b_ctx = {**s, **b}
+                if "narration" in s and not b_ctx.get("scene_narration"):
+                    b_ctx["scene_narration"] = s.get("narration")
                 b["final_prompt"] = compose_final_prompt(
                     scene=b_ctx,
                     subject_anchor=anchor,
                     visual_style=style,
                     environment_anchor=env_anchor,
+                    video_topic=topic,
                     prev_scene=prev_s,
                     next_scene=next_s,
                     video_bible=vb,
@@ -1023,11 +1560,14 @@ def recompute_final_prompts(
             sc_idx = fb.get("scene_index", 1)
             matching_sc = next((sc for sc in scenes if sc.get("index") == sc_idx), {})
             fb_ctx = {**matching_sc, **fb}
+            if "narration" in matching_sc and not fb_ctx.get("scene_narration"):
+                fb_ctx["scene_narration"] = matching_sc.get("narration")
             fb["final_prompt"] = compose_final_prompt(
                 scene=fb_ctx,
                 subject_anchor=anchor,
                 visual_style=style,
                 environment_anchor=env_anchor,
+                video_topic=topic,
                 video_bible=vb,
                 creative_direction=cd,
                 preset=resolved_preset,

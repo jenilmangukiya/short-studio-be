@@ -51,6 +51,7 @@ def test_visual_beat_defaults_to_new_image():
         id="beat_1_1",
         scene_id="1",
         order=1,
+        visual_intent="environmental_context",
         visual_description="Opening establishing shot",
     )
     assert beat.image_strategy == "new_image"
@@ -385,6 +386,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_image_reuse():
     """Soft checks produce a warning if consecutive beats share an image ID."""
     scenes = [
         SceneInput(
+            visual_intent="environmental_context",
             narration="First scene narration.",
             image_prompt="Scene 1 prompt",
             shot_type="wide",
@@ -393,6 +395,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_image_reuse():
                     id="b1_1",
                     scene_id="1",
                     order=1,
+                    visual_intent="environmental_context",
                     visual_description="Opening airplane view",
                     source_image_id="same_image_id",
                 ),
@@ -400,12 +403,14 @@ def test_storyboard_soft_checks_flag_consecutive_beat_image_reuse():
                     id="b1_2",
                     scene_id="1",
                     order=2,
+                    visual_intent="environmental_context",
                     visual_description="Close view of window",
                     source_image_id="same_image_id",
                 ),
             ],
         ),
         SceneInput(
+            visual_intent="environmental_context",
             narration="Second scene narration.",
             image_prompt="Scene 2 prompt",
             shot_type="close-up",
@@ -414,6 +419,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_image_reuse():
                     id="b2_1",
                     scene_id="2",
                     order=1,
+                    visual_intent="environmental_context",
                     visual_description="Macro bleed hole view",
                     source_image_id="distinct_image_id",
                 )
@@ -435,6 +441,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_identical_descriptions():
     """Soft checks produce a warning if consecutive beats have identical visual descriptions."""
     scenes = [
         SceneInput(
+            visual_intent="environmental_context",
             narration="First scene narration.",
             image_prompt="Scene 1 prompt",
             shot_type="wide",
@@ -443,6 +450,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_identical_descriptions():
                     id="b1_1",
                     scene_id="1",
                     order=1,
+                    visual_intent="environmental_context",
                     visual_description="Exactly identical visual description of airplane window",
                     source_image_id="img_1",
                 ),
@@ -450,12 +458,14 @@ def test_storyboard_soft_checks_flag_consecutive_beat_identical_descriptions():
                     id="b1_2",
                     scene_id="1",
                     order=2,
+                    visual_intent="environmental_context",
                     visual_description="Exactly identical visual description of airplane window",
                     source_image_id="img_2",
                 ),
             ],
         ),
         SceneInput(
+            visual_intent="environmental_context",
             narration="Second scene narration.",
             image_prompt="Scene 2 prompt",
             shot_type="close-up",
@@ -464,6 +474,7 @@ def test_storyboard_soft_checks_flag_consecutive_beat_identical_descriptions():
                     id="b2_1",
                     scene_id="2",
                     order=1,
+                    visual_intent="environmental_context",
                     visual_description="Fresh distinct description of cabin interior",
                     source_image_id="img_3",
                 )

@@ -134,37 +134,76 @@ def adapt_object(obj: Any, preset: VisualStylePreset) -> AdaptedEntity:
     )
 
 
-def adapt_environment(env: Any, preset: VisualStylePreset) -> AdaptedEntity:
-    """Compile a style-aware environment description while preserving spatial boundaries and props."""
+def adapt_environment(
+    env: Any,
+    preset: VisualStylePreset,
+    relevant_props: list[str] | None = None,
+    include_spatial_layout: bool = True,
+    local_setting: str | None = None,
+    lighting_override: str | None = None,
+) -> AdaptedEntity:
+    """Compile a style-aware environment description while preserving spatial boundaries and props.
+
+    Allows beat-aware environment slicing by optionally filtering props, overriding
+    the local setting, or suppressing wide-angle spatial layouts for close-ups and interiors.
+    Prevents conflicting environment names, outdoor lighting, and landscape layouts from contaminating
+    interior or localized beat compositions.
+    """
     orig = _to_dict(env)
     env_id = str(_extract_field(env, "id", "environment"))
     name = str(_extract_field(env, "name", "")).strip()
     spatial_layout = str(_extract_field(env, "spatial_layout", "")).strip()
     lighting_setup = str(_extract_field(env, "lighting_setup", "")).strip()
     time_of_day = str(_extract_field(env, "time_of_day", "")).strip()
-    props = _extract_field(env, "persistent_props", []) or []
+
+    props = relevant_props if relevant_props is not None else (_extract_field(env, "persistent_props", []) or [])
     props_str = f", persistent props: {', '.join(str(p) for p in props)}" if props else ""
     time_str = f", {time_of_day}" if time_of_day and time_of_day != "unspecified" else ""
+
+    # Determine effective name and layout content
+    effective_name = name
+    if local_setting and local_setting.strip():
+        effective_name = local_setting.strip()
+
+    effective_layout = spatial_layout if (include_spatial_layout and spatial_layout) else ""
+    if effective_layout:
+        layout_str = f" ({effective_layout}{props_str})"
+    elif props_str:
+        layout_str = f" ({props_str.lstrip(', ')})"
+    else:
+        layout_str = ""
+
+    # Determine effective lighting setup
+    if lighting_override and lighting_override.strip():
+        effective_lighting = lighting_override.strip()
+    elif local_setting and any(term in local_setting.lower() for term in ("interior", "inside", "room", "storeroom", "cellar", "cabin", "hall", "granary", "pantry", "workshop")):
+        # Prevent outdoor daylight from contaminating interior settings
+        if any(term in lighting_setup.lower() for term in ("daylight", "sunlight", "hazy sun", "open sky", "sunlit")):
+            effective_lighting = "Dim interior ambient lighting with soft atmospheric shadows"
+        else:
+            effective_lighting = lighting_setup
+    else:
+        effective_lighting = lighting_setup
 
     rules = preset.rules
 
     if preset.id == "stickman_tactical_explainer":
         desc = (
-            f"Environment in 1-point perspective architectural line art: {name} ({spatial_layout}{props_str}). "
+            f"Environment in 1-point perspective architectural line art: {effective_name}{layout_str}. "
             f"Clean minimalist background linework with high readability, neutral ambient lighting{time_str}."
         )
     elif preset.id == "stylized_2d_narrative":
         desc = (
-            f"Environment in stylized 2D narrative background art: {name} ({spatial_layout}{props_str}). "
-            f"Moody atmospheric lighting ({lighting_setup}{time_str}), warm/cool color grading with expressive linework."
+            f"Environment in stylized 2D narrative background art: {effective_name}{layout_str}. "
+            f"Moody atmospheric lighting ({effective_lighting}{time_str}), warm/cool color grading with expressive linework."
         )
     elif preset.id == "legacy_default":
-        lighting_str = f", {lighting_setup}" if lighting_setup else ""
-        desc = f"Environment: {name} ({spatial_layout}{props_str}){lighting_str}{time_str}."
+        lighting_str = f", {effective_lighting}" if effective_lighting else ""
+        desc = f"Environment: {effective_name}{layout_str}{lighting_str}{time_str}."
     else:
         desc = (
-            f"{preset.display_name} environment: {name} ({spatial_layout}{props_str}). "
-            f"Perspective: {rules.environment_and_perspective}. Lighting: {rules.lighting_style}{time_str}."
+            f"{preset.display_name} environment: {effective_name}{layout_str}. "
+            f"Perspective: {rules.environment_and_perspective}. Lighting: {effective_lighting or rules.lighting_style}{time_str}."
         )
 
     return AdaptedEntity(
@@ -177,14 +216,38 @@ def adapt_environment(env: Any, preset: VisualStylePreset) -> AdaptedEntity:
     )
 
 
-def adapt_concept(concept: Any, preset: VisualStylePreset) -> AdaptedEntity:
-    """Compile a style-aware abstract concept or diagram description."""
+def adapt_concept(
+    concept: Any,
+    preset: VisualStylePreset,
+    relevant_elements: list[str] | None = None,
+    focused_explanation: str | None = None,
+    focused_analogy: str | None = None,
+) -> AdaptedEntity:
+    """Compile a style-aware abstract concept or diagram description.
+
+    Allows beat-specific concept slicing by optionally passing `relevant_elements`,
+    `focused_explanation`, or `focused_analogy` to prevent multi-stage infographics
+    from cluttering individual beats.
+    """
     orig = _to_dict(concept)
     concept_id = str(_extract_field(concept, "id", "concept"))
     name = str(_extract_field(concept, "name", "")).strip()
-    explained = str(_extract_field(concept, "concept_explained", "")).strip()
-    analogy = str(_extract_field(concept, "visual_analogy", "")).strip()
-    elements = _extract_field(concept, "graphical_elements", []) or []
+
+    if focused_explanation is not None and focused_explanation.strip():
+        explained = focused_explanation.strip()
+    else:
+        explained = str(_extract_field(concept, "concept_explained", "")).strip()
+
+    if focused_analogy is not None and focused_analogy.strip():
+        analogy = focused_analogy.strip()
+    else:
+        analogy = str(_extract_field(concept, "visual_analogy", "")).strip()
+
+    if relevant_elements is not None:
+        elements = relevant_elements
+    else:
+        elements = _extract_field(concept, "graphical_elements", []) or []
+
     elem_str = f", graphical elements: {', '.join(str(e) for e in elements)}" if elements else ""
 
     rules = preset.rules

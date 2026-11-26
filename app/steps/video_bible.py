@@ -61,10 +61,10 @@ def build_video_bible_prompt(
         sections.append(f"- **Visual Genre**: {creative_direction_data.get('visual_genre', 'styled_3d')}")
 
         protagonist = creative_direction_data.get("protagonist_config", {})
-        char_count = protagonist.get("character_count", "none")
-        sections.append(f"- **Protagonist Configuration**: {char_count}")
-        if char_count != "none" and protagonist.get("archetype_summary"):
-            sections.append(f"- **Character Summary**: {protagonist.get('archetype_summary')}")
+        human_pres = protagonist.get("human_presence", "none")
+        sections.append(f"- **Human Presence**: {human_pres}")
+        if protagonist.get("archetype_summary"):
+            sections.append(f"- **Subject / Character Summary**: {protagonist.get('archetype_summary')}")
 
         constraints = creative_direction_data.get("creative_constraints", [])
         if constraints:
@@ -114,7 +114,7 @@ def build_video_bible_prompt(
         "\n## Instructions\n"
         "Generate a structured VideoBibleOutput adhering strictly to the schema. "
         "Create an Entity Catalog containing only entities directly utilized by the narration. "
-        "Define at least one primary environment. Do NOT create characters if the creative direction specified character_count='none'."
+        "Define at least one primary environment. Do NOT create characters if the creative direction specified human_presence='none'."
     )
 
     return "\n".join(sections)
@@ -129,11 +129,11 @@ def validate_video_bible(vb: VideoBibleOutput, cd_data: dict[str, Any] | None = 
 
     if cd_data:
         protagonist = cd_data.get("protagonist_config", {})
-        char_count = protagonist.get("character_count", "none")
-        if char_count in ("single", "ensemble") and not vb.entities.characters:
+        human_presence = protagonist.get("human_presence", "none")
+        if human_presence in ("single", "ensemble") and not vb.entities.characters:
             warnings.append("Creative direction specified characters, but none were defined in the Video Bible.")
-        elif char_count == "none" and vb.entities.characters:
-            warnings.append("Creative direction specified character_count='none', but characters were defined.")
+        elif human_presence == "none" and vb.entities.characters:
+            warnings.append("Creative direction specified human_presence='none', but characters were defined.")
 
     if len(vb.art_direction.primary_palette_hex) < 2:
         warnings.append("Fewer than 2 palette hex codes specified; provide 3-5 cohesive colors.")

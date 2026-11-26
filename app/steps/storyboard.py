@@ -25,6 +25,7 @@ from app.schemas import (
     EntityBindings,
     FoleyCue,
     StoryboardBeat,
+    VisualIntentType,
 )
 from app.steps.prompt_compose import (
     COMPOSITION_RULES,
@@ -73,6 +74,17 @@ ShotType = Literal[
     "diagram",
     "in-context",
 ]
+
+ALLOWED_VISUAL_INTENTS: tuple[str, ...] = (
+    "establishing",
+    "action_event",
+    "environmental_context",
+    "mechanism_explanation",
+    "human_experience",
+    "detail_focus",
+    "abstract_visualization",
+    "narrative_resolution",
+)
 
 # Single source of truth for visual beat image sourcing strategies
 ALLOWED_IMAGE_STRATEGIES: tuple[str, ...] = (
@@ -270,6 +282,9 @@ class VisualBeat(BaseModel):
     visual_description: str = Field(
         description="Clear description of what should be visually visible during this moment",
     )
+    visual_intent: VisualIntentType = Field(
+        description="Structured visual intent: establishing, action_event, environmental_context, mechanism_explanation, human_experience, detail_focus, abstract_visualization, narrative_resolution",
+    )
     visual_purpose: str = Field(
         default="",
         description="Why this visual moment exists in the story (e.g. establish subject, direct focus, reveal detail, show reaction)",
@@ -344,6 +359,9 @@ class SceneInput(BaseModel):
 
     narration: str = Field(
         description="The exact words spoken in this scene, reproducing a slice of the script verbatim"
+    )
+    visual_intent: VisualIntentType = Field(
+        description="The primary structured visual intent for this scene",
     )
     visual_purpose: str = Field(
         default="",
@@ -434,6 +452,8 @@ def normalize_scene_visual_beats(
 
     sc_shot = _extract_sc("shot_type", "medium")
     fallback_shot: ShotType = sc_shot if sc_shot in ALLOWED_SHOT_TYPES else "medium"
+    sc_intent = _extract_sc("visual_intent", "environmental_context")
+    fallback_intent: VisualIntentType = sc_intent if sc_intent in ALLOWED_VISUAL_INTENTS else "environmental_context"
     fallback_angle = str(_extract_sc("camera_angle", "eye-level") or "eye-level").strip()
     fallback_focal = str(_extract_sc("focal_point", "") or "").strip()
     fallback_tech = str(_extract_sc("visual_technique", "cinematic-photo") or "cinematic-photo").strip()
@@ -458,6 +478,7 @@ def normalize_scene_visual_beats(
                 order=1,
                 narration_text=fallback_narration,
                 visual_description=fallback_desc,
+                visual_intent=fallback_intent,
                 visual_purpose=fallback_purpose or "Establish scene visual beat",
                 shot_type=fallback_shot,
                 camera_angle=fallback_angle or "eye-level",
@@ -487,6 +508,8 @@ def normalize_scene_visual_beats(
         seq_order = len(normalized) + 1
         b_id = str(b_dict.get("id") or "").strip() or f"beat_{scene_index}_{seq_order}"
         b_desc = str(b_dict.get("visual_description") or "").strip() or fallback_desc
+        b_intent_raw = b_dict.get("visual_intent")
+        b_intent: VisualIntentType = b_intent_raw if b_intent_raw in ALLOWED_VISUAL_INTENTS else fallback_intent
         b_purpose = str(b_dict.get("visual_purpose") or "").strip() or fallback_purpose
         b_narr = str(b_dict.get("narration_text") or "").strip()
         if not b_narr and len(raw_beats) == 1:
@@ -533,6 +556,7 @@ def normalize_scene_visual_beats(
                 end_word_index=b_end_word,
                 timing_type=b_timing_type,
                 visual_description=b_desc,
+                visual_intent=b_intent,
                 visual_purpose=b_purpose,
                 shot_type=b_shot,
                 camera_angle=b_angle,
@@ -558,6 +582,7 @@ def normalize_scene_visual_beats(
                 order=1,
                 narration_text=fallback_narration,
                 visual_description=fallback_desc,
+                visual_intent=fallback_intent,
                 visual_purpose=fallback_purpose or "Establish scene visual beat",
                 shot_type=fallback_shot,
                 camera_angle=fallback_angle or "eye-level",
@@ -771,6 +796,13 @@ def validate_storyboard_soft_checks(
         visual_technique = get_field(s, "visual_technique")
         uses_anchor_flag = bool(get_field(s, "uses_anchor"))
 
+        # Visual intent check: explicit and valid
+        sc_intent = get_field(s, "visual_intent")
+        if not sc_intent or sc_intent not in ALLOWED_VISUAL_INTENTS:
+            warnings.append(
+                f"Scene {idx} has missing or invalid visual_intent '{sc_intent}'. Must be one of: {ALLOWED_VISUAL_INTENTS}."
+            )
+
         # Duration check (2.0 - 7.0 seconds)
         word_count = len(narr.split())
         est_sec = round(word_count / WORDS_PER_SECOND, 1)
@@ -890,6 +922,11 @@ def validate_storyboard_soft_checks(
                 b_desc = b.get("visual_description") if isinstance(b, dict) else getattr(b, "visual_description", "")
                 if not b_desc or not str(b_desc).strip():
                     warnings.append(f"Scene {idx} visual beat {b_idx} has an empty visual_description.")
+                b_intent = b.get("visual_intent") if isinstance(b, dict) else getattr(b, "visual_intent", None)
+                if not b_intent or b_intent not in ALLOWED_VISUAL_INTENTS:
+                    warnings.append(
+                        f"Scene {idx} visual beat {b_idx} has missing or invalid visual_intent '{b_intent}'. Must be one of: {ALLOWED_VISUAL_INTENTS}."
+                    )
                 b_strat = b.get("image_strategy") if isinstance(b, dict) else getattr(b, "image_strategy", "")
                 if b_strat and b_strat not in ALLOWED_IMAGE_STRATEGIES:
                     warnings.append(
@@ -1351,6 +1388,25 @@ def _generate_mock_visual_beats_for_scene(
                 prompt = f"Detailed macro composition revealing intricate texture and physical depth of {focal_base}"
                 tech = "macro-photo" if technique_base != "macro-photo" else "cinematic-photo"
 
+        # Visual intent mapping
+        p_lower = p_text.lower()
+        if "?" in p_text or any(k in p_lower for k in ("why", "how", "what if", "ever wonder", "mystery", "puzzling")):
+            intent: VisualIntentType = "establishing" if b_idx == 1 else "human_experience"
+        elif any(k in p_lower for k in ("actually", "shocking", "surprising", "suddenly", "twist", "erupt", "burst", "exploded")):
+            intent = "action_event"
+        elif any(k in p_lower for k in ("wrong", "mistake", "myth", "not true", "misconception", "instead", "mechanism", "diagram", "schematic")):
+            intent = "mechanism_explanation"
+        elif any(k in p_lower for k in ("tiny", "detail", "close", "macro", "texture", "seedling", "hole")):
+            intent = "detail_focus"
+        elif any(k in p_lower for k in ("felt", "chill", "starved", "famine", "people", "human", "farmer", "passenger", "community")):
+            intent = "human_experience"
+        elif b_idx == len(slices) and scene_idx >= 8:
+            intent = "narrative_resolution"
+        elif b_idx == 1 and scene_idx == 1:
+            intent = "establishing"
+        else:
+            intent = "environmental_context"
+
         beats_out.append(
             VisualBeat(
                 id=f"beat_{scene_idx}_{b_idx}",
@@ -1358,6 +1414,7 @@ def _generate_mock_visual_beats_for_scene(
                 order=b_idx,
                 narration_text=p_text,
                 visual_description=prompt,
+                visual_intent=intent,
                 visual_purpose=purpose,
                 shot_type=shot if shot in ALLOWED_SHOT_TYPES else "medium",
                 camera_angle=angle,
@@ -1509,7 +1566,7 @@ def split_script_for_mock(
             p_cfg = creative_direction_data.get("protagonist_config") or {}
             if hasattr(p_cfg, "model_dump"):
                 p_cfg = p_cfg.model_dump()
-            if p_cfg.get("character_count") == "none":
+            if p_cfg.get("human_presence") == "none":
                 allow_char = False
 
         if allow_char and chars:
@@ -1604,6 +1661,7 @@ def split_script_for_mock(
         scenes.append(
             SceneInput(
                 narration=chunk,
+                visual_intent=mock_beats[0].visual_intent,
                 visual_purpose=mock_beats[0].visual_purpose or beat["purpose"],
                 shot_type=beat["shot_type"],
                 camera_angle=beat["camera_angle"],
@@ -1661,7 +1719,7 @@ def build_storyboard_prompt(
         sections.append(f"- **Tone**: {creative_direction_data.get('tone', '')}")
         protagonist = creative_direction_data.get("protagonist_config", {})
         if isinstance(protagonist, dict):
-            sections.append(f"- **Protagonist Configuration**: {protagonist.get('character_count', 'none')}")
+            sections.append(f"- **Human Presence**: {protagonist.get('human_presence', 'none')}")
             if protagonist.get("archetype_summary"):
                 sections.append(f"- **Character Archetype**: {protagonist.get('archetype_summary')}")
         constraints = creative_direction_data.get("creative_constraints", [])
@@ -1692,7 +1750,7 @@ def build_storyboard_prompt(
                 details_str = f" ({details})" if details else ""
                 sections.append(f"  - `{c.get('id')}`: {c.get('name')}{details_str}")
         else:
-            sections.append("- **Characters**: None (character_count is none)")
+            sections.append("- **Characters**: None (human_presence is none)")
 
         if envs:
             sections.append("- **Environments**:")
@@ -1736,14 +1794,14 @@ def build_storyboard_prompt(
             "- You do NOT need to write an `image_prompt`. Application code composes the final prompt from the Video Bible."
         )
 
-        cd_char_count = (
-            creative_direction_data.get("protagonist_config", {}).get("character_count")
+        cd_human_presence = (
+            creative_direction_data.get("protagonist_config", {}).get("human_presence")
             if creative_direction_data and isinstance(creative_direction_data.get("protagonist_config"), dict)
             else None
         )
-        if (not chars) or (str(cd_char_count).lower() == "none"):
+        if (not chars) or (str(cd_human_presence).lower() == "none"):
             sections.append(
-                "\n> **CRITICAL CHARACTER RULE:** Character count is NONE. No characters exist in the Video Bible.\n"
+                "\n> **CRITICAL CHARACTER RULE:** Human presence is NONE. No characters exist in the Video Bible.\n"
                 "> You MUST NOT introduce, invent, or name any protagonist, person, or character.\n"
                 "> `character_id` and `character_state` must be `null` across all beats.\n"
                 "> Use other visual approaches instead: first-person POV, environment details, object close-ups, macro photography, physical phenomena, or conceptual diagrams."
@@ -2169,12 +2227,16 @@ def generate_storyboard_step(
             raw_trans = str(b.get("transition_from_previous") or sc.get("transition_from_previous") or "same_scene_reframe")
             trans_clean = raw_trans if raw_trans in valid_transitions else "same_scene_reframe"
 
+            raw_intent = b.get("visual_intent") or sc.get("visual_intent") or "environmental_context"
+            intent_clean: VisualIntentType = raw_intent if raw_intent in ALLOWED_VISUAL_INTENTS else "environmental_context"
+
             sb_beat = StoryboardBeat(
                 beat_id=b.get("id") or f"beat_{sc['index']}_{b.get('order', 1)}",
                 scene_index=sc["index"],
                 order=b.get("order", 1),
                 narration_slice=b.get("narration_text") or sc.get("narration", ""),
                 duration_est_seconds=float(b.get("duration_seconds") or sc.get("est_seconds", 3.0)),
+                visual_intent=intent_clean,
                 entity_bindings=eb_obj,
                 transition_from_previous=trans_clean,
                 continuity_intent=b.get("continuity_intent") or sc.get("continuity_intent", ""),

@@ -21,6 +21,7 @@ def test_visual_beat_model_creation_and_validation():
         id="beat_1_1",
         scene_id="1",
         order=1,
+        visual_intent="establishing",
         visual_description="Wide establishing aerial view of an aircraft over sunlit clouds",
         visual_purpose="Establish subject and setting",
         shot_type="wide",
@@ -39,15 +40,19 @@ def test_visual_beat_model_creation_and_validation():
 
     # Validation failure: missing required visual_description
     with pytest.raises(ValidationError):
-        VisualBeat(id="b1", scene_id="1", order=1)  # type: ignore
+        VisualBeat(id="b1", scene_id="1", order=1, visual_intent="establishing")  # type: ignore
+
+    # Validation failure: missing required visual_intent
+    with pytest.raises(ValidationError):
+        VisualBeat(visual_description="Something")  # type: ignore
 
     # Validation failure: invalid shot_type
     with pytest.raises(ValidationError):
-        VisualBeat(visual_description="Something", shot_type="invalid_shot")  # type: ignore
+        VisualBeat(visual_intent="establishing", visual_description="Something", shot_type="invalid_shot")  # type: ignore
 
     # Validation failure: invalid image_strategy
     with pytest.raises(ValidationError):
-        VisualBeat(visual_description="Something", image_strategy="unknown_strategy")  # type: ignore
+        VisualBeat(visual_intent="establishing", visual_description="Something", image_strategy="unknown_strategy")  # type: ignore
 
 
 def test_scene_containing_multiple_ordered_visual_beats():
@@ -57,6 +62,7 @@ def test_scene_containing_multiple_ordered_visual_beats():
             id="beat_2_1",
             scene_id="2",
             order=1,
+            visual_intent="environmental_context",
             visual_description="Server rack with blinking status lights",
             visual_purpose="Establish server room environment",
             shot_type="medium",
@@ -69,6 +75,7 @@ def test_scene_containing_multiple_ordered_visual_beats():
             id="beat_2_2",
             scene_id="2",
             order=2,
+            visual_intent="detail_focus",
             visual_description="Close-up crop on primary processor chip",
             visual_purpose="Direct attention to high-power silicon die",
             shot_type="close-up",
@@ -81,6 +88,7 @@ def test_scene_containing_multiple_ordered_visual_beats():
             id="beat_2_3",
             scene_id="2",
             order=3,
+            visual_intent="detail_focus",
             visual_description="Macro cross-section of glowing copper heat pipes",
             visual_purpose="Show intense heat and power dissipation",
             shot_type="macro",
@@ -92,6 +100,7 @@ def test_scene_containing_multiple_ordered_visual_beats():
     ]
 
     scene = SceneInput(
+        visual_intent="environmental_context",
         narration="Because the answer takes powerful computer chips, and those chips use electricity.",
         image_prompt="Modern server motherboard with central processor",
         shot_type="medium",
@@ -110,11 +119,13 @@ def test_scene_containing_multiple_ordered_visual_beats():
 def test_missing_optional_beat_fields_apply_defaults():
     """3. Missing optional beat fields apply sensible defaults."""
     beat = VisualBeat(
+        visual_intent="environmental_context",
         visual_description="A standalone engine rotor on a test mount",
     )
     assert beat.id == ""
     assert beat.scene_id == ""
     assert beat.order == 1
+    assert beat.visual_intent == "environmental_context"
     assert beat.shot_type == "medium"
     assert beat.camera_angle == "eye-level"
     assert beat.focal_point == ""
@@ -127,6 +138,7 @@ def test_empty_or_missing_beat_lists_in_scene():
     """4. Empty or missing beat lists in SceneInput."""
     # When visual_beats is omitted completely:
     scene_omitted = SceneInput(
+        visual_intent="environmental_context",
         narration="First sentence of the narration.",
         image_prompt="Airplane exterior",
         shot_type="aerial",
@@ -135,6 +147,7 @@ def test_empty_or_missing_beat_lists_in_scene():
 
     # When visual_beats is explicitly empty:
     scene_empty = SceneInput(
+        visual_intent="environmental_context",
         narration="Second sentence of the narration.",
         image_prompt="Airplane interior",
         shot_type="interior",
@@ -205,6 +218,7 @@ def test_loading_and_serializing_legacy_storyboards_without_visual_beats():
     """6. Loading and serializing legacy storyboards without VisualBeats."""
     legacy_json = """
     {
+        "visual_intent": "detail_focus",
         "narration": "Commercial jets rely on these tiny ports for passenger safety.",
         "visual_purpose": "Explain fuselage bleed port",
         "shot_type": "macro",
@@ -239,6 +253,7 @@ def test_loading_and_serializing_legacy_storyboards_without_visual_beats():
 def test_preserving_existing_scene_narration_and_metadata():
     """7. Preserving existing scene narration and metadata alongside visual beats."""
     scene = SceneInput(
+        visual_intent="mechanism_explanation",
         narration="Aircraft windows consist of three separate acrylic panes.",
         visual_purpose="Reveal layered pane construction",
         shot_type="cutaway",
@@ -253,6 +268,7 @@ def test_preserving_existing_scene_narration_and_metadata():
                 id="beat_1_1",
                 scene_id="1",
                 order=1,
+                visual_intent="environmental_context",
                 visual_description="Assembled window unit in fuselage frame",
                 shot_type="medium",
                 image_strategy="new_image",
@@ -261,6 +277,7 @@ def test_preserving_existing_scene_narration_and_metadata():
                 id="beat_1_2",
                 scene_id="1",
                 order=2,
+                visual_intent="mechanism_explanation",
                 visual_description="Exploded view separating all 3 panes",
                 shot_type="cutaway",
                 image_strategy="reuse_scene_image",
@@ -284,6 +301,7 @@ def test_storyboard_response_parsing_with_new_structure():
         "environment_anchor": "Cruising altitude above sunny clouds.",
         "scenes": [
             {
+                "visual_intent": "environmental_context",
                 "narration": "Have a look at airplane windows.",
                 "visual_purpose": "Establish airplane window",
                 "shot_type": "medium",
@@ -293,6 +311,7 @@ def test_storyboard_response_parsing_with_new_structure():
                         "id": "beat_1_1",
                         "scene_id": "1",
                         "order": 1,
+                        "visual_intent": "environmental_context",
                         "visual_description": "Cabin interior view looking towards window",
                         "visual_purpose": "Establish cabin setting",
                         "shot_type": "medium",
@@ -302,6 +321,7 @@ def test_storyboard_response_parsing_with_new_structure():
                         "id": "beat_1_2",
                         "scene_id": "1",
                         "order": 2,
+                        "visual_intent": "detail_focus",
                         "visual_description": "Closer framing on the window aperture",
                         "visual_purpose": "Direct viewer attention to window",
                         "shot_type": "close-up",

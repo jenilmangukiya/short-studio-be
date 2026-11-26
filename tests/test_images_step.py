@@ -822,7 +822,7 @@ def test_character_clothing_environment_survive_into_provider_request(tmp_path, 
     step = DummyStep()
 
     cd_data = {
-        "protagonist_config": {"character_count": "single"},
+        "protagonist_config": {"human_presence": "single"},
         "visual_genre": "photorealistic_cinematic",
     }
     vb_data = {
@@ -943,7 +943,7 @@ def test_multi_beat_scene_distinct_actions_same_character_anchor(tmp_path, monke
     step = DummyStep()
 
     cd_data = {
-        "protagonist_config": {"character_count": "single"},
+        "protagonist_config": {"human_presence": "single"},
         "visual_genre": "photorealistic_cinematic",
     }
     vb_data = {

@@ -96,6 +96,7 @@ def build_creative_direction_prompt(
         "Select the most appropriate format archetype and visual genre for this topic.\n"
         "Apply the balanced character and subject selection guidelines:\n"
         "- When the topic explores human bodily sensations, sleep, dreams, emotions, or physical reflexes, strongly consider defining a relatable human character/subject.\n"
+        "- When the topic involves historical crises, disasters, or societal impacts affecting people, consider human_presence='contextual' to represent witnesses, workers, or communities without forcing a recurring hero.\n"
         "- When the topic focuses on animal biology or instincts, consider an appropriate animal subject.\n"
         "- Do NOT force a character if the topic is purely mechanical, cosmic, chemical, or abstract."
     )
@@ -107,7 +108,7 @@ def validate_creative_direction(cd: CreativeDirectionOutput, topic: str = "") ->
     """Validate creative direction consistency and return any soft warnings."""
     warnings: list[str] = []
 
-    if cd.protagonist_config.character_count != "none" and not cd.protagonist_config.archetype_summary:
+    if cd.protagonist_config.human_presence in ("single", "ensemble") and not cd.protagonist_config.archetype_summary:
         warnings.append("Protagonist config specified characters but provided no archetype summary.")
 
     if len(cd.emotional_progression) < 3:
@@ -116,12 +117,12 @@ def validate_creative_direction(cd: CreativeDirectionOutput, topic: str = "") ->
     if not cd.creative_constraints:
         warnings.append("No creative constraints specified; provide 3-5 rules to prevent downstream production drift.")
 
-    # Non-blocking advisory check for human sensory/bodily topics with character_count == "none"
-    if cd.protagonist_config.character_count == "none":
+    # Non-blocking advisory check for human sensory/bodily topics with human_presence == "none"
+    if cd.protagonist_config.human_presence == "none":
         context_str = f"{topic} {cd.central_thesis} {cd.storytelling_angle}".strip()
         if HUMAN_SENSORY_TOPIC_REGEX.search(context_str):
             warnings.append(
-                "Topic involves a human physical or sensory experience, but character_count is set to 'none'. "
+                "Topic involves a human physical or sensory experience, but human_presence is set to 'none'. "
                 "Consider whether a relatable human subject would improve visual storytelling."
             )
 
