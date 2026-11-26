@@ -44,6 +44,80 @@ def _clean_segment(text: str) -> str:
     return t
 
 
+def _clean_rule_text(rule_text: str) -> str:
+    """Clean illustrative example clauses (e.g. '(e.g. ...)') from style rules while preserving other parentheticals."""
+    if not rule_text:
+        return ""
+    cleaned = re.sub(r"\s*\((?:e\.g\.|for example)[^)]*\)", "", rule_text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_world_negative_constraints(
+    art_dir: dict[str, Any],
+    creative_direction: dict[str, Any] | None = None,
+    is_standalone_concept: bool = False,
+) -> list[str]:
+    """Extract story-wide world, era, and visual negative constraints.
+
+    These constraints apply across all scenes in the video (including scenes
+    without a bound character), preventing anachronisms (e.g. modern clothing
+    in a historical era) and visual contradictions.
+    """
+    world_negatives: list[str] = []
+
+    # 1. Art direction negative anchors
+    raw_anchors = art_dir.get("negative_anchors") or []
+    for item in raw_anchors:
+        s = str(item).strip()
+        if not s:
+            continue
+        lower = s.lower()
+        if is_standalone_concept and any(term in lower for term in ("sleeper", "character", "bedroom", "person")):
+            continue
+        if s not in world_negatives:
+            world_negatives.append(s)
+
+    # 2. Art direction negative prompt tokens (comma-separated)
+    raw_tokens = art_dir.get("negative_prompt_tokens") or ""
+    if isinstance(raw_tokens, str) and raw_tokens.strip():
+        for tok in raw_tokens.split(","):
+            t = tok.strip()
+            if not t:
+                continue
+            lower_t = t.lower()
+            if is_standalone_concept and any(term in lower_t for term in ("sleeper", "bedroom")):
+                continue
+            if t not in world_negatives:
+                world_negatives.append(t)
+
+    # 3. Creative direction world/era visual constraints
+    if creative_direction:
+        cd_dict = (
+            creative_direction.model_dump()
+            if hasattr(creative_direction, "model_dump")
+            else dict(creative_direction) if isinstance(creative_direction, dict) else {}
+        )
+        constraints = cd_dict.get("creative_constraints") or []
+        for c in constraints:
+            c_str = str(c).strip()
+            if not c_str:
+                continue
+            lower_c = c_str.lower()
+            is_negative = lower_c.startswith(("never ", "no ", "do not ", "don't ", "avoid ", "without "))
+            is_world_visual = any(w in lower_c for w in (
+                "depict", "show", "clothing", "modern", "technology", "era", "vehicle",
+                "accessories", "setting", "architecture", "photorealism", "vanish", "disappear"
+            ))
+            if is_negative and is_world_visual:
+                if "fictional" in lower_c or "representative" in lower_c:
+                    continue
+                clean_c = c_str.rstrip(".")
+                if clean_c not in world_negatives:
+                    world_negatives.append(clean_c)
+
+    return world_negatives
+
+
 def adapt_visual_style(
     visual_style: str | None,
     environment: str = "",
@@ -369,7 +443,7 @@ def _compose_connected_final_prompt(
         # Segment 1: Preset Permanent Anchors & Lighting
         preset_anchors = list(resolved_preset.permanent_prompt_anchors or [])
         art_parts: list[str] = [", ".join(preset_anchors)] if preset_anchors else [f"{resolved_preset.display_name} visual style"]
-        lighting_rule = (
+        lighting_rule = _clean_rule_text(
             resolved_preset.rules.lighting_style
             if resolved_preset.rules and resolved_preset.rules.lighting_style
             else str(art_dir.get("lighting_philosophy", "")).strip()
@@ -451,7 +525,7 @@ def _compose_connected_final_prompt(
             spec_segments.append(_clean_segment(". ".join(context_parts)))
 
         # Segment 7: Color Palette & Style Drawing Rules
-        palette_rule = (
+        palette_rule = _clean_rule_text(
             resolved_preset.rules.color_and_shading
             if resolved_preset.rules and resolved_preset.rules.color_and_shading
             else ""
@@ -466,7 +540,24 @@ def _compose_connected_final_prompt(
             spec_segments.append(_clean_segment(f"Color palette: {'; '.join(palette_parts)}"))
 
         # Segment 8: Negative Constraints & Avoidances
+        is_standalone_concept = bool(concept_id and not char_id)
         neg_anchors: list[str] = list(resolved_preset.negative_prompt_anchors or [])
+
+        # Add global world/era constraints (applies to all scenes, including when character_id is None)
+        world_constraints = _extract_world_negative_constraints(
+            art_dir=art_dir,
+            creative_direction=creative_direction,
+            is_standalone_concept=is_standalone_concept,
+        )
+        for wc in world_constraints:
+            clean_wc = wc.strip()
+            lower_wc = clean_wc.lower()
+            norm_wc = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_wc)
+            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
+            if norm_wc not in existing_norms:
+                neg_anchors.append(clean_wc)
+
+        # Character forbidden mutations (strictly character-specific: applied ONLY when this character is bound)
         if char_id and char_id in chars_by_id:
             c_entry = chars_by_id[char_id]
             c_mutations = _extract(c_entry, "forbidden_mutations") or []
@@ -474,6 +565,11 @@ def _compose_connected_final_prompt(
                 m_str = str(mut).strip()
                 if m_str and m_str not in neg_anchors:
                     neg_anchors.append(m_str)
+
+        # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements
+        if is_standalone_concept:
+            if not any("bedroom" in r.lower() for r in neg_anchors):
+                neg_anchors.append("no bedroom setting")
 
         if neg_anchors:
             spec_segments.append(_clean_segment(f"Avoid: {', '.join(neg_anchors)}"))
@@ -636,9 +732,11 @@ def _compose_connected_final_prompt(
         segments.append(_clean_segment(f"Color palette: {palette_str}"))
 
     # Segment 8: Continuity Rules and Negative Constraints
-    raw_anchors = list(art_dir.get("negative_anchors") or [])
-    if not raw_anchors and art_dir.get("negative_prompt_tokens"):
-        raw_anchors = [str(art_dir.get("negative_prompt_tokens"))]
+    world_constraints = _extract_world_negative_constraints(
+        art_dir=art_dir,
+        creative_direction=creative_direction,
+        is_standalone_concept=is_standalone_concept,
+    )
 
     continuity_rules: list[str] = []
     negative_rules: list[str] = []
@@ -646,7 +744,7 @@ def _compose_connected_final_prompt(
     prohibitive_prefixes = ("no ", "never ", "do not ", "don't ", "avoid ", "without ", "stop ")
     affirmative_prefixes = ("keep ", "maintain ", "ensure ", "always ")
 
-    for item in raw_anchors:
+    for item in world_constraints:
         s = str(item).strip()
         if not s:
             continue

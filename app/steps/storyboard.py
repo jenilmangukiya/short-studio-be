@@ -1501,8 +1501,8 @@ def split_script_for_mock(
             entities = entities.model_dump()
         chars = entities.get("characters") or []
         envs = entities.get("environments") or []
-        objs = entities.get("objects_and_props") or []
-        concepts = entities.get("concepts_and_diagrams") or []
+        objs = entities.get("objects") or entities.get("objects_and_props") or []
+        concepts = entities.get("concepts") or entities.get("concepts_and_diagrams") or []
 
         allow_char = True
         if creative_direction_data:
@@ -1679,31 +1679,45 @@ def build_storyboard_prompt(
 
         chars = entities.get("characters") or []
         envs = entities.get("environments") or []
-        objs = entities.get("objects_and_props") or []
-        concepts = entities.get("concepts_and_diagrams") or []
+        objs = entities.get("objects") or entities.get("objects_and_props") or []
+        concepts = entities.get("concepts") or entities.get("concepts_and_diagrams") or []
 
         sections.append("#### Available Entity Catalog:")
         if chars:
             sections.append("- **Characters**:")
             for c in chars:
-                sections.append(f"  - `{c.get('id')}`: {c.get('name')} ({c.get('visual_summary')})")
+                c_anchor = c.get("visual_anchor") or c.get("visual_summary") or c.get("role") or ""
+                c_apparel = c.get("apparel_anchor") or c.get("clothing_and_style") or ""
+                details = f"{c_anchor}, wearing {c_apparel}" if c_apparel and c_anchor else (c_anchor or c_apparel)
+                details_str = f" ({details})" if details else ""
+                sections.append(f"  - `{c.get('id')}`: {c.get('name')}{details_str}")
         else:
             sections.append("- **Characters**: None (character_count is none)")
 
         if envs:
             sections.append("- **Environments**:")
             for e in envs:
-                sections.append(f"  - `{e.get('id')}`: {e.get('name')} - {e.get('description')}")
+                e_layout = e.get("spatial_layout") or e.get("description") or ""
+                layout_str = f" - {e_layout}" if e_layout else ""
+                sections.append(f"  - `{e.get('id')}`: {e.get('name')}{layout_str}")
 
         if objs:
             sections.append("- **Objects & Props**:")
             for o in objs:
-                sections.append(f"  - `{o.get('id')}`: {o.get('name')} ({o.get('visual_details')})")
+                o_desc = o.get("visual_description") or o.get("visual_details") or ""
+                o_mat = o.get("material_and_finish") or ""
+                details = f"{o_desc}, {o_mat}" if o_mat and o_desc else (o_desc or o_mat)
+                details_str = f" ({details})" if details else ""
+                sections.append(f"  - `{o.get('id')}`: {o.get('name')}{details_str}")
 
         if concepts:
             sections.append("- **Concepts & Diagrams**:")
             for cp in concepts:
-                sections.append(f"  - `{cp.get('id')}`: {cp.get('name')} ({cp.get('diagram_style')})")
+                cp_analogy = cp.get("visual_analogy") or cp.get("diagram_style") or ""
+                cp_expl = cp.get("concept_explained") or ""
+                details = f"{cp_analogy}: {cp_expl}" if cp_expl and cp_analogy and cp_analogy != cp_expl else (cp_analogy or cp_expl)
+                details_str = f" ({details})" if details else ""
+                sections.append(f"  - `{cp.get('id')}`: {cp.get('name')}{details_str}")
 
         sections.append("\n#### Art Direction:")
         sections.append(f"- **Visual Genre**: {art_dir.get('visual_genre')}")

@@ -344,7 +344,7 @@ def test_deterministic_style_enforcement_and_narrative_preservation(db_session, 
     assert art["style_family"] == "illustrated"
     assert art["visual_genre"] == "stickman_illustrated"
     assert art["rendering_texture"] == "2D vector ink contours with flat color fills and ambient cel-shading"
-    assert art["lighting_philosophy"] == "directional ambient lighting from windows and lamps with soft flat shadow zones"
+    assert art["lighting_philosophy"] == preset.art_direction.lighting_philosophy
     assert art["primary_palette_hex"] == preset.art_direction.primary_palette_hex
     assert art["negative_anchors"] == preset.art_direction.negative_anchors
 

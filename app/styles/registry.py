@@ -123,17 +123,16 @@ STICKMAN_TACTICAL_EXPLAINER_PRESET = VisualStylePreset(
             "No photorealistic backdrops."
         ),
         objects_and_machines=(
-            "Technical equipment, furniture, and vehicles are drawn as clean line-and-fill diagrams with clear "
-            "functional silhouettes (e.g. servers with grid panels and status LEDs, weapons with bold outlines, "
-            "water jugs with translucent cyan fill)."
+            "Technical equipment, furniture, and tools are drawn as clean line-and-fill diagrams with clear "
+            "functional silhouettes and schematic details."
         ),
         abstract_concepts=(
             "Diagrammatic overlays, cross-sections, and flowcharts with minimalist clean iconography, bold sans-serif "
             "labels, and high-contrast color highlights."
         ),
         lighting_style=(
-            "Directional ambient lighting from identifiable light sources (windows, lamps, candles) casting soft "
-            "flat shadow zones across floors and walls."
+            "Directional ambient lighting from identifiable light sources casting soft flat shadow zones across "
+            "adjacent surfaces and architectural planes."
         ),
     ),
     permanent_prompt_anchors=[
@@ -165,7 +164,7 @@ STICKMAN_TACTICAL_EXPLAINER_PRESET = VisualStylePreset(
         style_family="illustrated",
         visual_genre="stickman_illustrated",
         rendering_texture="2D vector ink contours with flat color fills and ambient cel-shading",
-        lighting_philosophy="directional ambient lighting from windows and lamps with soft flat shadow zones",
+        lighting_philosophy="directional ambient lighting with soft flat shadow zones",
         negative_anchors=[
             "no photorealistic",
             "no 3D CGI",
@@ -210,12 +209,12 @@ STYLIZED_2D_NARRATIVE_PRESET = VisualStylePreset(
     display_name="Stylized 2D Narrative Drama",
     category="illustrated_2d",
     version=1,
-    description="Expressive chibi-stick cartoon figures with stylized clothing, hair volume, and anime-inspired emotion in cinematic mood-lit interiors.",
+    description="Expressive chibi-stick cartoon figures with stylized clothing, hair volume, and anime-inspired emotion in cinematic mood-lit environments.",
     preview_image_path="previews/stylized_2d.jpg",
     rules=StyleDrawingRules(
         character_anatomy=(
             "Expressive 2D stylized cartoon figures with white rounded heads and sculpted volume hair. Slender limbs "
-            "with distinct colored clothing silhouettes (hoodies, jackets, coats). Large expressive vertical cartoon "
+            "with distinct colored clothing silhouettes matching story context. Large expressive vertical cartoon "
             "eyes with white specular catchlights; dynamic mouths and blush indicators."
         ),
         linework_and_outlines=(
@@ -223,30 +222,29 @@ STYLIZED_2D_NARRATIVE_PRESET = VisualStylePreset(
             "in finer lines."
         ),
         color_and_shading=(
-            "Two-tone digital cel-shading with clear highlight and core shadow zones; warm interior bounce lighting."
+            "Two-tone digital cel-shading with clear highlight and core shadow zones; rich ambient bounce lighting."
         ),
         environment_and_perspective=(
-            "Mood-lit interior and exterior backgrounds with cinematic framing (Dutch angles, over-the-shoulder, door "
-            "peephole circular fish-eye vignettes). Atmospheric fog, smoke particles, and warm lamp glows."
+            "Mood-lit interior and exterior backgrounds with cinematic framing and dynamic perspective angles. "
+            "Atmospheric fog, smoke particles, and subtle localized light accents."
         ),
         objects_and_machines=(
-            "Everyday and dramatic props rendered with bold colored silhouettes, subtle edge bevel highlights, and "
-            "emissive screen glows (e.g. glowing smartphone emergency alert displays, backpacks, vehicle wreckage)."
+            "Props and equipment rendered with bold colored silhouettes, subtle edge bevel highlights, and "
+            "emissive glow accents where appropriate."
         ),
         abstract_concepts=(
-            "Cinematic visual metaphors (e.g. shadow silhouettes, ticking clocks, heartbeat waveforms) integrated "
-            "into the illustrated scene."
+            "Cinematic visual metaphors and illustrative graphic overlays integrated cohesively into the illustrated scene."
         ),
         lighting_style=(
-            "Atmospheric dramatic lighting: strong warm/cool temperature contrasts (e.g. warm bedroom table lamp "
-            "against cold stormy exterior window)."
+            "Atmospheric dramatic lighting: strong warm and cool color temperature contrasts with motivated directional "
+            "light sources and deep tonal shadows."
         ),
     ),
     permanent_prompt_anchors=[
         "stylized 2D digital cartoon animation art",
         "clean bold outlines",
         "two-tone cel-shading",
-        "expressive modern graphic novel character aesthetic",
+        "expressive graphic novel character aesthetic",
     ],
     negative_prompt_anchors=[
         "photorealism",

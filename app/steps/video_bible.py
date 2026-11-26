@@ -225,7 +225,9 @@ def generate_video_bible_step(
         if p_art.primary_palette_hex:
             vb_output.art_direction.primary_palette_hex = list(p_art.primary_palette_hex)
         if p_art.negative_anchors:
-            vb_output.art_direction.negative_anchors = list(p_art.negative_anchors)
+            existing = vb_output.art_direction.negative_anchors or []
+            combined = list(p_art.negative_anchors) + [a for a in existing if a not in p_art.negative_anchors]
+            vb_output.art_direction.negative_anchors = combined
 
     warnings = validate_video_bible(vb_output, cd_data=cd_data)
 
