@@ -161,6 +161,35 @@ WEAK_ENDING_REGEX = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Production instruction and meta-framing leakage patterns (backstage directives leaking into dialogue)
+META_INSTRUCTION_LEAK_PATTERNS: tuple[str, ...] = (
+    r"\b(?:picture|imagine|introducing|meet)\s+(?:a\s+)?(?:fictional|representative|hypothetical)(?:\s+[a-z]+)?\b",
+    r"\b(?:as\s+a\s+fictional\s+(?:character|person|figure|farmer|witness|worker|protagonist))\b",
+    r"\b(?:fictional\s+(?:and\s+)?representative)\b",
+    r"\b(?:keep\s+the\s+[a-z]+\s+fictional(?:\s+and\s+representative)?)\b",
+    r"\b(?:internal\s+instruction|creative\s+constraint|production\s+note|directorial\s+note)\b",
+    r"\bfor\s+the\s+purpose\s+of\s+this\s+video,\s+let(?:'s|\s+us)\s+invent\b",
+    r"\bthis\s+character\s+is\s+(?:fictional|representative|hypothetical)\b",
+    r"\b(?:representative\s+character|fictional\s+archetype)\b",
+)
+
+META_INSTRUCTION_LEAK_REGEX = re.compile(
+    r"(?:" + "|".join(META_INSTRUCTION_LEAK_PATTERNS) + r")",
+    flags=re.IGNORECASE,
+)
+
+# Second-sentence deflated question negation (blunt denial that instantly cancels curiosity)
+DEFLATED_HOOK_REVEAL_PATTERNS: tuple[str, ...] = (
+    r"^(?:it\s+didn't|it\s+doesn't|it\s+wasn't|they\s+didn't|they\s+don't)[.,;!]",
+    r"^(?:actually,\s*no|no,\s*it\s+(?:didn't|doesn't)|no,\s*they\s+(?:didn't|don't))[.,;!]",
+    r"^(?:it\s+didn't|it\s+doesn't|they\s+didn't)\s+(?:actually\s+)?(?:vanish|disappear|happen|exist)[.,;!]?",
+)
+
+DEFLATED_HOOK_REVEAL_REGEX = re.compile(
+    r"(?:" + "|".join(DEFLATED_HOOK_REVEAL_PATTERNS) + r")",
+    flags=re.IGNORECASE,
+)
+
 # Common everyday multi-syllable words that are immediately understandable in spoken English
 EVERYDAY_MULTISYLLABLE_ALLOWLIST: frozenset[str] = frozenset({
     "actually", "additional", "airplane", "airplanes", "airliner", "altitude",
@@ -665,9 +694,30 @@ def evaluate_script_quality(
             f"Use pronouns or varied phrasing instead of repeating the same phrase."
         )
 
-    # 6. Narrative progression checks (immediate payoff after hook, cause-and-effect, strong ending)
+    # 6. Production instruction & meta-framing leakage check (backstage directives leaking into dialogue)
+    meta_leak_match = META_INSTRUCTION_LEAK_REGEX.search(narration)
+    if meta_leak_match:
+        issues.append(
+            f"Narration leaks internal production instructions or meta-framing ('{meta_leak_match.group(0)}'). "
+            "Never vocalize backstage instructions, protagonist archetypes, or fictional disclaimers. "
+            "Narrate the story directly from an immersive perspective."
+        )
+
+    # 7. Narrative progression checks (immediate payoff after hook, cause-and-effect, strong ending)
     if len(sentences) >= 2:
-        second_sent = sentences[1]
+        first_sent = sentences[0].strip()
+        second_sent = sentences[1].strip()
+        hook_text = (script.hook or "").strip()
+        is_question_hook = hook_text.endswith("?") or first_sent.endswith("?")
+
+        # Check for deflated question reveal (abrupt negation that cancels curiosity before building tension)
+        if is_question_hook and DEFLATED_HOOK_REVEAL_REGEX.search(second_sent):
+            issues.append(
+                f"Second sentence immediately deflates the hook question with an abrupt denial ('{second_sent[:45]}...'). "
+                "Instead of prematurely killing the curiosity, advance the narrative, build the mystery or stakes, "
+                "and reveal the underlying mechanism naturally."
+            )
+
         if DELAYED_PAYOFF_REGEX.search(second_sent):
             issues.append(
                 f"Second sentence delays the explanation with filler ('{second_sent[:40]}...'). "
@@ -682,7 +732,7 @@ def evaluate_script_quality(
                 f"End with a crisp, memorable insight or reveal."
             )
 
-    # 7. Redundant meta-summary check
+    # 8. Redundant meta-summary check
     for sent in sentences:
         if REDUNDANT_SUMMARY_REGEX.search(sent):
             issues.append(
@@ -870,17 +920,32 @@ def build_script_prompt(
         sections.append(f"- **Topic Description / Context**: {description}")
 
     if creative_direction_data:
-        sections.append("\n### Approved Creative Direction")
+        sections.append("\n### Approved Creative Direction (Story Narrative Framing)")
         sections.append(f"- **Format Archetype**: {creative_direction_data.get('format_archetype', '')}")
         sections.append(f"- **Narrative Angle**: {creative_direction_data.get('storytelling_angle', '')}")
         sections.append(f"- **Central Thesis**: {creative_direction_data.get('central_thesis', '')}")
         sections.append(f"- **Tone**: {creative_direction_data.get('tone', '')}")
+
         protagonist = creative_direction_data.get("protagonist_config", {})
-        if isinstance(protagonist, dict) and protagonist.get("character_count") != "none" and protagonist.get("archetype_summary"):
-            sections.append(f"- **Protagonist Archetype**: {protagonist.get('archetype_summary')}")
         constraints = creative_direction_data.get("creative_constraints", [])
-        if constraints:
-            sections.append("- **Creative Constraints**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
+        has_protagonist = (
+            isinstance(protagonist, dict)
+            and protagonist.get("character_count") != "none"
+            and protagonist.get("archetype_summary")
+        )
+
+        if has_protagonist or constraints:
+            sections.append(
+                "\n### Production Directives & Internal Guardrails (INTERNAL ONLY — DO NOT NARRATE)\n"
+                "[CRITICAL: The items below are backstage production instructions, factual boundaries, and character staging notes. "
+                "They are strictly internal guardrails. NEVER narrate these instructions or use phrases like 'fictional character', "
+                "'representative farmer', 'hypothetical figure', or 'creative constraint' in the spoken script. "
+                "Ground characters naturally in active storytelling without breaking the fourth wall.]"
+            )
+            if has_protagonist:
+                sections.append(f"- **Character Staging / Protagonist Archetype (Internal Note)**: {protagonist.get('archetype_summary')}")
+            if constraints:
+                sections.append("- **Factual & Creative Guardrails (Internal Notes)**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
 
     if target_duration_range or target_word_range:
         min_d, max_d = target_duration_range or (35.0, 45.0)
@@ -931,10 +996,11 @@ def build_script_prompt(
     min_w_str = f"between {target_word_range[0]} and {target_word_range[1]} words" if target_word_range else "within the target word count"
     sections.append(
         "\n## Instructions\n"
-        "Plan one connected story arc (hook -> immediate answer -> progressive cause-and-effect -> memorable payoff) "
+        "Plan one connected story arc (hook -> immediate reveal/development -> progressive cause-and-effect -> memorable payoff) "
         f"and generate a structured script whose narration is strictly {min_w_str}, "
         "written in natural, conversational spoken English, avoiding textbook formulations, redundant summary lines, "
-        "repetitive sentence openings, or circular explanations, and conforming to the ScriptOutput schema."
+        "repetitive sentence openings, circular explanations, deflated question hooks, or vocalized backstage production notes, "
+        "and conforming to the ScriptOutput schema."
     )
 
     return "\n".join(sections)
