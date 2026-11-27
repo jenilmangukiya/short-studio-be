@@ -49,6 +49,32 @@ def load_prompt_template(path: Path = PROMPT_FILE_PATH) -> tuple[str, str]:
     return content, f"cd-rules-{content_hash}"
 
 
+def filter_conflicting_channel_settings(
+    channel_settings: dict[str, Any] | None,
+    has_active_preset: bool = True,
+) -> dict[str, Any]:
+    """Filter out conflicting artistic instructions inherited from channel settings.
+
+    Preserves unrelated channel preferences such as tone, target audience, voice speed,
+    brand colors, etc., while ensuring the active visual style preset remains the single
+    source of truth for artistic presentation.
+    """
+    if not channel_settings:
+        return {}
+    if not has_active_preset:
+        return dict(channel_settings)
+
+    conflicting_artistic_keys = {
+        "visual_style", "style_prompt", "visual_direction", "aesthetic",
+        "artistic_direction", "rendering_style", "art_style", "render_style",
+        "drawing_style"
+    }
+    return {
+        k: v for k, v in channel_settings.items()
+        if k.lower() not in conflicting_artistic_keys
+    }
+
+
 def build_creative_direction_prompt(
     rules_text: str,
     topic: str,
@@ -58,6 +84,8 @@ def build_creative_direction_prompt(
     channel_settings: dict[str, Any] | None = None,
     previous_creative_direction: dict[str, Any] | None = None,
     revision_instruction: str | None = None,
+    visual_style_snapshot: dict[str, Any] | None = None,
+    visual_style_id: str | None = None,
 ) -> str:
     """Build the complete prompt for creative direction generation."""
     sections: list[str] = [rules_text, "\n## Project Context"]
@@ -66,6 +94,29 @@ def build_creative_direction_prompt(
     if description:
         sections.append(f"- **Topic Description / Additional Details**: {description}")
 
+    # Inject frozen canonical visual style context if present
+    if visual_style_snapshot or visual_style_id:
+        sections.append("\n### Visual Style Context (Canonical Single Source of Truth)")
+        style_id = visual_style_id or (visual_style_snapshot.get("id") if visual_style_snapshot else None)
+        if style_id:
+            sections.append(f"- **Visual Style ID**: {style_id}")
+        if visual_style_snapshot:
+            d_name = visual_style_snapshot.get("display_name")
+            desc = visual_style_snapshot.get("description")
+            art = visual_style_snapshot.get("art_direction") or {}
+            if d_name:
+                sections.append(f"- **Style Name**: {d_name}")
+            if desc:
+                sections.append(f"- **Style Summary**: {desc}")
+            if art.get("rendering_texture"):
+                sections.append(f"- **Rendering Texture**: {art.get('rendering_texture')}")
+            if art.get("lighting_philosophy"):
+                sections.append(f"- **Lighting Philosophy**: {art.get('lighting_philosophy')}")
+        sections.append(
+            "- **Note**: Artistic rendering and visual presentation are governed canonical by this frozen visual style preset. "
+            "Creative Direction defines the narrative structure, emotional progression, storytelling angle, and human presence."
+        )
+
     if channel_name or channel_niche or channel_settings:
         sections.append("\n### Channel Context")
         if channel_name:
@@ -73,13 +124,11 @@ def build_creative_direction_prompt(
         if channel_niche:
             sections.append(f"- **Niche**: {channel_niche}")
         if channel_settings:
-            # Avoid exposing internal secrets, pass relevant visual/brand settings
-            brand_keys = {
-                k: v for k, v in channel_settings.items()
-                if k in ("visual_style", "style_prompt", "visual_direction", "tone", "target_audience")
-            }
-            if brand_keys:
-                sections.append(f"- **Brand Settings**: {json.dumps(brand_keys)}")
+            # If a visual style preset is active, filter out conflicting artistic prompt strings from channel settings
+            has_preset = bool(visual_style_snapshot or visual_style_id)
+            filtered_settings = filter_conflicting_channel_settings(channel_settings, has_active_preset=has_preset)
+            if filtered_settings:
+                sections.append(f"- **Brand Settings**: {json.dumps(filtered_settings)}")
 
     if previous_creative_direction and revision_instruction:
         sections.append("\n## REVISION MODE")
@@ -93,7 +142,7 @@ def build_creative_direction_prompt(
     sections.append(
         "\n## Instructions\n"
         "Generate a structured CreativeDirectionOutput conforming strictly to the schema. "
-        "Select the most appropriate format archetype and visual genre for this topic.\n"
+        "Select the most appropriate format archetype, storytelling angle, and emotional arc for this topic.\n"
         "Apply the balanced character and subject selection guidelines:\n"
         "- When the topic explores human bodily sensations, sleep, dreams, emotions, or physical reflexes, strongly consider defining a relatable human character/subject.\n"
         "- When the topic involves historical crises, disasters, or societal impacts affecting people, consider human_presence='contextual' to represent witnesses, workers, or communities without forcing a recurring hero.\n"
@@ -164,6 +213,8 @@ def generate_creative_direction_step(
         channel_settings=channel_settings,
         previous_creative_direction=previous_cd,
         revision_instruction=step.user_prompt,
+        visual_style_snapshot=getattr(video, "visual_style_snapshot", None),
+        visual_style_id=getattr(video, "visual_style_id", None),
     )
 
     llm = get_llm(task="creative_direction")

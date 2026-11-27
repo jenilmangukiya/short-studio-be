@@ -295,14 +295,14 @@ def test_feasibility_new_image_needed_technique_mismatch():
         narration_text="Looking at the internal schematic.",
         visual_description="Cross-section diagram illustrating internal logic gates.",
         shot_type="cutaway",
-        visual_technique="cutaway-diagram",
+        visual_technique="diagram",
     )
     parent = SceneInput(
         visual_intent="environmental_context",
         narration="Photo of the computer case exterior.",
         image_prompt="Clean studio photo of a sleek aluminum computer chassis.",
         shot_type="medium",
-        visual_technique="cinematic-photo",
+        visual_technique="cinematic_illustration",
     )
 
     res = evaluate_beat_crop_feasibility(beat=beat, parent_scene=parent)

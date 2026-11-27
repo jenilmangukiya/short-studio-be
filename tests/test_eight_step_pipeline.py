@@ -194,12 +194,11 @@ def test_schemas_instantiation():
         storytelling_angle="why sleep fall occurs",
         central_thesis="Hypnic jerk is a motor transition twitch",
         tone="conversational",
-        visual_genre="styled_3d",
         protagonist_config={"human_presence": "single", "archetype_summary": "Alex the sleeper"},
         emotional_progression=[{"phase": "hook", "target_emotion": "curiosity", "visual_intent": "dark bedroom"}],
         creative_constraints=["Keep in bedroom"],
     )
-    assert cd.visual_genre == "styled_3d"
+    assert cd.format_archetype == "explainer_myth_bust"
     assert cd.protagonist_config.human_presence == "single"
 
     vb = VideoBibleOutput(

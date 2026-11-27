@@ -270,62 +270,6 @@ def slice_concept_for_beat(
     return sliced_elements, focused_explained, focused_analogy
 
 
-def _has_bedroom_context(
-    entities: dict[str, Any],
-    creative_direction: dict[str, Any] | None = None,
-    video_topic: str | None = None,
-    art_dir: dict[str, Any] | None = None,
-) -> bool:
-    """Check whether the video topic or production entities actually involve a bedroom or sleep setting."""
-    def _extract_val(obj: Any, field: str, default: Any = None) -> Any:
-        if obj is None:
-            return default
-        if isinstance(obj, dict):
-            return obj.get(field, default)
-        return getattr(obj, field, default)
-
-    # 1. Check environments
-    envs = entities.get("environments") or []
-    for e in envs:
-        e_str = (
-            f"{_extract_val(e, 'id', '')} {_extract_val(e, 'name', '')} {_extract_val(e, 'spatial_layout', '')}"
-        ).lower()
-        if any(term in e_str for term in ("bedroom", "bedside", "bedding", "mattress", "pillow", "duvet")):
-            return True
-
-    # 2. Check concepts
-    concepts = entities.get("concepts") or entities.get("concepts_and_diagrams") or []
-    for cp in concepts:
-        cp_str = (
-            f"{_extract_val(cp, 'name', '')} {_extract_val(cp, 'concept_explained', '')} {_extract_val(cp, 'visual_analogy', '')}"
-        ).lower()
-        if any(term in cp_str for term in ("bedroom", "bedside", "bedding", "sleeper", "sleep onset", "in the bed", "into the bed")):
-            return True
-
-    # 3. Check art direction
-    if art_dir:
-        ad_str = (
-            f"{art_dir.get('rendering_texture', '')} {' '.join(str(a) for a in art_dir.get('negative_anchors', []))}"
-        ).lower()
-        if any(term in ad_str for term in ("bedroom", "bedding", "sleeper")):
-            return True
-
-    # 4. Check creative direction and topic
-    cd_dict = (
-        creative_direction.model_dump()
-        if hasattr(creative_direction, "model_dump")
-        else dict(creative_direction) if creative_direction else {}
-    )
-    story_angle = str(cd_dict.get("storytelling_angle", "")).lower()
-    thesis = str(cd_dict.get("central_thesis", "")).lower()
-    topic_str = str(video_topic or "").lower()
-
-    return any(
-        term in story_angle or term in thesis or term in topic_str
-        for term in ("bedroom", "sleep", "hypnic", "sleeper", "insomnia", "bedtime")
-    )
-
-
 INTERIOR_LOCATION_REGEX = re.compile(
     r"\b(?:"
     r"interior|inside|indoor|"
@@ -472,16 +416,105 @@ def _clean_rule_text(rule_text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _normalize_negative_constraint(text: str) -> str:
+    """Normalize a negative constraint for robust deduplication across formats."""
+    t = text.lower().strip()
+    t = re.sub(r"^(?:no|avoid|never|do not|don't|without)\s+", "", t)
+    t = re.sub(r"^(?:depict(?:ing)?|show(?:ing)?|use|using)\s+", "", t)
+    t = re.sub(r"^(?:a|an|the)\s+", "", t)
+    t = re.sub(r"[^\w\s]", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def determine_concept_presentation_mode(
+    scene_or_beat: Any,
+    has_bound_concept: bool,
+) -> str:
+    """Determine the presentation mode for a bound concept.
+
+    Returns one of:
+      - 'diagram': Dedicated conceptual visualization (schematic, technical illustration, diagram).
+      - 'in_scene': In-scene explanation where conceptual cues appear within the environment.
+      - 'context_only': Factual knowledge context informing scene without graphical presentation.
+      - 'none': When no concept is bound.
+    """
+    if not has_bound_concept:
+        return "none"
+
+    def _extract_val(obj: Any, field: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return getattr(obj, field, default)
+
+    tech = str(_extract_val(scene_or_beat, "visual_technique", "") or "").lower().strip()
+    shot_type = str(_extract_val(scene_or_beat, "shot_type", "") or "").lower().strip()
+    camera = _extract_val(scene_or_beat, "camera")
+    if not shot_type and isinstance(camera, dict):
+        shot_type = str(camera.get("shot_type") or "").lower().strip()
+    elif not shot_type and hasattr(camera, "shot_type"):
+        shot_type = str(getattr(camera, "shot_type", "") or "").lower().strip()
+
+    # Check whether an environment or character is actively bound / present
+    bindings = _extract_val(scene_or_beat, "entity_bindings")
+    env_id = None
+    char_id = None
+    if isinstance(bindings, dict):
+        env_id = bindings.get("environment_id")
+        char_id = bindings.get("character_id")
+    elif hasattr(bindings, "environment_id"):
+        env_id = getattr(bindings, "environment_id", None)
+        char_id = getattr(bindings, "character_id", None)
+    if not env_id:
+        env_id = _extract_val(scene_or_beat, "environment_id")
+    if not char_id:
+        char_id = _extract_val(scene_or_beat, "character_id")
+
+    env_desc = str(_extract_val(scene_or_beat, "environment", "") or "").strip()
+    env_override = str(_extract_val(scene_or_beat, "environment_state_override", "") or "").strip()
+    has_env = bool(env_id or env_desc or env_override)
+    has_char = bool(char_id)
+
+    # 1. Explicit canonical visual technique controls presentation:
+    if tech in ("diagram", "standalone_diagram", "schematic", "technical_illustration", "infographic"):
+        return "diagram"
+    if tech in ("in_scene_cue", "thematic_cue", "in_scene", "symbolic_cue"):
+        return "in_scene"
+    if tech in ("cinematic_illustration", "physical_close_up", "macro", "macro_detail", "cinematic"):
+        return "context_only"
+    if tech in ("cutaway",):
+        # A physical cutaway within an environment remains context_only / physical cross-section
+        if has_env:
+            return "context_only"
+        return "diagram"
+
+    # If no environment and no character are bound, a bound concept is a standalone diagram
+    if not has_env and not has_char:
+        return "diagram"
+
+    if any(t in tech for t in ("diagram", "schematic", "causal-chain", "causal_chain", "infographic")):
+        return "diagram"
+    if any(t in tech for t in ("cue", "in_scene", "in-scene")):
+        return "in_scene"
+
+    # Default to context_only
+    return "context_only"
+
+
 def _extract_world_negative_constraints(
     art_dir: dict[str, Any],
     creative_direction: dict[str, Any] | None = None,
     is_standalone_concept: bool = False,
+    beat_context_text: str = "",
 ) -> list[str]:
     """Extract story-wide world, era, and visual negative constraints.
 
     These constraints apply across all scenes in the video (including scenes
     without a bound character), preventing anachronisms (e.g. modern clothing
     in a historical era) and visual contradictions.
+    Separates planning-only instructions from visual constraints and filters
+    context-dependent negatives (e.g. ocean constraints apply only when relevant).
     """
     world_negatives: list[str] = []
 
@@ -492,7 +525,7 @@ def _extract_world_negative_constraints(
         if not s:
             continue
         lower = s.lower()
-        if is_standalone_concept and any(term in lower for term in ("sleeper", "character", "bedroom", "person")):
+        if is_standalone_concept and any(term in lower for term in ("character", "person", "human figure", "protagonist")):
             continue
         if s not in world_negatives:
             world_negatives.append(s)
@@ -505,7 +538,7 @@ def _extract_world_negative_constraints(
             if not t:
                 continue
             lower_t = t.lower()
-            if is_standalone_concept and any(term in lower_t for term in ("sleeper", "bedroom")):
+            if is_standalone_concept and any(term in lower_t for term in ("character", "person", "human figure", "protagonist")):
                 continue
             if t not in world_negatives:
                 world_negatives.append(t)
@@ -523,6 +556,18 @@ def _extract_world_negative_constraints(
             if not c_str:
                 continue
             lower_c = c_str.lower()
+            # Filter out planning-only commentary, script direction, layout instructions, or editorial compound sentences
+            is_planning_commentary = (
+                any(term in lower_c for term in (
+                    "treat as", "metaphorical hook", "caption-safe", "lower third",
+                    "imply that", "suggest that", "editorial", "voiceover", "scripting",
+                    "historical fact", "crowd the lower", "pacing", "thesis"
+                ))
+                or ";" in c_str
+            )
+            if is_planning_commentary:
+                continue
+
             is_negative = lower_c.startswith(("never ", "no ", "do not ", "don't ", "avoid ", "without "))
             is_world_visual = any(w in lower_c for w in (
                 "depict", "show", "clothing", "modern", "technology", "era", "vehicle",
@@ -899,23 +944,12 @@ def _compose_connected_final_prompt(
                     char_desc += f". Character state: {', '.join(state_bits)}"
             spec_segments.append(_clean_segment(char_desc))
 
-        # Segment 3: Bound Concept Diagram OR Bound Environment (adapted via adapt_concept / adapt_environment)
-        # Check whether this beat needs a concept diagram or is an environmental/narrative moment
-        is_diagram_beat = False
-        if concept_id and concept_id in concepts_by_id:
-            shot_type_lower = shot_type.lower()
-            tech_lower = str(_extract(scene, "visual_technique", "") or "").lower()
-            trans_lower = transition.lower()
-            is_explicit_diagram = (
-                shot_type_lower in ("diagram", "cutaway", "cross-section")
-                or any(t in tech_lower for t in ("diagram", "schematic", "cutaway", "cross-section", "technical", "infographic"))
-                or trans_lower in ("explanatory_cutaway", "surreal_metaphor")
-            )
-            # If no environment is bound, concept diagram acts as the primary spatial setting
-            is_diagram_beat = is_explicit_diagram or not (env_id and env_id in envs_by_id)
-
+        # Segment 3: Bound Concept Presentation OR Bound Environment (adapted via adapt_concept / adapt_environment)
+        presentation_mode = determine_concept_presentation_mode(scene, bool(concept_id and concept_id in concepts_by_id))
         env_additional_negs: list[str] = []
-        if concept_id and concept_id in concepts_by_id and is_diagram_beat:
+
+        if presentation_mode == "diagram":
+            # Mode 3: Standalone diagram - dedicated conceptual visualization
             cp_entry = concepts_by_id[concept_id]
             sliced_elems, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
             adapted_cp = adapt_concept(
@@ -926,25 +960,40 @@ def _compose_connected_final_prompt(
                 focused_analogy=foc_ana,
             )
             spec_segments.append(_clean_segment(adapted_cp.adapted_description))
-        elif env_id and env_id in envs_by_id:
-            e_entry = envs_by_id[env_id]
-            sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
-            light_override = env_override if (env_override and any(w in str(env_override).lower() for w in ("light", "shadow", "dark", "glow", "torch", "candle", "lamp", "sun", "moon"))) else None
-            adapted_env = adapt_environment(
-                e_entry,
-                resolved_preset,
-                relevant_props=sliced_props,
-                include_spatial_layout=incl_layout,
-                local_setting=local_set,
-                lighting_override=light_override,
-            )
-            env_desc = adapted_env.adapted_description
-            if env_override and not light_override:
-                env_desc += f". Condition: {env_override}"
-            spec_segments.append(_clean_segment(env_desc))
-            env_additional_negs = env_negs
-        elif env_override:
-            spec_segments.append(_clean_segment(f"Environment setting: {env_override}"))
+            if env_id and env_id in envs_by_id:
+                e_entry = envs_by_id[env_id]
+                _, _, _, env_negs = slice_environment_for_beat(e_entry, scene)
+                env_additional_negs = env_negs
+        else:
+            # Modes: "context_only", "in_scene", or "none" -> preserve environment and character bindings
+            if env_id and env_id in envs_by_id:
+                e_entry = envs_by_id[env_id]
+                sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
+                light_override = env_override if (env_override and any(w in str(env_override).lower() for w in ("light", "shadow", "dark", "glow", "torch", "candle", "lamp", "sun", "moon"))) else None
+                adapted_env = adapt_environment(
+                    e_entry,
+                    resolved_preset,
+                    relevant_props=sliced_props,
+                    include_spatial_layout=incl_layout,
+                    local_setting=local_set,
+                    lighting_override=light_override,
+                )
+                env_desc = adapted_env.adapted_description
+                if env_override and not light_override:
+                    env_desc += f". Condition: {env_override}"
+                spec_segments.append(_clean_segment(env_desc))
+                env_additional_negs = env_negs
+            elif env_override:
+                spec_segments.append(_clean_segment(f"Environment setting: {env_override}"))
+
+            # Mode 2: In-scene explanation -> append thematic in-scene visual cues without full diagram overlay
+            if presentation_mode == "in_scene" and concept_id and concept_id in concepts_by_id:
+                cp_entry = concepts_by_id[concept_id]
+                _, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
+                cue = foc_ana or foc_exp or _extract(cp_entry, "visual_analogy") or _extract(cp_entry, "name")
+                if cue:
+                    spec_segments.append(_clean_segment(f"Thematic in-scene cue: {cue}"))
+            # Mode 1: Context only -> concept informs context, no diagram elements appended
 
         # Segment 4: Bound Props (adapted via adapt_object)
         if obj_ids:
@@ -1004,22 +1053,25 @@ def _compose_connected_final_prompt(
             spec_segments.append(_clean_segment(f"Color palette: {'; '.join(palette_parts)}"))
 
         # Segment 8: Negative Constraints & Avoidances
-        is_standalone_concept = bool(concept_id and not char_id)
+        is_standalone_concept = bool(concept_id and not char_id and presentation_mode == "diagram")
         neg_anchors: list[str] = list(resolved_preset.negative_prompt_anchors or [])
+        existing_norms: set[str] = {_normalize_negative_constraint(a) for a in neg_anchors if a}
+
+        beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
 
         # Add global world/era constraints (applies to all scenes, including when character_id is None)
         world_constraints = _extract_world_negative_constraints(
             art_dir=art_dir,
             creative_direction=creative_direction,
             is_standalone_concept=is_standalone_concept,
+            beat_context_text=beat_full_text,
         )
         for wc in world_constraints:
             clean_wc = wc.strip()
-            lower_wc = clean_wc.lower()
-            norm_wc = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_wc)
-            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
-            if norm_wc not in existing_norms:
+            norm_wc = _normalize_negative_constraint(clean_wc)
+            if norm_wc and not any(norm_wc == en or norm_wc in en or en in norm_wc for en in existing_norms):
                 neg_anchors.append(clean_wc)
+                existing_norms.add(norm_wc)
 
         # Character forbidden mutations (strictly character-specific: applied ONLY when this character is bound)
         if char_id and char_id in chars_by_id:
@@ -1027,38 +1079,49 @@ def _compose_connected_final_prompt(
             c_mutations = _extract(c_entry, "forbidden_mutations") or []
             for mut in c_mutations:
                 m_str = str(mut).strip()
-                if m_str and m_str not in neg_anchors:
+                norm_m = _normalize_negative_constraint(m_str)
+                if m_str and norm_m and not any(norm_m == en or norm_m in en or en in norm_m for en in existing_norms):
                     neg_anchors.append(m_str)
+                    existing_norms.add(norm_m)
 
-        # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements ONLY when bedroom context exists
-        has_bedroom = _has_bedroom_context(
-            entities=entities,
-            creative_direction=creative_direction,
-            video_topic=video_topic,
-            art_dir=art_dir,
-        )
-        if is_standalone_concept and has_bedroom:
-            if not any("bedroom" in r.lower() for r in neg_anchors):
-                neg_anchors.append("no bedroom setting")
+        # Standalone conceptual explanation beats: strictly forbid physical narrative settings from the project's registered environments
+        if is_standalone_concept:
+            for env_obj in (entities.get("environments") or []):
+                env_nm = str(env_obj.get("name") if isinstance(env_obj, dict) else getattr(env_obj, "name", "")).strip()
+                if env_nm:
+                    setting_rule = f"no {env_nm.lower()} setting"
+                    if setting_rule not in neg_anchors:
+                        neg_anchors.append(setting_rule)
+                        existing_norms.add(_normalize_negative_constraint(setting_rule))
+                    for setting_type in ("bedroom", "kitchen", "office", "classroom", "laboratory", "cabin", "hall", "farm", "farmland", "caldera"):
+                        if setting_type in env_nm.lower():
+                            st_rule = f"no {setting_type} setting"
+                            if st_rule not in neg_anchors:
+                                neg_anchors.append(st_rule)
+                                existing_norms.add(_normalize_negative_constraint(st_rule))
+
+            # If legacy art direction explicitly specified keeping a bedroom setting, negate it in standalone diagrams
+            if not any(e for e in (entities.get("environments") or [])):
+                ad_negs = [str(a).lower() for a in (art_dir.get("negative_anchors") or [])]
+                if any("bedroom" in a for a in ad_negs) and "no bedroom setting" not in neg_anchors:
+                    neg_anchors.append("no bedroom setting")
+                    existing_norms.add("bedroom setting")
 
         # Scarcity / famine / crop failure targeted negative constraints
-        beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
         scarcity_negatives = extract_scarcity_negative_constraints(beat_full_text)
         for sn in scarcity_negatives:
             clean_sn = sn.strip()
-            lower_sn = clean_sn.lower()
-            norm_sn = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_sn)
-            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
-            if norm_sn not in existing_norms:
+            norm_sn = _normalize_negative_constraint(clean_sn)
+            if norm_sn and not any(norm_sn == en or norm_sn in en or en in norm_sn for en in existing_norms):
                 neg_anchors.append(clean_sn)
+                existing_norms.add(norm_sn)
 
         for en in env_additional_negs:
             clean_en = en.strip()
-            lower_en = clean_en.lower()
-            norm_en = re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", lower_en)
-            existing_norms = {re.sub(r"^(?:no|avoid|never|do not|don't)\s+", "", a.lower()) for a in neg_anchors}
-            if norm_en not in existing_norms:
+            norm_en = _normalize_negative_constraint(clean_en)
+            if norm_en and not any(norm_en == en or norm_en in en or en in norm_en for en in existing_norms):
                 neg_anchors.append(clean_en)
+                existing_norms.add(norm_en)
 
         if neg_anchors:
             spec_segments.append(_clean_segment(f"Avoid: {', '.join(neg_anchors)}"))
@@ -1143,21 +1206,12 @@ def _compose_connected_final_prompt(
                 char_desc += f". Character state: {', '.join(state_bits)}"
         segments.append(_clean_segment(char_desc))
 
-    # Segment 3: Bound Concept Diagram OR Bound Environment
-    is_diagram_beat = False
+    # Segment 3: Bound Concept Presentation OR Bound Environment
+    presentation_mode = determine_concept_presentation_mode(scene, bool(concept_id and concept_id in concepts_by_id))
     env_additional_negs: list[str] = []
-    if concept_id and concept_id in concepts_by_id:
-        shot_type_lower = shot_type.lower()
-        tech_lower = str(_extract(scene, "visual_technique", "") or "").lower()
-        trans_lower = transition.lower()
-        is_explicit_diagram = (
-            shot_type_lower in ("diagram", "cutaway", "cross-section")
-            or any(t in tech_lower for t in ("diagram", "schematic", "cutaway", "cross-section", "technical", "infographic"))
-            or trans_lower in ("explanatory_cutaway", "surreal_metaphor")
-        )
-        is_diagram_beat = is_explicit_diagram or not (env_id and env_id in envs_by_id)
 
-    if concept_id and concept_id in concepts_by_id and is_diagram_beat:
+    if presentation_mode == "diagram":
+        # Mode 3: Standalone diagram - dedicated conceptual visualization
         cp_entry = concepts_by_id[concept_id]
         cp_name = _extract(cp_entry, "name", "")
         sliced_elems, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
@@ -1172,30 +1226,45 @@ def _compose_connected_final_prompt(
         if cp_rules:
             cpt_desc += f". Styling: {cp_rules}"
         segments.append(_clean_segment(cpt_desc))
-    elif env_id and env_id in envs_by_id:
-        e_entry = envs_by_id[env_id]
-        e_name = _extract(e_entry, "name", "")
-        e_desc = _extract(e_entry, "spatial_layout") or _extract(e_entry, "description", "")
-        e_light = _extract(e_entry, "lighting_setup") or _extract(e_entry, "lighting", "")
-        sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
+        if env_id and env_id in envs_by_id:
+            e_entry = envs_by_id[env_id]
+            _, _, _, env_negs = slice_environment_for_beat(e_entry, scene)
+            env_additional_negs = env_negs
+    else:
+        # Modes: "context_only", "in_scene", or "none" -> preserve environment and character bindings
+        if env_id and env_id in envs_by_id:
+            e_entry = envs_by_id[env_id]
+            e_name = _extract(e_entry, "name", "")
+            e_desc = _extract(e_entry, "spatial_layout") or _extract(e_entry, "description", "")
+            e_light = _extract(e_entry, "lighting_setup") or _extract(e_entry, "lighting", "")
+            sliced_props, incl_layout, local_set, env_negs = slice_environment_for_beat(e_entry, scene)
 
-        setting_name = local_set or e_name
-        setting_desc = e_desc if (incl_layout and not local_set) else ""
-        env_desc = f"Environment setting: {setting_name}"
-        if setting_desc:
-            env_desc += f", {setting_desc}"
-        if sliced_props:
-            env_desc += f". Persistent props: {'; '.join(str(p) for p in sliced_props)}"
-        if env_override:
-            env_desc += f". Condition: {env_override}"
-        if e_light and e_light.lower() not in lighting_phil.lower():
-            env_desc += f". Lighting: {e_light}"
-        segments.append(_clean_segment(env_desc))
-        env_additional_negs = env_negs
-    elif env_override:
-        segments.append(_clean_segment(f"Environment setting: {env_override}"))
-    elif lighting_phil:
-        segments.append(_clean_segment(f"Lighting: {lighting_phil}"))
+            setting_name = local_set or e_name
+            setting_desc = e_desc if (incl_layout and not local_set) else ""
+            env_desc = f"Environment setting: {setting_name}"
+            if setting_desc:
+                env_desc += f", {setting_desc}"
+            if sliced_props:
+                env_desc += f". Persistent props: {'; '.join(str(p) for p in sliced_props)}"
+            if env_override:
+                env_desc += f". Condition: {env_override}"
+            if e_light and e_light.lower() not in lighting_phil.lower():
+                env_desc += f". Lighting: {e_light}"
+            segments.append(_clean_segment(env_desc))
+            env_additional_negs = env_negs
+        elif env_override:
+            segments.append(_clean_segment(f"Environment setting: {env_override}"))
+        elif lighting_phil:
+            segments.append(_clean_segment(f"Lighting: {lighting_phil}"))
+
+        # Mode 2: In-scene explanation -> append thematic in-scene visual cues without full diagram overlay
+        if presentation_mode == "in_scene" and concept_id and concept_id in concepts_by_id:
+            cp_entry = concepts_by_id[concept_id]
+            _, foc_exp, foc_ana = slice_concept_for_beat(cp_entry, scene)
+            cue = foc_ana or foc_exp or _extract(cp_entry, "visual_analogy") or _extract(cp_entry, "name")
+            if cue:
+                segments.append(_clean_segment(f"Thematic in-scene cue: {cue}"))
+        # Mode 1: Context only -> concept informs context, no diagram elements appended
 
     # Segment 4: Bound Props (ONLY if explicitly listed in object_ids)
     if obj_ids:
@@ -1242,14 +1311,18 @@ def _compose_connected_final_prompt(
         segments.append(_clean_segment(f"Color palette: {palette_str}"))
 
     # Segment 8: Continuity Rules and Negative Constraints
+    is_standalone_concept = bool(concept_id and not char_id and presentation_mode == "diagram")
+    beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
     world_constraints = _extract_world_negative_constraints(
         art_dir=art_dir,
         creative_direction=creative_direction,
         is_standalone_concept=is_standalone_concept,
+        beat_context_text=beat_full_text,
     )
 
     continuity_rules: list[str] = []
     negative_rules: list[str] = []
+    existing_norms: set[str] = set()
 
     prohibitive_prefixes = ("no ", "never ", "do not ", "don't ", "avoid ", "without ", "stop ")
     affirmative_prefixes = ("keep ", "maintain ", "ensure ", "always ")
@@ -1260,15 +1333,17 @@ def _compose_connected_final_prompt(
             continue
         lower = s.lower()
         if any(lower.startswith(p) for p in affirmative_prefixes):
-            # In standalone conceptual explanation beats, omit continuity rules mandating sleeper or bedroom
-            if concept_id and not char_id and any(term in lower for term in ("sleeper", "character", "bedroom", "person")):
+            # In standalone conceptual explanation beats, omit continuity rules mandating characters or settings
+            if concept_id and not char_id and any(term in lower for term in ("sleeper", "character", "bedroom", "person", "human figure", "protagonist")):
                 continue
             if s not in continuity_rules:
                 continuity_rules.append(s)
         else:
             clean_neg = s if any(lower.startswith(p) for p in prohibitive_prefixes) else f"no {s}"
-            if clean_neg not in negative_rules:
+            norm = _normalize_negative_constraint(clean_neg)
+            if norm and not any(norm == en or norm in en or en in norm for en in existing_norms):
                 negative_rules.append(clean_neg)
+                existing_norms.add(norm)
 
     # Character forbidden mutations (only when a character is actively bound)
     if char_id and char_id in chars_by_id:
@@ -1280,32 +1355,49 @@ def _compose_connected_final_prompt(
                 continue
             lower_m = m_str.lower()
             clean_m = m_str if any(lower_m.startswith(p) for p in prohibitive_prefixes) else f"no {m_str}"
-            if clean_m not in negative_rules:
+            norm = _normalize_negative_constraint(clean_m)
+            if norm and not any(norm == en or norm in en or en in norm for en in existing_norms):
                 negative_rules.append(clean_m)
+                existing_norms.add(norm)
 
-    # Standalone conceptual explanation beats: strictly forbid physical bedroom/sleeper elements ONLY when bedroom context exists
-    has_bedroom = _has_bedroom_context(
-        entities=entities,
-        creative_direction=creative_direction,
-        video_topic=video_topic,
-        art_dir=art_dir,
-    )
-    if concept_id and not char_id and has_bedroom:
-        if not any("bedroom" in r.lower() for r in negative_rules):
-            negative_rules.append("no bedroom setting")
+    # Standalone conceptual explanation beats: strictly forbid physical narrative settings from the project's registered environments
+    if is_standalone_concept:
+        for env_obj in (entities.get("environments") or []):
+            env_nm = str(env_obj.get("name") if isinstance(env_obj, dict) else getattr(env_obj, "name", "")).strip()
+            if env_nm:
+                setting_rule = f"no {env_nm.lower()} setting"
+                if setting_rule not in negative_rules:
+                    negative_rules.append(setting_rule)
+                    existing_norms.add(_normalize_negative_constraint(setting_rule))
+                for setting_type in ("bedroom", "kitchen", "office", "classroom", "laboratory", "cabin", "hall", "farm", "farmland", "caldera"):
+                    if setting_type in env_nm.lower():
+                        st_rule = f"no {setting_type} setting"
+                        if st_rule not in negative_rules:
+                            negative_rules.append(st_rule)
+                            existing_norms.add(_normalize_negative_constraint(st_rule))
+
+        # If legacy art direction explicitly specified keeping a bedroom setting, negate it in standalone diagrams
+        if not any(e for e in (entities.get("environments") or [])):
+            ad_negs = [str(a).lower() for a in (art_dir.get("negative_anchors") or [])]
+            if any("bedroom" in a for a in ad_negs) and "no bedroom setting" not in negative_rules:
+                negative_rules.append("no bedroom setting")
+                existing_norms.add("bedroom setting")
 
     # Scarcity / famine / crop failure targeted negative constraints
-    beat_full_text = f"{narr} {visual_desc} {focal_point} {action_text}"
     scarcity_negatives = extract_scarcity_negative_constraints(beat_full_text)
     for sn in scarcity_negatives:
         clean_sn = sn if any(sn.lower().startswith(p) for p in prohibitive_prefixes) else f"no {sn}"
-        if clean_sn not in negative_rules:
+        norm = _normalize_negative_constraint(clean_sn)
+        if norm and not any(norm == en or norm in en or en in norm for en in existing_norms):
             negative_rules.append(clean_sn)
+            existing_norms.add(norm)
 
     for en in env_additional_negs:
         clean_en = en if any(en.lower().startswith(p) for p in prohibitive_prefixes) else f"no {en}"
-        if clean_en not in negative_rules:
+        norm = _normalize_negative_constraint(clean_en)
+        if norm and not any(norm == en or norm in en or en in norm for en in existing_norms):
             negative_rules.append(clean_en)
+            existing_norms.add(norm)
 
     if continuity_rules:
         segments.append(_clean_segment(f"Continuity rules: {', '.join(continuity_rules)}"))

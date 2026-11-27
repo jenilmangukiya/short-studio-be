@@ -26,6 +26,7 @@ from app.schemas import (
     FoleyCue,
     StoryboardBeat,
     VisualIntentType,
+    VisualTechniqueType,
 )
 from app.steps.prompt_compose import (
     COMPOSITION_RULES,
@@ -86,6 +87,14 @@ ALLOWED_VISUAL_INTENTS: tuple[str, ...] = (
     "narrative_resolution",
 )
 
+ALLOWED_VISUAL_TECHNIQUES: tuple[str, ...] = (
+    "cinematic_illustration",
+    "physical_close_up",
+    "in_scene_cue",
+    "cutaway",
+    "diagram",
+)
+
 # Single source of truth for visual beat image sourcing strategies
 ALLOWED_IMAGE_STRATEGIES: tuple[str, ...] = (
     "reuse_scene_image",
@@ -133,6 +142,32 @@ FORBIDDEN_WORDS_REGEX = re.compile(
     r"\b(" + "|".join(re.escape(w) for w in FORBIDDEN_PROMPT_WORDS) + r")\b",
     flags=re.IGNORECASE,
 )
+
+
+def detect_forbidden_prompt_words(text: str) -> list[str]:
+    """Detect unwanted on-screen text, logo, or watermark requests while ignoring
+    legitimate negative instructions and caption-safe layout guidance.
+    """
+    if not text or not text.strip():
+        return []
+    cleaned = text
+    cleaned = re.sub(
+        r"\b(?:no|without|avoid|never|zero)\s+(?:visible\s+)?(?:text|words?|labels?|lettering|letters?|logos?|watermarks?|captions?|subtitles?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\b(?:caption|subtitle)[-\s]*(?:safe|space|area|margin|zone)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(?:lower\s+third|bottom\s+margin|calm\s+lower|uncluttered\s+lower|clear\s+lower)\s*(?:margin|area|third|space)?\s*(?:for|leaving\s+room\s+for|leaving\s+space\s+for)?\s*(?:captions?|subtitles?)?\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bleave\s+(?:lower\s+)?(?:caption|subtitle)[-\s]*safe\s+space\b", " ", cleaned, flags=re.IGNORECASE)
+
+    matches = {m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(cleaned)}
+    return sorted(list(matches))
 
 # Words that should not dangle at scene cut boundaries without terminal punctuation
 DANGLING_BOUNDARY_WORDS: frozenset[str] = frozenset({
@@ -301,9 +336,9 @@ class VisualBeat(BaseModel):
         default="",
         description="The primary subject or detail viewers should notice in this moment",
     )
-    visual_technique: str = Field(
-        default="cinematic-photo",
-        description="Visual technique (e.g. cinematic-photo, macro-photo, technical-illustration, cutaway-diagram)",
+    visual_technique: VisualTechniqueType = Field(
+        default="cinematic_illustration",
+        description="Canonical visual presentation technique",
     )
     image_strategy: ImageStrategy = Field(
         default="new_image",
@@ -378,9 +413,9 @@ class SceneInput(BaseModel):
         default="",
         description="The primary focal point of the image (e.g. passenger jet in clouds, highlighted window, tiny bleed hole, exploded 3-pane assembly)",
     )
-    visual_technique: str = Field(
-        default="cinematic-photo",
-        description="Visual technique (e.g. cinematic-photo, macro-photo, passenger-pov, technical-illustration, cutaway-diagram, schematic)",
+    visual_technique: VisualTechniqueType = Field(
+        default="cinematic_illustration",
+        description="Canonical visual presentation technique",
     )
     environment: str = Field(
         default="",
@@ -456,7 +491,8 @@ def normalize_scene_visual_beats(
     fallback_intent: VisualIntentType = sc_intent if sc_intent in ALLOWED_VISUAL_INTENTS else "environmental_context"
     fallback_angle = str(_extract_sc("camera_angle", "eye-level") or "eye-level").strip()
     fallback_focal = str(_extract_sc("focal_point", "") or "").strip()
-    fallback_tech = str(_extract_sc("visual_technique", "cinematic-photo") or "cinematic-photo").strip()
+    sc_tech = _extract_sc("visual_technique", "cinematic_illustration")
+    fallback_tech: VisualTechniqueType = sc_tech if sc_tech in ALLOWED_VISUAL_TECHNIQUES else "cinematic_illustration"
     fallback_purpose = str(_extract_sc("visual_purpose", "") or "").strip()
     fallback_prompt = str(_extract_sc("image_prompt", "") or "").strip()
     fallback_narration = str(_extract_sc("narration", "") or "").strip()
@@ -483,7 +519,7 @@ def normalize_scene_visual_beats(
                 shot_type=fallback_shot,
                 camera_angle=fallback_angle or "eye-level",
                 focal_point=fallback_focal,
-                visual_technique=fallback_tech or "cinematic-photo",
+                visual_technique=fallback_tech or "cinematic_illustration",
                 image_strategy="new_image",
                 source_image_id=str(scene_index),
                 entity_bindings=fallback_bindings,
@@ -527,7 +563,8 @@ def normalize_scene_visual_beats(
 
         b_angle = str(b_dict.get("camera_angle") or "").strip() or fallback_angle or "eye-level"
         b_focal = str(b_dict.get("focal_point") or "").strip() or fallback_focal
-        b_tech = str(b_dict.get("visual_technique") or "").strip() or fallback_tech or "cinematic-photo"
+        b_tech_raw = b_dict.get("visual_technique")
+        b_tech: VisualTechniqueType = b_tech_raw if b_tech_raw in ALLOWED_VISUAL_TECHNIQUES else fallback_tech
 
         b_strat_raw = b_dict.get("image_strategy")
         if b_strat_raw in ALLOWED_IMAGE_STRATEGIES:
@@ -587,7 +624,7 @@ def normalize_scene_visual_beats(
                 shot_type=fallback_shot,
                 camera_angle=fallback_angle or "eye-level",
                 focal_point=fallback_focal,
-                visual_technique=fallback_tech or "cinematic-photo",
+                visual_technique=fallback_tech or "cinematic_illustration",
                 image_strategy="new_image",
                 source_image_id=str(scene_index),
             )
@@ -749,7 +786,7 @@ def validate_storyboard_soft_checks(
             )
 
         # Forbidden words in subject_anchor (whole words only)
-        forbidden_anchor = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(anchor_str)}))
+        forbidden_anchor = detect_forbidden_prompt_words(anchor_str)
         if forbidden_anchor:
             warnings.append(
                 f"Subject anchor contains forbidden whole words: {forbidden_anchor}."
@@ -762,7 +799,7 @@ def validate_storyboard_soft_checks(
             warnings.append(
                 f"Environment anchor length is {len(env_str)} chars (target: at most 250 chars)."
             )
-        forbidden_env = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(env_str)}))
+        forbidden_env = detect_forbidden_prompt_words(env_str)
         if forbidden_env:
             warnings.append(
                 f"Environment anchor contains forbidden whole words: {forbidden_env}."
@@ -803,6 +840,12 @@ def validate_storyboard_soft_checks(
                 f"Scene {idx} has missing or invalid visual_intent '{sc_intent}'. Must be one of: {ALLOWED_VISUAL_INTENTS}."
             )
 
+        # Visual technique check: explicit and valid
+        if visual_technique and visual_technique not in ALLOWED_VISUAL_TECHNIQUES:
+            warnings.append(
+                f"Scene {idx} has missing or invalid visual_technique '{visual_technique}'. Must be one of: {ALLOWED_VISUAL_TECHNIQUES}."
+            )
+
         # Duration check (2.0 - 7.0 seconds)
         word_count = len(narr.split())
         est_sec = round(word_count / WORDS_PER_SECOND, 1)
@@ -838,7 +881,7 @@ def validate_storyboard_soft_checks(
                     f"Scene {idx} image prompt length is {len(img_prompt)} chars (target: at most {MAX_IMAGE_PROMPT_LENGTH} chars)."
                 )
 
-            forbidden_matches = sorted(list({m.lower() for m in FORBIDDEN_WORDS_REGEX.findall(img_prompt)}))
+            forbidden_matches = detect_forbidden_prompt_words(img_prompt)
             if forbidden_matches:
                 warnings.append(
                     f"Scene {idx} image prompt contains forbidden whole words: {forbidden_matches}."
@@ -927,6 +970,11 @@ def validate_storyboard_soft_checks(
                     warnings.append(
                         f"Scene {idx} visual beat {b_idx} has missing or invalid visual_intent '{b_intent}'. Must be one of: {ALLOWED_VISUAL_INTENTS}."
                     )
+                b_tech = b.get("visual_technique") if isinstance(b, dict) else getattr(b, "visual_technique", None)
+                if b_tech and b_tech not in ALLOWED_VISUAL_TECHNIQUES:
+                    warnings.append(
+                        f"Scene {idx} visual beat {b_idx} has missing or invalid visual_technique '{b_tech}'. Must be one of: {ALLOWED_VISUAL_TECHNIQUES}."
+                    )
                 b_strat = b.get("image_strategy") if isinstance(b, dict) else getattr(b, "image_strategy", "")
                 if b_strat and b_strat not in ALLOWED_IMAGE_STRATEGIES:
                     warnings.append(
@@ -978,7 +1026,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Establish subject and scale",
         "shot_type": "aerial",
         "camera_angle": "high-angle aerial",
-        "technique": "cinematic-photo",
+        "technique": "cinematic_illustration",
         "focal_point": "subject soaring above cloudscape",
         "prompt": "Wide aerial establishing shot capturing the primary subject high above rolling sunset clouds",
         "uses_anchor": False,
@@ -1001,7 +1049,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Direct attention to specific focus",
         "shot_type": "medium",
         "camera_angle": "exterior 45-degree angle",
-        "technique": "cinematic-photo",
+        "technique": "cinematic_illustration",
         "focal_point": "highlighted passenger window array",
         "prompt": "Exterior medium framing directing viewer focus towards the key component with focused illumination",
         "uses_anchor": True,
@@ -1024,7 +1072,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Reveal tiny detail and texture",
         "shot_type": "macro",
         "camera_angle": "extreme close-up 90-degree",
-        "technique": "macro-photo",
+        "technique": "physical_close_up",
         "focal_point": "miniature bleed opening and texture",
         "prompt": "Macro extreme close-up revealing fine physical detail and miniature circular opening in clear material",
         "uses_anchor": True,
@@ -1047,7 +1095,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Interior passenger perspective",
         "shot_type": "interior",
         "camera_angle": "passenger-perspective eye-level",
-        "technique": "passenger-pov",
+        "technique": "cinematic_illustration",
         "focal_point": "cabin frame looking outward",
         "prompt": "First-person passenger perspective from inside cabin looking past contoured bezel to distant sky",
         "uses_anchor": False,
@@ -1070,7 +1118,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Explain construction and layers",
         "shot_type": "cutaway",
         "camera_angle": "isometric technical cutaway",
-        "technique": "technical-illustration",
+        "technique": "cutaway",
         "focal_point": "three distinct separated layer assembly",
         "prompt": "Exploded technical cutaway diagram illustrating the three distinct structural layers in separation",
         "uses_anchor": False,
@@ -1093,7 +1141,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Schematic diagram of functional forces",
         "shot_type": "diagram",
         "camera_angle": "side cross-section schematic",
-        "technique": "schematic",
+        "technique": "diagram",
         "focal_point": "directional flow arrows balancing pressure",
         "prompt": "Cross-section schematic diagram illustrating dynamic pressure balance with directional flow arrows",
         "uses_anchor": False,
@@ -1116,7 +1164,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Proof of real-world operation",
         "shot_type": "close-up",
         "camera_angle": "low-angle close-up",
-        "technique": "cinematic-photo",
+        "technique": "cinematic_illustration",
         "focal_point": "crystal clear surface resisting frost",
         "prompt": "Detailed close-up demonstrating clear unblemished surface remaining free of frost in subzero air",
         "uses_anchor": True,
@@ -1139,7 +1187,7 @@ MOCK_VISUAL_BEATS: tuple[dict[str, Any], ...] = (
         "purpose": "Visual closure and resolution",
         "shot_type": "wide",
         "camera_angle": "wide cinematic horizon",
-        "technique": "cinematic-photo",
+        "technique": "cinematic_illustration",
         "focal_point": "peaceful horizon in twilight sunset",
         "prompt": "Cinematic wide composition with warm twilight rim lighting bringing elegant visual closure",
         "uses_anchor": False,
@@ -1250,7 +1298,8 @@ def _generate_mock_visual_beats_for_scene(
     # 2. Assign emotion-aware and varied visual attributes to each beat
     beats_out: list[VisualBeat] = []
     focal_base = beat.get("focal_point", "key subject")
-    technique_base = beat.get("technique", "cinematic-photo")
+    raw_tech_base = beat.get("technique") or "cinematic_illustration"
+    technique_base: VisualTechniqueType = raw_tech_base if raw_tech_base in ALLOWED_VISUAL_TECHNIQUES else "cinematic_illustration"
 
     for b_idx, p_text in enumerate(slices, start=1):
         p_lower = p_text.lower()
@@ -1273,7 +1322,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "top-down flat lay"
                 focal = "thinking silhouette surrounded by question cues"
                 prompt = f"Top-down isometric view of thinking character silhouette surrounded by glowing curiosity question marks around {focal_base}"
-            tech = "cinematic-photo"
+            tech = "cinematic_illustration"
         elif any(k in p_lower for k in ("actually", "shocking", "surprising", "unexpected", "suddenly", "unbelievable", "twist", "jaw-drop", "won't believe", "wont believe", "believe it or not")):
             purpose = "Surprise reaction: sudden dramatic reveal"
             if b_idx == 1:
@@ -1291,7 +1340,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "low-angle"
                 focal = "dramatic wide perspective of sudden reveal"
                 prompt = f"Wide dramatic perspective of astonished character stepping back in surprise from {focal_base}"
-            tech = "cinematic-photo"
+            tech = "cinematic_illustration"
         elif any(k in p_lower for k in ("wrong", "myth", "mistake", "assume", "assumed", "lie", "false", "misconception", "fail")):
             purpose = "Misconception contrast: highlight the mistake"
             if b_idx == 1:
@@ -1309,7 +1358,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "isometric 45-degree"
                 focal = "split comparison showing mistaken belief crossed out"
                 prompt = f"Split-screen comparison layout showing the common mistaken belief crossed out in red next to {focal_base}"
-            tech = "technical-illustration"
+            tech = "in_scene_cue"
         elif any(k in p_lower for k in ("discovered", "turns out", "secret", "reveal", "reveals", "found", "eureka", "breakthrough", "solution")):
             purpose = "Discovery reveal: breakthrough eureka moment"
             if b_idx == 1:
@@ -1327,7 +1376,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "eye-level"
                 focal = "glowing filament radiating golden eureka glow"
                 prompt = f"Macro detail of glowing filament within lightbulb radiating warm golden eureka glow onto {focal_base}"
-            tech = "cinematic-photo"
+            tech = "cinematic_illustration"
         elif _has_unnegated_hazard(p_lower):
             purpose = "Hazard warning: emphasize risk and consequences"
             if b_idx == 1:
@@ -1345,7 +1394,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "low-angle"
                 focal = "caution barrier stripes and pulsating warning beacon"
                 prompt = f"Macro view of caution barrier stripes and pulsating warning beacon illuminating {focal_base}"
-            tech = "technical-illustration"
+            tech = "in_scene_cue"
         elif any(k in p_lower for k in ("works", "because", "mechanism", "process", "system", "structure", "airflow", "pressure")):
             purpose = "Mechanism demonstration: clear technical explanation"
             if b_idx == 1:
@@ -1363,7 +1412,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "isometric 45-degree"
                 focal = "schematic diagram tracking airflow pathways"
                 prompt = f"Schematic diagram tracking energy transfer vectors and operational airflow pathways through {focal_base}"
-            tech = "cutaway-diagram"
+            tech = "cutaway"
         else:
             # Fallback contextual progression ensuring variety across beats
             if b_idx == 1:
@@ -1386,7 +1435,7 @@ def _generate_mock_visual_beats_for_scene(
                 angle = "low-angle hero" if beat.get("camera_angle") != "low-angle hero" else "eye-level"
                 focal = f"{focal_base} intricate texture"
                 prompt = f"Detailed macro composition revealing intricate texture and physical depth of {focal_base}"
-                tech = "macro-photo" if technique_base != "macro-photo" else "cinematic-photo"
+                tech = "physical_close_up" if technique_base != "physical_close_up" else "cinematic_illustration"
 
         # Visual intent mapping
         p_lower = p_text.lower()
@@ -1594,10 +1643,12 @@ def split_script_for_mock(
         scene_cam: CameraDirection | None = None
         scene_char_state: CharacterState | None = None
         scene_trans: str = "establishing" if scene_idx == 1 else "same_scene_reframe"
+        scene_tech: VisualTechniqueType = beat["technique"]
 
         if video_bible_data:
             if concept_id and scene_idx == 4:
                 # Scene 4 represents a standalone conceptual diagram beat
+                scene_tech = "diagram"
                 scene_bindings = EntityBindings(
                     character_id=None,
                     environment_id=None,
@@ -1657,6 +1708,8 @@ def split_script_for_mock(
                 mb.camera = scene_cam
                 mb.character_state = scene_char_state
                 mb.transition_from_previous = scene_trans
+                if concept_id and scene_idx == 4:
+                    mb.visual_technique = "diagram"
 
         scenes.append(
             SceneInput(
@@ -1666,7 +1719,7 @@ def split_script_for_mock(
                 shot_type=beat["shot_type"],
                 camera_angle=beat["camera_angle"],
                 focal_point=beat["focal_point"],
-                visual_technique=beat["technique"],
+                visual_technique=scene_tech,
                 environment=beat.get("environment", ""),
                 image_prompt=mock_beats[0].visual_description or beat["prompt"],
                 uses_anchor=uses_anchor,
@@ -2007,13 +2060,33 @@ def generate_storyboard_step(
             environment_anchor=environment_anchor,
         )
 
-        # Retry once if soft checks fail
-        if warnings:
+        initial_warnings = list(warnings)
+        if vb_data:
+            temp_scenes = []
+            for s_i, s_obj in enumerate(raw_scenes, start=1):
+                temp_scenes.append({
+                    "index": s_i,
+                    "narration": s_obj.narration,
+                    "focal_point": getattr(s_obj, "focal_point", "") or "",
+                    "environment": getattr(s_obj, "environment", "") or "",
+                    "visual_description": getattr(s_obj, "image_prompt", "") or "",
+                    "entity_bindings": getattr(s_obj, "entity_bindings", None),
+                    "shot_type": getattr(s_obj, "shot_type", "medium"),
+                    "visual_technique": getattr(s_obj, "visual_technique", "cinematic_illustration"),
+                    "visual_beats": [b.model_dump() if hasattr(b, "model_dump") else b for b in getattr(s_obj, "visual_beats", []) or []],
+                })
+            conn_warns = validate_connected_storyboard(temp_scenes, vb_data, cd_data)
+            initial_warnings.extend(conn_warns)
+
+        actionable_issues = [w for w in initial_warnings if not w.startswith("[Advisory]")]
+
+        # Retry once if actionable issues exist
+        if actionable_issues:
             attempts = 2
             retry_prompt = (
                 f"{prompt}\n\n"
                 f"[IMPORTANT FEEDBACK: Your previous output had the following soft-check issues:\n"
-                + "\n".join(f"- {w}" for w in warnings)
+                + "\n".join(f"- {w}" for w in actionable_issues)
                 + "\nPlease regenerate the structured output, strictly fixing these issues while maintaining the StoryboardLLMOutput schema.]"
             )
             try:
@@ -2131,7 +2204,7 @@ def generate_storyboard_step(
                     "shot_type": b.shot_type or s.shot_type,
                     "camera_angle": b.camera_angle or getattr(s, "camera_angle", "eye-level"),
                     "focal_point": b.focal_point or getattr(s, "focal_point", ""),
-                    "visual_technique": b.visual_technique or getattr(s, "visual_technique", "cinematic-photo"),
+                    "visual_technique": b.visual_technique or getattr(s, "visual_technique", "cinematic_illustration") or "cinematic_illustration",
                     "image_prompt": b.visual_description or getattr(s, "image_prompt", ""),
                     "uses_anchor": bool(s.uses_anchor),
                     "entity_bindings": b.entity_bindings or eb_dict,
@@ -2170,7 +2243,7 @@ def generate_storyboard_step(
                 "shot_type": s.shot_type,
                 "camera_angle": getattr(s, "camera_angle", "eye-level") or "eye-level",
                 "focal_point": getattr(s, "focal_point", "") or "",
-                "visual_technique": getattr(s, "visual_technique", "cinematic-photo") or "cinematic-photo",
+                "visual_technique": getattr(s, "visual_technique", "cinematic_illustration") or "cinematic_illustration",
                 "environment": getattr(s, "environment", "") or "",
                 "image_prompt": getattr(s, "image_prompt", "") or final_prompt,
                 "uses_anchor": bool(s.uses_anchor),

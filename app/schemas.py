@@ -297,13 +297,6 @@ class CreativeDirectionOutput(BaseModel):
     storytelling_angle: str
     central_thesis: str
     tone: str
-    visual_genre: Literal[
-        "photorealistic_cinematic",
-        "styled_3d",
-        "stickman_illustrated",
-        "technical_schematic",
-        "mixed_format",
-    ]
     protagonist_config: ProtagonistConfig
     emotional_progression: list[EmotionalBeat] = Field(default_factory=list)
     creative_constraints: list[str] = Field(default_factory=list)
@@ -460,6 +453,14 @@ VisualIntentType = Literal[
     "narrative_resolution",
 ]
 
+VisualTechniqueType = Literal[
+    "cinematic_illustration",
+    "physical_close_up",
+    "in_scene_cue",
+    "cutaway",
+    "diagram",
+]
+
 
 class StoryboardBeat(BaseModel):
     beat_id: str
@@ -468,6 +469,10 @@ class StoryboardBeat(BaseModel):
     narration_slice: str
     duration_est_seconds: float
     visual_intent: VisualIntentType = Field(description="Required structured visual intent")
+    visual_technique: VisualTechniqueType = Field(
+        default="cinematic_illustration",
+        description="Canonical visual presentation technique",
+    )
     entity_bindings: EntityBindings
     transition_from_previous: Literal[
         "establishing",

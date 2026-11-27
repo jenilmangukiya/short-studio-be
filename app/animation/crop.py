@@ -417,8 +417,14 @@ def evaluate_beat_crop_feasibility(
         )
 
     # 4. Check visual technique compatibility (e.g. photo vs diagram/schematic)
-    photo_techs = {"cinematic-photo", "macro-photo", "photo", "candid-photo"}
-    diagram_techs = {"cutaway-diagram", "technical-illustration", "blueprint", "infographic", "schematic"}
+    photo_techs = {
+        "cinematic-photo", "macro-photo", "photo", "candid-photo",
+        "cinematic_illustration", "physical_close_up", "in_scene_cue",
+    }
+    diagram_techs = {
+        "cutaway-diagram", "technical-illustration", "blueprint", "infographic", "schematic",
+        "diagram", "cutaway",
+    }
     if parent_tech in photo_techs and beat_tech in diagram_techs:
         return CropFeasibilityResult(
             status="new_image_needed",

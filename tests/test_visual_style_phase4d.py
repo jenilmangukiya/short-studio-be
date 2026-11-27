@@ -208,7 +208,6 @@ def test_legacy_video_byte_for_byte_preservation_with_channel_style():
         "- **Narrative Angle**: ",
         "- **Central Thesis**: ",
         "- **Tone**: conversational",
-        "- **Visual Genre**: styled_3d",
         "- **Human Presence**: none",
         "\n### Channel Visual Style Reference\nCinematic channel style",
         "\n## Instructions\nGenerate a structured VideoBibleOutput adhering strictly to the schema. "

@@ -58,7 +58,6 @@ def build_video_bible_prompt(
         sections.append(f"- **Narrative Angle**: {creative_direction_data.get('storytelling_angle', '')}")
         sections.append(f"- **Central Thesis**: {creative_direction_data.get('central_thesis', '')}")
         sections.append(f"- **Tone**: {creative_direction_data.get('tone', 'conversational')}")
-        sections.append(f"- **Visual Genre**: {creative_direction_data.get('visual_genre', 'styled_3d')}")
 
         protagonist = creative_direction_data.get("protagonist_config", {})
         human_pres = protagonist.get("human_presence", "none")

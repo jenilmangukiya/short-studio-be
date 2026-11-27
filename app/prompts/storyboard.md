@@ -132,13 +132,19 @@ Every visual beat MUST specify a valid structured `visual_intent` chosen from th
 - `establishing`: Wide world context, scale, geographical or architectural orientation.
 - `action_event`: Physical event, dynamic impact, eruption, blast, movement, or sudden onset of action.
 - `environmental_context`: Landscape, regional weather, environmental atmosphere, setting condition.
-- `mechanism_explanation`: Cutaway, diagram, schematic flow, functional breakdown (used only when a diagram genuinely aids understanding).
+- `mechanism_explanation`: Explaining how a process, mechanism, or causal chain works. (Can be presented via physical close-up, in-world cinematic illustration, in-scene cutaway, or standalone diagram).
 - `human_experience`: Human reaction, consequence, labor, emotional response, community or individual impact.
 - `detail_focus`: Macro close-up on a specific object, crop, tool, instrument, or material texture.
 - `abstract_visualization`: Surreal visual metaphor, invisible forces (e.g. electromagnetic waves, neural signals).
 - `narrative_resolution`: Reflective concluding imagery, aftermath, lasting takeaway, visual closure.
 
-`visual_intent` is an explicit, required directorial decision for every beat. There is no automatic default; you must choose the intent that best advances the visual storytelling.
+`visual_intent` is an explicit, required directorial decision for every beat. It states WHY the beat exists.
+Visual presentation is governed by `visual_technique`:
+- `cinematic_illustration`: In-world narrative scene within the physical environment.
+- `physical_close_up`: Close physical inspection of a mechanism, object, crop, or texture.
+- `in_scene_cue`: In-world scene where focused visual analogies or illustrative cues appear within the environment.
+- `cutaway`: Physical spatial cross-section showing internal layers or structures while preserving the environment.
+- `diagram`: Dedicated schematic or conceptual visualization (use only when an abstract diagram is genuinely superior to showing the physical reality).
 
 - **Pacing & Meaningful Progression**:
   - Vary visual intent and subject across consecutive beats to create narrative progression.
@@ -149,7 +155,17 @@ Every visual beat MUST specify a valid structured `visual_intent` chosen from th
 - **Directorial Perspective vs. Character Perception**:
   - Narration describing what story characters or historical figures experienced, saw, or did not see (e.g., 'a volcano they had never seen') describes character perception, NOT viewer perspective.
   - The viewer can see what characters could not see (e.g., cutting to a dramatic visual reveal, a celestial or global viewpoint, or an explanatory cutaway), OR the visual composition can focus on the local human consequence.
-  - Do NOT automatically suppress subjects merely because characters in the story were unaware of them. Direct what belongs in the current visual composition based on your storytelling goal.
+  - Do NOT automatically suppress subjects merely because characters in the story were unaware of them.
+- **Spatial & Semantic Consistency**:
+  - Viewer perspective allows cutting to distant causes or global views, but you MUST NOT physically place remote landmarks into an unrelated local environment (e.g. placing an Indonesian volcano on the physical horizon of a European or North American farm field).
+  - When an environment is bound, the depicted physical background, horizon, and persistent props must belong to that environment's geography.
+  - To link distant causes, use legitimate multi-location framing: a separate cutaway scene, a global/celestial view, a split-screen composition, an in-scene illustration (like a map or chart), or a visual metaphor.
+- **Three Uses of Visual Concepts (`concept_id`)**:
+  - When a concept is bound, select its presentation through `visual_technique`:
+    1. Context only (`cinematic_illustration` or `physical_close_up`): Concept knowledge ensures physical/historical accuracy without graphical overlays or diagram text. Environment is fully preserved.
+    2. In-scene explanation (`in_scene_cue` or `cutaway`): Focused visual analogy or graphical cues appear naturally within the environment. Environment is fully preserved.
+    3. Standalone diagram (`diagram`): Dedicated schematic visualization.
+  - Do not default every mechanism explanation or concept to a standalone diagram.
 - **One Unique Image Per Visual Beat**:
   - `new_image`: Default behavior for all visual beats. Every visual beat must have its own unique, dedicated generated image.
 - **Narration Synchronization (`narration_text`)**:

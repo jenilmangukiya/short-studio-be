@@ -27,7 +27,7 @@ def test_visual_beat_model_creation_and_validation():
         shot_type="wide",
         camera_angle="high-angle aerial",
         focal_point="aircraft in cloud deck",
-        visual_technique="cinematic-photo",
+        visual_technique="cinematic_illustration",
         image_strategy="new_image",
         source_image_id="1",
     )
@@ -129,7 +129,7 @@ def test_missing_optional_beat_fields_apply_defaults():
     assert beat.shot_type == "medium"
     assert beat.camera_angle == "eye-level"
     assert beat.focal_point == ""
-    assert beat.visual_technique == "cinematic-photo"
+    assert beat.visual_technique == "cinematic_illustration"
     assert beat.image_strategy == "new_image"
     assert beat.source_image_id is None
 
@@ -224,7 +224,7 @@ def test_loading_and_serializing_legacy_storyboards_without_visual_beats():
         "shot_type": "macro",
         "camera_angle": "extreme-macro",
         "focal_point": "bleed port aperture",
-        "visual_technique": "macro-photo",
+        "visual_technique": "physical_close_up",
         "environment": "exterior aircraft hull",
         "image_prompt": "Macro view of tiny bleed hole in acrylic window",
         "uses_anchor": true
@@ -259,7 +259,7 @@ def test_preserving_existing_scene_narration_and_metadata():
         shot_type="cutaway",
         camera_angle="isometric-cutaway",
         focal_point="separated 3-pane assembly",
-        visual_technique="technical-illustration",
+        visual_technique="cutaway",
         environment="technical schematic space",
         image_prompt="Exploded technical cutaway showing outer, middle, and inner acrylic panes",
         uses_anchor=False,
