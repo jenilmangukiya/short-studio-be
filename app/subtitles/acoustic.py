@@ -374,7 +374,7 @@ class AcousticSubtitleProvider(BaseSubtitleProvider):
     def __init__(
         self,
         model: str = "vosk-forced-aligner-v1",
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 120.0,
         vosk_model_path: str | Path | None = None,
     ):
         super().__init__(model=model, timeout_seconds=timeout_seconds)

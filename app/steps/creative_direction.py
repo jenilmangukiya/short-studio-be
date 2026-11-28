@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
 from app.schemas import CreativeDirectionOutput
+from app.steps.duration import clamp_duration_seconds
 
 
 class PipelineError(Exception):
@@ -86,6 +87,8 @@ def build_creative_direction_prompt(
     revision_instruction: str | None = None,
     visual_style_snapshot: dict[str, Any] | None = None,
     visual_style_id: str | None = None,
+    duration_mode: str = "auto",
+    target_duration: int | None = None,
 ) -> str:
     """Build the complete prompt for creative direction generation."""
     sections: list[str] = [rules_text, "\n## Project Context"]
@@ -93,6 +96,23 @@ def build_creative_direction_prompt(
     sections.append(f"- **Video Topic**: {topic}")
     if description:
         sections.append(f"- **Topic Description / Additional Details**: {description}")
+
+    # Inject duration configuration
+    sections.append("\n### Duration Configuration")
+    if duration_mode == "manual" and target_duration is not None:
+        sections.append(f"- **Duration Mode**: Manual (User Specified)")
+        sections.append(f"- **Target Duration**: {target_duration} seconds")
+        sections.append(
+            f"- **Directive**: Design a narrative progression, sensory depth, and pacing tailored specifically for a {target_duration}-second short. "
+            f"Set recommended_duration_seconds={target_duration} and provide your storytelling pacing rationale."
+        )
+    else:
+        sections.append("- **Duration Mode**: Automatic (AI Storytelling Recommendation)")
+        sections.append(
+            "- **Directive**: Evaluate the narrative complexity, emotional arc, and educational depth of this topic. "
+            "Recommend an optimal target duration between 30 and 180 seconds in `recommended_duration_seconds` (e.g., 30-45s for quick curious facts, 50-75s for focused narratives, 80-110s for multi-stage dilemmas, 120-180s for deep experiential journeys). "
+            "State your rationale in `duration_rationale`."
+        )
 
     # Inject frozen canonical visual style context if present
     if visual_style_snapshot or visual_style_id:
@@ -166,6 +186,14 @@ def validate_creative_direction(cd: CreativeDirectionOutput, topic: str = "") ->
     if not cd.creative_constraints:
         warnings.append("No creative constraints specified; provide 3-5 rules to prevent downstream production drift.")
 
+    if cd.recommended_duration_seconds < 30 or cd.recommended_duration_seconds > 180:
+        warnings.append(
+            f"Recommended duration {cd.recommended_duration_seconds}s is outside valid range (30-180 seconds)."
+        )
+
+    if cd.narrative_plan and len(cd.narrative_plan.story_progression) < 2:
+        warnings.append("Narrative plan has fewer than 2 story progression stages.")
+
     # Non-blocking advisory check for human sensory/bodily topics with human_presence == "none"
     if cd.protagonist_config.human_presence == "none":
         context_str = f"{topic} {cd.central_thesis} {cd.storytelling_angle}".strip()
@@ -196,6 +224,8 @@ def generate_creative_direction_step(
     channel_name = getattr(channel, "name", None) if channel else None
     channel_niche = getattr(channel, "niche", None) if channel else None
     channel_settings = getattr(channel, "settings", None) if channel else None
+    duration_mode = getattr(video, "duration_mode", "auto")
+    target_duration = getattr(video, "target_duration", None)
 
     # Check revision mode
     previous_cd = None
@@ -215,6 +245,8 @@ def generate_creative_direction_step(
         revision_instruction=step.user_prompt,
         visual_style_snapshot=getattr(video, "visual_style_snapshot", None),
         visual_style_id=getattr(video, "visual_style_id", None),
+        duration_mode=duration_mode,
+        target_duration=target_duration,
     )
 
     llm = get_llm(task="creative_direction")
@@ -229,6 +261,14 @@ def generate_creative_direction_step(
         raise LLMError(f"Creative direction generation failed: {exc}") from exc
 
     cd_output: CreativeDirectionOutput = result.output
+
+    # Enforce canonical duration resolution and manual precedence
+    cd_output.recommended_duration_seconds = clamp_duration_seconds(cd_output.recommended_duration_seconds)
+    if duration_mode == "manual" and target_duration is not None:
+        cd_output.resolved_target_duration = clamp_duration_seconds(target_duration)
+    else:
+        cd_output.resolved_target_duration = clamp_duration_seconds(cd_output.recommended_duration_seconds)
+
     warnings = validate_creative_direction(cd_output, topic=topic)
 
     return {

@@ -30,7 +30,7 @@ For educational, scientific, engineering, or curiosity-driven topics, construct 
 7. **Demonstrate Proof & Consequence**: Real-world consequence, proof, or reaction.
 8. **Memorable Closure**: Distinct concluding composition providing visual resolution.
 
-Adapt the sequence, number of scenes (8 to 12), and shot types dynamically to fit the script's actual topic and narration.
+Adapt the sequence, number of scenes (typically 8 to 14 for 45–60s videos, scaling proportionally up to 25–40 scenes for longer 90–180s videos to maintain visual cuts every 2.5 to 6.5 seconds), and shot types dynamically to fit the script's actual topic and narration.
 
 ## 2. Meaningful Visual Diversity & Consistency Rules
 - **Anti-Repetition Rule**: Consecutive scenes and consecutive beats must NEVER look identical or use nearly identical compositions.

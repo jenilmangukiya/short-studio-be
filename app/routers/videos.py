@@ -48,6 +48,8 @@ def create_video(body: VideoCreate, channel: Channel = Depends(get_owned_channel
         visual_style_id=preset.id,
         visual_style_version=preset.version,
         visual_style_snapshot=preset.model_dump(),
+        duration_mode=body.duration_mode,
+        target_duration=body.target_duration if body.duration_mode == "manual" else None,
     )
     db.add(video)
     db.commit()

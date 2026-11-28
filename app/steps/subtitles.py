@@ -329,7 +329,9 @@ def generate_subtitles_step(
 
     if input_video_path and Path(input_video_path).is_file():
         temp_captioned_path = video_dir / f"tmp_burn_{uuid.uuid4().hex[:8]}.mp4"
-        timeout_sec = getattr(settings, "render_timeout_seconds", 300.0)
+        total_audio_sec = getattr(result, "total_duration_seconds", 60.0) if result else 60.0
+        base_timeout = getattr(settings, "render_timeout_seconds", 300.0)
+        timeout_sec = max(base_timeout, total_audio_sec * 2.0 + 60.0)
 
         burn_cmd = [
             "ffmpeg",

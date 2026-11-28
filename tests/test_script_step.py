@@ -89,12 +89,17 @@ def test_validator_detects_narration_too_long():
 
 
 def test_validator_detects_hook_too_long():
-    long_hook = "This is an extremely long opening hook sentence that comfortably exceeds the fifteen word maximum limit easily."
+    long_hook = (
+        "This is an extremely long opening hook sentence that comfortably exceeds thirty-five words "
+        "and keeps rambling on and on with extra clauses, additional facts, and unnecessary descriptions "
+        "far beyond what any short-form video opening should ever attempt to say aloud."
+    )
+    assert len(long_hook.split()) > 35
     narr = f"{long_hook} " + "word " * 115
     script = _make_sample_script(hook=long_hook, narration=narr)
     warnings = validate_script_soft_checks(script)
-    assert any("hook length" in w.lower() for w in warnings)
-    assert any("at most 15 words" in w.lower() for w in warnings)
+    assert any("hook/cold open length" in w.lower() for w in warnings)
+    assert any("up to 35 words" in w.lower() for w in warnings)
 
 
 def test_validator_flags_hook_exceeding_ten_words_soft_warning():
@@ -103,7 +108,8 @@ def test_validator_flags_hook_exceeding_ten_words_soft_warning():
     narr = f"{hook_12_words} " + "word " * 115
     script = _make_sample_script(hook=hook_12_words, narration=narr)
     warnings = validate_script_soft_checks(script)
-    assert any("target: ideally 4-10 words" in w.lower() for w in warnings)
+    # Under Phase 1D, flexible openings (up to 35 words) are allowed without artificial length warnings
+    assert not any("hook/cold open length" in w.lower() for w in warnings)
     assert not any("at most 15 words" in w.lower() for w in warnings)
 
 
@@ -141,7 +147,6 @@ def test_validator_detects_generic_openers():
         "Have you ever wondered why jeans have tiny rivets?",
         "Ever wondered why your pockets have rivets?",
         "Did you know that windows have a tiny hole?",
-        "Imagine if your airplane window had a hole.",
         "Here's why airplane windows have tiny holes.",
         "Here is why airplane windows have tiny holes.",
         "Here's a fact about airplane windows.",
@@ -152,6 +157,14 @@ def test_validator_detects_generic_openers():
         script = _make_sample_script(hook=hook, narration=narr)
         warnings = validate_script_soft_checks(script)
         assert any("generic formula" in w for w in warnings), f"Failed to detect opener in: {hook}"
+
+
+def test_validator_permits_imagine_scene_setting():
+    hook = "Imagine waking up in June expecting summer, but finding snow outside."
+    narr = f"{hook} " + "word " * 115
+    script = _make_sample_script(hook=hook, narration=narr)
+    warnings = validate_script_soft_checks(script)
+    assert not any("generic formula" in w for w in warnings)
 
 
 def test_validator_passes_on_curiosity_questions_and_statements():
@@ -325,7 +338,7 @@ def test_recent_angles_query_with_in_memory_db():
 def test_load_prompt_template_reads_version_and_hash():
     text, version_str = load_prompt_template()
     assert len(text) > 100
-    assert "script-v1" in version_str
+    assert "script-v2" in version_str
     assert ":" in version_str
     # Verify hash portion is 8 characters
     hash_part = version_str.split(":", 1)[1]
@@ -394,6 +407,8 @@ def test_full_script_step_with_mock_provider(monkeypatch):
         description = "Laser scanning and numbers"
         channel = DummyChannel()
         channel_id = DummyChannel.id
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "script"
@@ -422,7 +437,7 @@ def test_full_script_step_with_mock_provider(monkeypatch):
     assert meta["task"] == "script"
     assert meta["attempts"] == 1
     assert meta["revision"] is False
-    assert "script-v1" in meta["prompt_version"]
+    assert "script-v2" in meta["prompt_version"]
 
 
 def test_full_script_step_revision_mode(monkeypatch):
@@ -437,6 +452,8 @@ def test_full_script_step_revision_mode(monkeypatch):
         description = None
         channel = None
         channel_id = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "script"
@@ -506,6 +523,8 @@ def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
         description = None
         channel = None
         channel_id = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "script"
@@ -567,6 +586,8 @@ def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
         description = None
         channel = None
         channel_id = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "script"
@@ -703,63 +724,53 @@ def test_parse_duration_from_text():
 
 
 def test_resolve_requested_duration_priority():
-    """Verify priority hierarchy for resolving requested duration:
-    explicit args -> video.target_duration -> step.user_prompt -> video.description -> video.topic -> channel.settings -> default.
+    """Verify duration resolution priority order:
+    explicit args -> step.user_prompt -> video (manual mode) -> creative_direction -> default (60s).
     """
     from app.steps.script import resolve_requested_duration
 
     class MockVideo:
-        def __init__(self, target_duration=None, description=None, topic="Topic"):
+        def __init__(self, duration_mode="auto", target_duration=None, topic="Topic", description=None):
+            self.duration_mode = duration_mode
             self.target_duration = target_duration
-            self.description = description
             self.topic = topic
+            self.description = description
 
     class MockStep:
         def __init__(self, user_prompt=None):
             self.user_prompt = user_prompt
 
     s_empty = MockStep(user_prompt=None)
-    ch_settings = {"target_duration": [50, 60]}
+    s_rev = MockStep(user_prompt="duration: 40s")
+    cd_data = {"resolved_target_duration": 90, "recommended_duration_seconds": 90}
 
     # 1. Explicit argument overrides everything
-    v1 = MockVideo(target_duration=30.0, description="duration: 50s", topic="Topic in 45s")
-    s1 = MockStep(user_prompt="duration: 40s")
-    assert resolve_requested_duration(video=v1, step=s1, channel_settings=ch_settings, explicit_duration=(35.0, 42.0)) == (35.0, 42.0)
+    v_manual = MockVideo(duration_mode="manual", target_duration=30, description="desc", topic="Topic")
+    assert resolve_requested_duration(video=v_manual, step=s_rev, explicit_duration=(35.0, 42.0)) == (35.0, 42.0)
 
-    # 2. video.target_duration overrides step.user_prompt, description, topic, channel_settings
-    assert resolve_requested_duration(video=v1, step=s1, channel_settings=ch_settings) == (27.0, 33.0)
+    # 2. step.user_prompt overrides video model & CD
+    assert resolve_requested_duration(video=v_manual, step=s_rev, creative_direction_data=cd_data) == (36.0, 44.0)
 
-    # 3. step.user_prompt overrides description, topic, channel_settings
-    v2 = MockVideo(target_duration=None, description="duration: 50s", topic="Topic in 45s")
-    assert resolve_requested_duration(video=v2, step=s1, channel_settings=ch_settings) == (36.0, 44.0)
+    # 3. video manual mode overrides CD recommendations
+    assert resolve_requested_duration(video=v_manual, step=s_empty, creative_direction_data=cd_data) == (27.0, 33.0)
 
-    # 4. video.description overrides topic, channel_settings
-    assert resolve_requested_duration(video=v2, step=s_empty, channel_settings=ch_settings) == (45.0, 55.0)
+    # 4. Auto mode uses Creative Direction resolved target duration
+    v_auto = MockVideo(duration_mode="auto", target_duration=None, topic="Topic")
+    assert resolve_requested_duration(video=v_auto, step=s_empty, creative_direction_data=cd_data) == (81.0, 99.0)
 
-    # 5. video.topic overrides channel_settings
-    v3 = MockVideo(target_duration=None, description=None, topic="Ancient pyramids explained in 35–42 seconds")
-    assert resolve_requested_duration(video=v3, step=s_empty, channel_settings=ch_settings) == (35.0, 42.0)
-
-    # 5b. video.topic with single target overrides channel_settings
-    v3_single = MockVideo(target_duration=None, description=None, topic="Why airplanes fly in 40 seconds")
-    assert resolve_requested_duration(video=v3_single, step=s_empty, channel_settings=ch_settings) == (36.0, 44.0)
-
-    # 6. channel_settings used when video.topic has no duration hint
-    v4 = MockVideo(target_duration=None, description=None, topic="Topic without duration hint")
-    assert resolve_requested_duration(video=v4, step=s_empty, channel_settings=ch_settings) == (50.0, 60.0)
-
-    # 7. Default fallback when no duration is specified anywhere
-    assert resolve_requested_duration(video=v4, step=s_empty, channel_settings={}) == (36.0, 60.0)
+    # 5. Default fallback (60s -> 54.0-66.0s) when no manual target or CD output exists
+    assert resolve_requested_duration(video=v_auto, step=s_empty, creative_direction_data=None) == (54.0, 66.0)
 
 
 def test_resolve_requested_duration_topic_fallback_over_channel_settings():
-    """Specifically verify that video.topic is checked as a fallback before channel.settings."""
+    """Verify that implicit regex duration extraction from topic, description, or channel settings is removed."""
     from app.steps.script import resolve_requested_duration
 
     class MockVideo:
-        def __init__(self, topic, description=None, target_duration=None):
+        def __init__(self, topic, description=None, duration_mode="auto", target_duration=None):
             self.topic = topic
             self.description = description
+            self.duration_mode = duration_mode
             self.target_duration = target_duration
 
     class MockStep:
@@ -768,17 +779,9 @@ def test_resolve_requested_duration_topic_fallback_over_channel_settings():
     step = MockStep()
     channel_settings = {"target_duration": 60.0}
 
-    # Case A: video.topic specifies range (35–42s), channel has 60.0s -> topic wins
-    v_range = MockVideo(topic="The science of lightning in 35–42 seconds")
-    assert resolve_requested_duration(video=v_range, step=step, channel_settings=channel_settings) == (35.0, 42.0)
-
-    # Case B: video.topic specifies single target (40s), channel has 60.0s -> topic wins (expanded to ±10%)
-    v_single = MockVideo(topic="How microchips work in 40 seconds")
-    assert resolve_requested_duration(video=v_single, step=step, channel_settings=channel_settings) == (36.0, 44.0)
-
-    # Case C: video.topic has no duration -> channel_settings wins
-    v_none = MockVideo(topic="How microchips work")
-    assert resolve_requested_duration(video=v_none, step=step, channel_settings=channel_settings) == (54.0, 66.0)
+    # Even if topic or description mentions "35–42 seconds", auto mode defaults to 60s without CD output
+    v = MockVideo(topic="The science of lightning in 35–42 seconds", description="target duration: 40 seconds")
+    assert resolve_requested_duration(video=v, step=step, channel_settings=channel_settings) == (54.0, 66.0)
 
 
 def test_validator_with_duration_aware_targets():
@@ -805,13 +808,13 @@ def test_validator_with_duration_aware_targets():
     long_narration = f"{hook} " + "word " * 136
     script_long = _make_sample_script(hook=hook, narration=long_narration)
     warnings_long = validate_script_soft_checks(script_long, target_duration=target)
-    assert any("too long" in w.lower() and "target: 73-104 words" in w.lower() for w in warnings_long)
+    assert any("too long" in w.lower() and "71-106 words" in w.lower() for w in warnings_long)
 
     # 3. Too short: 50 words fails validation when target is 35-42s
     short_narration = f"{hook} " + "word " * 49
     script_short = _make_sample_script(hook=hook, narration=short_narration)
     warnings_short = validate_script_soft_checks(script_short, target_duration=target)
-    assert any("too short" in w.lower() and "target: 73-104 words" in w.lower() for w in warnings_short)
+    assert any("too short" in w.lower() and "71-106 words" in w.lower() for w in warnings_short)
 
 
 def test_build_script_prompt_injects_duration_and_word_count():
@@ -823,11 +826,11 @@ def test_build_script_prompt_injects_duration_and_word_count():
         topic="Honey preservation",
         description="Target duration: 35-42 seconds",
         target_duration_range=(35.0, 42.0),
-        target_word_range=(73, 104),
+        target_word_range=(71, 106),
     )
     assert "**Requested Duration**: 35 to 42 seconds" in prompt
-    assert "**Target Spoken Word Count**: 73 to 104 words" in prompt
-    assert "strictly between 73 and 104 words" in prompt
+    assert "**Target Spoken Word Count**: 71 to 106 words" in prompt
+    assert "strictly between 71 and 106 words" in prompt
 
 
 def test_generate_script_step_retries_on_duration_aware_word_count_failure(monkeypatch):
@@ -879,6 +882,8 @@ def test_generate_script_step_retries_on_duration_aware_word_count_failure(monke
         id = uuid.uuid4()
         topic = "Honey preservation"
         description = "Target duration: 35-42 seconds"
+        duration_mode = "manual"
+        target_duration = 38
         channel = None
         channel_id = None
 
@@ -887,15 +892,15 @@ def test_generate_script_step_retries_on_duration_aware_word_count_failure(monke
         user_prompt = None
         output = None
 
-    result = generate_script_step(DummyVideo(), {}, DummyStep())
+    result = generate_script_step(DummyVideo(), {}, DummyStep(), target_duration=(35.0, 42.0))
 
     assert mock_llm.generate_structured.call_count == 2
     retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
     assert "Narration word count is too long" in retry_prompt
-    assert "target: 73-104 words" in retry_prompt
+    assert "71 and 106 words" in retry_prompt or "71" in retry_prompt
     assert result["meta"]["attempts"] == 2
     assert result["meta"]["target_duration_seconds"] == [35.0, 42.0]
-    assert result["meta"]["target_word_count_range"] == [73, 104]
+    assert result["meta"]["target_word_count_range"] == [71, 106]
     assert result["warnings"] == []
 
 

@@ -21,6 +21,11 @@ from sqlalchemy.orm import Session, object_session
 from app.config import settings
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
+from app.steps.duration import (
+    calculate_word_budget_for_duration,
+    resolve_video_target_duration,
+    clamp_duration_seconds,
+)
 
 # Single source of truth for allowed angles
 ALLOWED_ANGLES: tuple[str, ...] = (
@@ -68,7 +73,6 @@ GENERIC_OPENER_PATTERNS: tuple[str, ...] = (
     r"did you know\b",
     r"have you ever\b",
     r"ever wondered\b",
-    r"imagine\b",
     r"here's why\b",
     r"here is why\b",
     r"here's a fact\b",
@@ -278,15 +282,15 @@ class ScriptOutput(BaseModel):
     )
     hook: str = Field(
         description=(
-            "Attention-grabbing opening hook, exactly ONE sentence, ideally 4-10 words (up to 15 words max), "
-            "opening a specific curiosity gap—often a direct question or surprising fact without filler or meta-clichés"
+            "Attention-grabbing opening hook or scene-setting cold open (single sentence or short multi-sentence opening), "
+            "creating immediate curiosity, mystery, or atmosphere without filler or meta-clichés"
         )
     )
     narration: str = Field(
         description=(
             "The full spoken narration text, plain conversational spoken text only, "
             "scaled to the target word count and duration specified in instructions, "
-            "must begin verbatim with the hook sentence and unfold as one connected cause-and-effect story"
+            "must begin verbatim with the hook sentence(s) and unfold as one connected story"
         )
     )
     angle: AngleType = Field(
@@ -393,85 +397,52 @@ def resolve_requested_duration(
     step: Any = None,
     channel_settings: dict | None = None,
     explicit_duration: float | tuple[float, float] | None = None,
+    creative_direction_data: dict | None = None,
+    require_resolved: bool = False,
 ) -> tuple[float, float]:
-    """Resolve the requested video duration range in seconds from available contexts.
+    """Resolve the requested video duration range in seconds from canonical contexts.
 
-    Checks in priority order:
-    1. Explicit duration argument
-    2. video.target_duration (if set)
-    3. Parsed from step.user_prompt (revision instruction)
-    4. Parsed from video.description
-    5. Parsed from video.topic
-    6. channel_settings ('target_duration', 'target_duration_seconds', 'duration')
-    7. Configured default settings.script_default_target_duration (default 40.0s)
-
-    Returns:
-        tuple of (min_duration_seconds, max_duration_seconds)
+    Precedence:
+    1. Explicit duration argument (if passed directly).
+    2. Revision user_prompt on the step (if user specifically asked for a duration change).
+    3. Canonical resolve_video_target_duration (evaluating video.duration_mode, video.target_duration, and creative_direction output).
     """
-    raw_dur = explicit_duration
-    if raw_dur is None and video is not None:
-        raw_dur = getattr(video, "target_duration", None)
-    if raw_dur is None and step is not None:
-        raw_dur = parse_duration_from_text(getattr(step, "user_prompt", None))
-    if raw_dur is None and video is not None:
-        raw_dur = parse_duration_from_text(getattr(video, "description", None))
-    if raw_dur is None and video is not None:
-        raw_dur = parse_duration_from_text(getattr(video, "topic", None))
-    if raw_dur is None and channel_settings:
-        raw_dur = (
-            channel_settings.get("target_duration")
-            or channel_settings.get("target_duration_seconds")
-            or channel_settings.get("duration")
-        )
-    if raw_dur is None:
-        def_dur = getattr(settings, "script_default_target_duration", None)
-        if def_dur is not None:
-            raw_dur = def_dur
-        else:
-            return (36.0, 60.0)
+    if explicit_duration is not None:
+        if isinstance(explicit_duration, (list, tuple)) and len(explicit_duration) >= 2:
+            d1, d2 = float(explicit_duration[0]), float(explicit_duration[1])
+            return (min(d1, d2), max(d1, d2))
+        d = float(explicit_duration)
+        return (round(max(15.0, d * 0.9), 1), round(d * 1.1, 1))
 
-    if isinstance(raw_dur, (list, tuple)) and len(raw_dur) >= 2:
-        d1, d2 = float(raw_dur[0]), float(raw_dur[1])
-        return (min(d1, d2), max(d1, d2))
-    elif isinstance(raw_dur, (int, float)):
-        d = float(raw_dur)
-        return (round(max(10.0, d * 0.9), 1), round(d * 1.1, 1))
+    # Check if step has an explicit duration revision prompt (e.g. "make it 90s")
+    if step is not None:
+        user_prompt = getattr(step, "user_prompt", None)
+        parsed_rev = parse_duration_from_text(user_prompt)
+        if parsed_rev is not None:
+            if isinstance(parsed_rev, (list, tuple)) and len(parsed_rev) >= 2:
+                d1, d2 = float(parsed_rev[0]), float(parsed_rev[1])
+                return (min(d1, d2), max(d1, d2))
+            d = float(parsed_rev)
+            return (round(max(15.0, d * 0.9), 1), round(d * 1.1, 1))
 
-    return (36.0, 60.0)
+    # Canonical duration resolution (manual target takes precedence, else CD recommended duration, else error if require_resolved)
+    canonical_duration = resolve_video_target_duration(
+        video=video,
+        creative_direction_data=creative_direction_data,
+        require_resolved=require_resolved,
+    )
+    return (round(max(15.0, canonical_duration * 0.9), 1), round(canonical_duration * 1.1, 1))
 
 
 def calculate_target_word_count_range(
     target_duration: float | tuple[float, float] | None = None,
     words_per_second: float | None = None,
+    speaking_speed: float | None = None,
 ) -> tuple[int, int]:
-    """Derive target word count range (min_words, max_words) for a given duration.
-
-    Accounts for realistic spoken speaking rate (~2.4 words/second) and inter-sentence
-    breath pauses (~0.35s per sentence boundary).
-    """
+    """Derive target word count range (min_words, max_words) for a given duration budget."""
     if target_duration is None:
-        return (75, 150)
-
-    wps = words_per_second or getattr(settings, "script_speaking_rate_wps", 2.4)
-    if isinstance(target_duration, (list, tuple)):
-        d_min = float(target_duration[0])
-        d_max = float(target_duration[1])
-    else:
-        d = float(target_duration)
-        d_min = max(10.0, d * 0.9)
-        d_max = d * 1.1
-
-    breaks_min = max(0.0, (d_min / 6.5) - 1.0)
-    breaks_max = max(0.0, (d_max / 6.5) - 1.0)
-    net_speech_min = max(5.0, d_min - (breaks_min * 0.35))
-    net_speech_max = max(8.0, d_max - (breaks_max * 0.35))
-
-    raw_min = net_speech_min * wps
-    raw_max = net_speech_max * wps
-
-    w_min = max(20, int(math.floor(raw_min * 0.92)))
-    w_max = max(w_min + 15, int(math.ceil(raw_max * 1.08)))
-    return (w_min, w_max)
+        return calculate_word_budget_for_duration(60.0, words_per_second, speaking_speed)
+    return calculate_word_budget_for_duration(target_duration, words_per_second, speaking_speed)
 
 
 def estimate_spoken_duration_seconds(
@@ -529,8 +500,15 @@ def evaluate_script_quality(
 
     # 1. Estimated spoken duration & TTS-unfriendly number formatting
     est_duration = estimate_spoken_duration_seconds(narration)
-    min_dur, max_dur = target_duration_range or (35.0, 65.0)
-    min_w, max_w = target_word_range or (75, 150)
+    if target_duration_range:
+        min_dur, max_dur = target_duration_range
+    elif target_word_range:
+        min_dur = round(target_word_range[0] / 2.6, 1)
+        max_dur = round(target_word_range[1] / 2.0, 1)
+    else:
+        min_dur, max_dur = (50.0, 70.0)
+
+    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration_range)
     if len(words) >= min_w and len(words) <= max_w and (est_duration < min_dur or est_duration > max_dur):
         issues.append(
             f"Estimated spoken duration is {est_duration}s (target: {min_dur:.0f}-{max_dur:.0f}s for a natural short-form pace)."
@@ -785,15 +763,11 @@ def validate_script_soft_checks(
             f"Narration word count is too long ({word_count} words; target: {min_w}-{max_w} words for the requested duration)."
         )
 
-    # 2. Hook length (target: 4-10 words, soft warning > 10, limit <= 15) and narration start
+    # 2. Hook / cold open length check (flexible opening, advisory check if > 35 words)
     hook_words = script.hook.split()
-    if len(hook_words) > 15:
+    if len(hook_words) > 35:
         warnings.append(
-            f"Hook length is {len(hook_words)} words (target: at most 15 words)."
-        )
-    elif len(hook_words) > 10:
-        warnings.append(
-            f"Hook length is {len(hook_words)} words (target: ideally 4-10 words for short-form retention, max 15)."
+            f"Opening hook/cold open length is {len(hook_words)} words (target: concise scene-setting up to 35 words)."
         )
 
     # 3. Hook cliché and generic opener detection
@@ -947,6 +921,26 @@ def build_script_prompt(
             if constraints:
                 sections.append("- **Factual & Creative Guardrails (Internal Notes)**:\n  " + "\n  ".join(f"- {c}" for c in constraints))
 
+        narrative_plan = creative_direction_data.get("narrative_plan")
+        if narrative_plan and isinstance(narrative_plan, dict):
+            sections.append("\n### Approved Narrative Plan & Storytelling Strategy")
+            if narrative_plan.get("narrative_perspective"):
+                sections.append(f"- **Narrative Perspective**: {narrative_plan['narrative_perspective']}")
+            if narrative_plan.get("opening_situation"):
+                sections.append(f"- **Opening Scene / Situation**: {narrative_plan['opening_situation']}")
+            if narrative_plan.get("information_revelation_strategy"):
+                sections.append(f"- **Information Revelation Strategy**: {narrative_plan['information_revelation_strategy']}")
+            prog = narrative_plan.get("story_progression", [])
+            if prog and isinstance(prog, list):
+                sections.append("- **Story Progression Stages**:")
+                for st in prog:
+                    if isinstance(st, dict):
+                        sections.append(f"  * **{st.get('stage_name', 'Stage')}**: {st.get('description', '')}")
+            if narrative_plan.get("audience_takeaway"):
+                sections.append(f"- **Intended Takeaway**: {narrative_plan['audience_takeaway']}")
+            if narrative_plan.get("resolution_payoff"):
+                sections.append(f"- **Ending Payoff**: {narrative_plan['resolution_payoff']}")
+
     if target_duration_range or target_word_range:
         min_d, max_d = target_duration_range or (35.0, 45.0)
         min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration_range)
@@ -1050,13 +1044,24 @@ def generate_script_step(
     rules_text, prompt_version = load_prompt_template()
 
     # 5b. Resolve target duration and word count constraints
+    voice_speed = None
+    if isinstance(channel_settings, dict):
+        try:
+            voice_speed = float(channel_settings.get("voice_speed", 1.0))
+        except (ValueError, TypeError):
+            voice_speed = 1.0
+
     target_duration_range = resolve_requested_duration(
         video=video,
         step=step,
         channel_settings=channel_settings,
         explicit_duration=target_duration,
+        creative_direction_data=cd_data,
+        require_resolved=True,
     )
-    target_word_range = calculate_target_word_count_range(target_duration_range)
+    target_word_range = calculate_target_word_count_range(
+        target_duration_range, speaking_speed=voice_speed
+    )
 
     # 6. Build prompt
     prompt = build_script_prompt(

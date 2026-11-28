@@ -81,6 +81,8 @@ def _make_dummy_video(
             self.visual_style_snapshot = visual_style_snapshot
             self.visual_style_version = resolved_version
             self.channel = DummyChannel()
+            self.duration_mode = "manual"
+            self.target_duration = 60
 
     return DummyVideo()
 

@@ -250,6 +250,8 @@ def test_visual_style_channel_setting(monkeypatch):
         id = uuid.uuid4()
         topic = "Airplane windows"
         channel = DummyChannel()
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -271,6 +273,8 @@ def test_visual_style_default_fallback(monkeypatch):
         id = uuid.uuid4()
         topic = "Airplane windows"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -457,6 +461,8 @@ def test_full_storyboard_step_mock(monkeypatch):
         id = uuid.uuid4()
         topic = "Airplane windows"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -510,6 +516,8 @@ def test_full_storyboard_step_revision_mode(monkeypatch):
         id = uuid.uuid4()
         topic = "Airplane windows"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -548,6 +556,8 @@ def test_missing_script_error():
         id = uuid.uuid4()
         topic = "Airplane windows"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -891,6 +901,8 @@ def test_storyboard_step_retry_on_warning(monkeypatch):
         id = uuid.uuid4()
         topic = "Test retry"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -952,6 +964,8 @@ def test_revision_mode_runs_narration_checks_and_retries(monkeypatch):
         id = uuid.uuid4()
         topic = "Test revision retry"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"
@@ -1039,6 +1053,8 @@ def test_mock_storyboard_produces_diverse_scenes(monkeypatch):
         id = uuid.uuid4()
         topic = "Why is there a tiny hole in an airplane window?"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"

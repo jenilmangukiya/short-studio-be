@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session, object_session
 from app.animation import plan_scene_animation
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
+from app.steps.duration import resolve_video_target_duration
 from app.schemas import (
     CameraDirection,
     CharacterState,
@@ -728,6 +730,7 @@ def validate_storyboard_soft_checks(
     subject_anchor: str = "",
     visual_style: str = "",
     environment_anchor: str = "",
+    target_duration: float | int | None = None,
 ) -> list[str]:
     """Execute code-side soft checks on the generated storyboard scenes.
 
@@ -745,11 +748,25 @@ def validate_storyboard_soft_checks(
             return scene.get(field, "")
         return getattr(scene, field, "")
 
-    # 1. Scene count check (target: 8 - 12 scenes)
+    # 1. Scene count check (dynamically scaled to duration; 2.5 - 7.0 seconds per scene)
     scene_count = len(scenes)
-    if scene_count < 8 or scene_count > 12:
+    if target_duration is not None and float(target_duration) > 0:
+        dur = float(target_duration)
+    else:
+        word_count = len(script_narration.split()) if script_narration else 100
+        dur = max(30.0, word_count / 2.3)
+
+    min_scenes = max(5, int(math.floor(dur / 7.5)))
+    max_scenes = max(min_scenes + 4, int(math.ceil(dur / 4.0)))
+
+    # For standard short-form videos (<= 65s), maintain conventional 8 to 12 scene target range
+    if dur <= 65.0:
+        min_scenes = min(min_scenes, 8)
+        max_scenes = min(max_scenes, 13)
+
+    if scene_count < min_scenes or scene_count > max_scenes:
         warnings.append(
-            f"Scene count is {scene_count} (target: 8-12 scenes)."
+            f"Scene count is {scene_count} (target: {min_scenes}-{max_scenes} scenes for video duration)."
         )
 
     # 2. Narration equality check: joined scene narrations must equal script narration
@@ -2013,6 +2030,8 @@ def generate_storyboard_step(
     subject_anchor: str = ""
     environment_anchor: str = ""
 
+    canonical_dur = resolve_video_target_duration(video, cd_data, require_resolved=True)
+
     if llm.provider_name == "mock":
         # Deterministic local splitter for mock provider with zero AI cost
         raw_scenes, subject_anchor = split_script_for_mock(
@@ -2030,6 +2049,7 @@ def generate_storyboard_step(
             subject_anchor=subject_anchor,
             visual_style=visual_style,
             environment_anchor=environment_anchor,
+            target_duration=canonical_dur,
         )
     else:
         try:
@@ -2058,6 +2078,7 @@ def generate_storyboard_step(
             subject_anchor=subject_anchor,
             visual_style=visual_style,
             environment_anchor=environment_anchor,
+            target_duration=canonical_dur,
         )
 
         initial_warnings = list(warnings)
@@ -2111,6 +2132,7 @@ def generate_storyboard_step(
                     subject_anchor=subject_anchor,
                     visual_style=visual_style,
                     environment_anchor=environment_anchor,
+                    target_duration=canonical_dur,
                 )
             except Exception:
                 # If retry fails, retain original output and warnings

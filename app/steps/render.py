@@ -823,7 +823,7 @@ def generate_render_step(
     target_width = getattr(settings, "render_width", 1080)
     target_height = getattr(settings, "render_height", 1920)
     target_fps = getattr(settings, "render_fps", 30)
-    timeout_sec = getattr(settings, "render_timeout_seconds", 300.0)
+    timeout_sec = max(getattr(settings, "render_timeout_seconds", 300.0), continuous_duration * 3.0 + 60.0)
 
     # Cumulative scene end times on the narration timeline.
     if aligned_bounds is not None:

@@ -66,6 +66,8 @@ class Video(TimestampMixin, Base):
     visual_style_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visual_style_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     visual_style_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    duration_mode: Mapped[str] = mapped_column(String(20), default="auto", server_default="auto")  # auto | manual
+    target_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds (30..180) for manual mode
     channel: Mapped[Channel] = relationship(back_populates="videos")
     steps: Mapped[list["VideoStep"]] = relationship(
         order_by="VideoStep.position", cascade="all, delete-orphan", lazy="selectin"

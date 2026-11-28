@@ -387,6 +387,8 @@ def test_end_to_end_storyboard_step_produces_visual_beats(monkeypatch):
         id = uuid.uuid4()
         topic = "AI Server Chips"
         channel = None
+        duration_mode = "manual"
+        target_duration = 60
 
     class DummyStep:
         name = "storyboard"

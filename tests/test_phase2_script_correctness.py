@@ -256,6 +256,7 @@ def test_generate_script_step_retries_on_meta_instruction_leakage(monkeypatch):
         description = "Historical climate anomaly in 1816"
         channel = None
         channel_id = None
+        duration_mode = "manual"
         target_duration = 38.0
 
     class DummyStep:

@@ -668,10 +668,7 @@ def test_alembic_visual_style_migration():
 
     cfg = Config("alembic.ini")
     script = ScriptDirectory.from_config(cfg)
-    head_rev = script.get_current_head()
-    assert head_rev == "c7a2e81d4b60"
-
-    rev_step = script.get_revision(head_rev)
+    rev_step = script.get_revision("c7a2e81d4b60")
     assert rev_step.down_revision == "544f91af7a3f"
     assert "visual_style" in rev_step.doc.lower()
 

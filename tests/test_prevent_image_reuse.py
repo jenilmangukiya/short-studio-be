@@ -31,6 +31,8 @@ class DummyVideo:
     def __init__(self, video_id=None):
         self.id = video_id or uuid.uuid4()
         self.topic = "Prevent Image Reuse Test"
+        self.duration_mode = "manual"
+        self.target_duration = 60
 
 
 class DummyStep:

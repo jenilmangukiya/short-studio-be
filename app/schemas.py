@@ -117,6 +117,13 @@ class VideoCreate(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
     description: str | None = None
     visual_style_id: str = Field(..., min_length=1, description="Explicit catalog visual style ID")
+    duration_mode: Literal["auto", "manual"] = "auto"
+    target_duration: int | None = Field(
+        default=None,
+        ge=30,
+        le=180,
+        description="Target duration in seconds (30 to 180), required when duration_mode is 'manual'",
+    )
 
     @field_validator("visual_style_id")
     @classmethod
@@ -131,6 +138,13 @@ class VideoCreate(BaseModel):
             valid_ids = sorted(STYLES_REGISTRY.keys())
             raise ValueError(f"Unknown visual style '{v}'. Valid styles: {valid_ids}")
         return norm
+
+    @model_validator(mode="after")
+    def validate_duration_configuration(self) -> "VideoCreate":
+        if self.duration_mode == "manual":
+            if self.target_duration is None:
+                raise ValueError("target_duration is required when duration_mode is 'manual'")
+        return self
 
 
 class VideoStyleUpdate(BaseModel):
@@ -245,6 +259,8 @@ class VideoSummary(ORM):
     status: str
     visual_style_id: str | None = None
     visual_style_version: int | None = None
+    duration_mode: str = "auto"
+    target_duration: int | None = None
     created_at: datetime
 
 
@@ -290,9 +306,41 @@ class ProtagonistConfig(BaseModel):
     )
 
 
+class NarrativeStage(BaseModel):
+    stage_name: str = Field(description="Name or label for this storytelling beat")
+    description: str = Field(description="Narrative action and information revealed in this stage")
+
+
+class NarrativePlan(BaseModel):
+    narrative_perspective: str = Field(
+        default="curious_observer",
+        description="Narrative perspective, e.g. 'third_person_immersive', 'experiential_witness', 'curious_investigator', 'everyday_relatable'",
+    )
+    opening_situation: str = Field(
+        default="",
+        description="Opening scene, sensory mystery, or relatable situation that hooks the viewer",
+    )
+    information_revelation_strategy: str = Field(
+        default="progressive_reveal",
+        description="Strategy for revealing key facts and underlying causes, e.g. 'delayed_catalyst', 'mystery_first_then_science', 'experiential_crisis_then_origin'",
+    )
+    story_progression: list[NarrativeStage] = Field(
+        default_factory=list,
+        description="Ordered storytelling progression stages from setup to payoff",
+    )
+    audience_takeaway: str = Field(
+        default="",
+        description="Intended emotional, historical, or intellectual takeaway",
+    )
+    resolution_payoff: str = Field(
+        default="",
+        description="Natural resolution and ending payoff that answers the opening curiosity",
+    )
+
+
 class CreativeDirectionOutput(BaseModel):
     format_archetype: str = Field(
-        description="Story format archetype, e.g. explainer_myth_bust, narrative_story, mechanical_breakdown",
+        description="Story format archetype, e.g. experiential_history, mystery_investigation, character_journey, everyday_curiosity, scientific_discovery, cause_and_effect, direct_explanation, explainer_myth_bust, narrative_story",
     )
     storytelling_angle: str
     central_thesis: str
@@ -300,6 +348,23 @@ class CreativeDirectionOutput(BaseModel):
     protagonist_config: ProtagonistConfig
     emotional_progression: list[EmotionalBeat] = Field(default_factory=list)
     creative_constraints: list[str] = Field(default_factory=list)
+    narrative_plan: NarrativePlan | None = Field(default=None, description="Detailed narrative storytelling plan")
+    recommended_duration_seconds: int = Field(
+        default=60,
+        ge=30,
+        le=180,
+        description="AI recommended target duration based on topic depth and storytelling pacing (30-180s)",
+    )
+    resolved_target_duration: int = Field(
+        default=60,
+        ge=30,
+        le=180,
+        description="Canonical resolved duration for downstream steps (manual target if manual mode, else recommended duration)",
+    )
+    duration_rationale: str = Field(
+        default="",
+        description="Rationale for the chosen duration budget",
+    )
 
 
 class CharacterEntity(BaseModel):

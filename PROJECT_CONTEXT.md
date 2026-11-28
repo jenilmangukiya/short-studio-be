@@ -114,6 +114,63 @@ The obsolete per-scene audio architecture has been completely removed from the b
 
 ---
 
+## Phase 1D: Narrative Storytelling & Adaptive Duration Architecture
+
+### 1. Adaptive Video Duration Configuration (`app/models.py`, `app/schemas.py`, `app/steps/duration.py`)
+
+- **Video Model & Schema**:
+  - `duration_mode`: `"auto"` (default) or `"manual"`.
+  - `target_duration`: Integer seconds in `[30, 180]` (required when `duration_mode == "manual"`, `None` for `"auto"`).
+  - Migration file: `alembic/versions/d4a8e21c3b70_add_duration_fields_to_videos.py`.
+- **Duration Resolution Order (`resolve_video_target_duration`)**:
+  1. **Manual User Configuration**: `video.duration_mode == "manual"` with `video.target_duration` always takes absolute precedence over AI recommendations.
+  2. **Creative Direction Canonical Output**: `creative_direction.resolved_target_duration` or `creative_direction.recommended_duration_seconds` passed strictly from current pipeline execution state.
+  3. **Strict Invalidation & Anti-Stale Protections**: Never inspects historical `video.steps` for previous step runs, ensuring reruns, rollbacks, and revisions cannot consume outdated duration state.
+  4. **Fail-Closed Downstream Generation**: Script and Storyboard generation in 8-step videos require a valid resolved duration (`require_resolved=True`) and will raise `PipelineError` rather than silently defaulting to 60s.
+  - Note: Legacy heuristics and implicit regex extraction from topic, description, or channel settings have been completely removed.
+- **Dynamic Word Budget Calculation (`calculate_word_budget_for_duration`)**:
+  - Dynamic speech pacing accounting for base speaking rate (~2.3 WPM net of pauses) and channel-configured TTS `speaking_speed`:
+    - 30s: 60–85 words (at 1.0x speed)
+    - 45s: 90–120 words
+    - 60s: 115–155 words
+    - 90s: 180–235 words
+    - 120s: 240–310 words
+    - 180s: 380–495 words
+
+### 2. Story-Driven Creative Direction (`app/prompts/creative_direction.md` & `app/steps/creative_direction.py`)
+
+- **Version**: `creative-direction-v4`.
+- **Narrative Archetypes & Flexibility**: Story-driven structures replace formulaic templates. Narrative stages and pacing allocations serve as flexible guidance. Simple topics or direct explainers do not require artificial tension, manufactured conflict, or forced philosophical endings. Direct storytelling and simple explanations remain fully valid.
+- **Factual Integrity on Sensory Details**: When sensory scene-setting or hypothetical viewpoints are used, they must ground documented reality without introducing unsupported factual claims, fake events, or fabricated quotes.
+- **Narrative Plan**: Explicit stages (`stage_name`, `target_beat_percentage`, `pacing`, `story_beat_goal`, `emotional_target`).
+- **Duration Recommendation**: Evaluates topic complexity to propose `recommended_duration_seconds` and `duration_rationale` (or respects manual duration in `resolved_target_duration`).
+
+### 3. High-Retention Narration & Script Quality (`app/prompts/script.md` & `app/steps/script.py`)
+
+- **Version**: `script-v2`.
+- **Flexible Openings**:
+  - Relaxed obsolete 4–10 word hook constraint; allows punchy single sentences or 1–3 sentence immersive cold opens.
+  - Scene-setting phrases such as `"Imagine"` or `"Picture this"` are explicitly permitted for sensory grounding (banned only as empty meta-windups).
+  - Removed mandate for an immediate scientific explanation in sentence 2; tension, mystery, and stakes are encouraged to breathe.
+- **Flexible Payoffs**: Endings can be simple, surprising, emotional, historical, or intellectual depending on the topic. Specific historical references (e.g. Mount Tambora) are not hardcoded into production prompts.
+- **Quality Gate**:
+  - Checks for backstage instruction leakage (e.g., *"Picture a fictional farmer"*, *"As a representative figure"*).
+  - Evaluates dynamic word count targets based on canonical resolved duration and speaking speed.
+
+### 4. Downstream Adaptive Scaling (`app/steps/storyboard.py`, `app/steps/render.py`, `app/steps/subtitles.py`, `app/subtitles/acoustic.py`)
+
+- **Adaptive Scene Scaling**:
+  - Replaced hardcoded 8–12 scene limit with dynamic range without arbitrary caps:
+    `min_scenes = max(5, int(math.floor(dur / 7.5)))`
+    `max_scenes = max(min_scenes + 3, int(math.ceil(dur / 4.0)))`
+    (Maintains 8 to 13 scenes for standard 60s videos, while scaling naturally from 5 scenes at 30s to 24–45 scenes at 180s).
+- **Duration-Aware Timeouts**:
+  - Video rendering (`app/steps/render.py`): `max(300.0, continuous_duration * 3.0 + 60.0)` seconds.
+  - Subtitle burning (`app/steps/subtitles.py`): `max(300.0, continuous_duration * 2.0 + 60.0)` seconds.
+  - Acoustic alignment (`app/subtitles/acoustic.py`): timeout scaled to 120.0s for long continuous audio.
+
+---
+
 ## Frontend Cleanup Requirements (Separate Frontend Task)
 
 When updating the frontend repository to match this backend cleanup:
@@ -125,4 +182,12 @@ When updating the frontend repository to match this backend cleanup:
 3. **Stop Expecting `item.file` on `voiceover.items`**:
    - Entries in `step.output.voiceover.items` still provide `index`, `scene_id`, `status`, `narration`, `start_time`, `end_time`, `duration_seconds`, and `timing_type` (useful for displaying scene text and time ranges like `0.00s – 3.42s`), but no longer include per-scene `file` paths.
    - If the frontend offers "play scene", seek the single continuous `<audio>` element to `item.start_time` and pause at `item.end_time`.
+4. **Phase 1D Video Creation & Duration Controls**:
+   - Add duration controls to `CreateVideoDialog`:
+     - Mode Selector: `Automatic` (default) vs `Custom Duration`.
+     - Target Duration Picker (active when mode is `Custom`): Preset pills (`30s`, `45s`, `60s`, `90s`, `120s`, `180s`) or slider/stepper within `[30, 180]`.
+     - Request payload: `{ topic, visual_style_id, duration_mode: "auto" | "manual", target_duration: number | null }`.
+5. **Creative Direction UI Updates**:
+   - Display `narrative_plan.archetype` badge and stages breakdown.
+   - Display `resolved_target_duration` and `duration_rationale`.
 
