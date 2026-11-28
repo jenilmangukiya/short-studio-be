@@ -120,17 +120,13 @@ def test_creative_direction_validation_soft_checks():
         storytelling_angle="Debunking the falling myth",
         central_thesis="Hypnic jerks are benign misfires.",
         tone="engaging",
-        visual_genre="photorealistic_cinematic",
         protagonist_config=ProtagonistConfig(human_presence="none"),
-        emotional_progression=[
-            EmotionalBeat(phase="hook", target_emotion="Curiosity", visual_intent="Macro close-up"),
-            EmotionalBeat(phase="complication", target_emotion="Intrigue", visual_intent="Sudden tilt"),
-            EmotionalBeat(phase="resolution", target_emotion="Revelation", visual_intent="Wide calm lighting"),
-        ],
         creative_constraints=["No horror jump scares", "Keep medical terms simple"],
     )
     warnings = validate_creative_direction(valid_cd)
     assert len(warnings) == 0
+    assert not hasattr(valid_cd, "emotional_progression")
+    assert "emotional_progression" not in valid_cd.model_dump()
 
     # Incomplete protagonist config -> warning
     bad_protagonist = CreativeDirectionOutput(
@@ -138,15 +134,13 @@ def test_creative_direction_validation_soft_checks():
         storytelling_angle="Angle",
         central_thesis="Thesis",
         tone="tone",
-        visual_genre="styled_3d",
         protagonist_config=ProtagonistConfig(human_presence="single", archetype_summary=None),
-        emotional_progression=[],
         creative_constraints=[],
     )
     warnings2 = validate_creative_direction(bad_protagonist)
     assert any("archetype summary" in w for w in warnings2)
-    assert any("emotional progression" in w.lower() for w in warnings2)
-    assert any("creative constraints" in w.lower() for w in warnings2)
+    assert not any("emotional progression" in w.lower() for w in warnings2)
+    assert not any("creative constraints" in w.lower() for w in warnings2)
 
 
 def test_generate_creative_direction_step_mock(db_session, monkeypatch):
@@ -305,9 +299,7 @@ def test_script_epistemic_calibration_soft_checks():
             "during your transition into deep sleep. While traditional neurologists claim muscles simply relax too fast, "
             "this discovery completely rewrites everything we thought we understood about human consciousness and dreams."
         ),
-        angle="myth vs reality",
         claims_to_verify=["Alien brain frequency control"],
-        hashtags=["#science", "#sleep"],
     )
     warnings = validate_script_soft_checks(script_with_dogmatic_claim, None, None)
     assert any("epistemic calibration" in w.lower() or "dogmatic" in w.lower() for w in warnings)

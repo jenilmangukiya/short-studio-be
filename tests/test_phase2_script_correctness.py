@@ -41,12 +41,10 @@ def _make_script(
         title=title,
         hook=hook,
         narration=narration,
-        angle=angle,
         claims_to_verify=[
             "Test verification claim one.",
             "Test verification claim two.",
         ],
-        hashtags=["#history", "#science", "#story", "#facts"],
     )
 
 
@@ -126,7 +124,7 @@ def test_build_script_prompt_isolates_backstage_directives():
 # ==============================================================================
 
 def test_validator_detects_deflated_hook_negation():
-    """Verify validation catches hooks that immediately deflate their own question with an abrupt denial."""
+    """Verify that deflated question negation regex has been removed under Phase 1D.7."""
     hook = "How could an entire ocean vanish without moving?"
     deflated_body = (
         "It didn't; Mount Tambora erupted thousands of miles away and darkened the sky. "
@@ -138,8 +136,7 @@ def test_validator_detects_deflated_hook_negation():
     script = _make_script(hook=hook, body=deflated_body, angle="myth vs reality")
     issues = evaluate_script_quality(script, target_word_range=(55, 100))
 
-    assert any("immediately deflates the hook question with an abrupt denial" in i.lower() for i in issues)
-    assert any("it didn't" in i.lower() for i in issues)
+    assert not any("immediately deflates the hook question" in i.lower() for i in issues)
 
 
 def test_validator_passes_suspenseful_hook_and_narrative_reveal():

@@ -14,13 +14,14 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
 from app.config import settings
 from app.llm import LLMError, get_llm
 from app.models import Video, VideoStep
+from app.steps.creative_direction import filter_conflicting_channel_settings
 from app.steps.duration import (
     calculate_word_budget_for_duration,
     resolve_video_target_duration,
@@ -121,20 +122,6 @@ TEXTBOOK_PHRASE_REGEX = re.compile(
     flags=re.IGNORECASE,
 )
 
-# Second-sentence throat-clearing filler that delays answering the hook
-DELAYED_PAYOFF_PATTERNS: tuple[str, ...] = (
-    r"^to\s+understand\s+why\b",
-    r"^before\s+we\s+(?:answer|explain|look)\b",
-    r"^let(?:'s|\s+us)\s+take\s+a\s+(?:closer\s+)?look\b",
-    r"^the\s+answer\s+is\s+(?:actually\s+)?(?:surprising|fascinating|interesting|simple)\b",
-    r"^you\s+might\s+be\s+surprised\s+to\s+(?:learn|know|hear)\b",
-)
-
-DELAYED_PAYOFF_REGEX = re.compile(
-    r"(?:" + "|".join(DELAYED_PAYOFF_PATTERNS) + r")",
-    flags=re.IGNORECASE,
-)
-
 # Redundant meta-summary sentences that repeat earlier mechanisms without adding new insight
 REDUNDANT_SUMMARY_PATTERNS: tuple[str, ...] = (
     r"^together,\s+these\s+(?:defenses|factors|features|elements|reasons)\b",
@@ -145,23 +132,6 @@ REDUNDANT_SUMMARY_PATTERNS: tuple[str, ...] = (
 
 REDUNDANT_SUMMARY_REGEX = re.compile(
     r"(?:" + "|".join(REDUNDANT_SUMMARY_PATTERNS) + r")",
-    flags=re.IGNORECASE,
-)
-
-# Weak endings, hedged disclaimers, or calls-to-action at the end of the script
-WEAK_ENDING_PATTERNS: tuple[str, ...] = (
-    r"like\s+and\s+subscribe",
-    r"follow\s+for\s+more",
-    r"subscribe\s+for\s+more",
-    r"leave\s+a\s+comment",
-    r"is\s+still\s+being\s+studied\.?$",
-    r"more\s+research\s+is\s+needed\.?$",
-    r"remains?\s+uncertain\.?$",
-    r"is\s+still\s+incomplete\.?$",
-)
-
-WEAK_ENDING_REGEX = re.compile(
-    r"(?:" + "|".join(WEAK_ENDING_PATTERNS) + r")",
     flags=re.IGNORECASE,
 )
 
@@ -181,84 +151,6 @@ META_INSTRUCTION_LEAK_REGEX = re.compile(
     r"(?:" + "|".join(META_INSTRUCTION_LEAK_PATTERNS) + r")",
     flags=re.IGNORECASE,
 )
-
-# Second-sentence deflated question negation (blunt denial that instantly cancels curiosity)
-DEFLATED_HOOK_REVEAL_PATTERNS: tuple[str, ...] = (
-    r"^(?:it\s+didn't|it\s+doesn't|it\s+wasn't|they\s+didn't|they\s+don't)[.,;!]",
-    r"^(?:actually,\s*no|no,\s*it\s+(?:didn't|doesn't)|no,\s*they\s+(?:didn't|don't))[.,;!]",
-    r"^(?:it\s+didn't|it\s+doesn't|they\s+didn't)\s+(?:actually\s+)?(?:vanish|disappear|happen|exist)[.,;!]?",
-)
-
-DEFLATED_HOOK_REVEAL_REGEX = re.compile(
-    r"(?:" + "|".join(DEFLATED_HOOK_REVEAL_PATTERNS) + r")",
-    flags=re.IGNORECASE,
-)
-
-# Common everyday multi-syllable words that are immediately understandable in spoken English
-EVERYDAY_MULTISYLLABLE_ALLOWLIST: frozenset[str] = frozenset({
-    "actually", "additional", "airplane", "airplanes", "airliner", "altitude",
-    "america", "american", "another", "anything", "anywhere", "atmosphere",
-    "atmospheres", "attention", "automatically", "available", "basically",
-    "beautiful", "centimeter", "centimeters", "comfortable", "commercial",
-    "commonplace", "communicating", "communication", "completely", "complicated",
-    "computer", "computers", "condition", "conditions", "connected", "connection",
-    "construction", "contagious", "continuous", "conversation", "curiosity",
-    "dangerous", "definitely", "destination", "difference", "different",
-    "difficult", "direction", "directly", "disappear", "discovered", "discovering",
-    "discovery", "electricity", "electronic", "emergency", "engineering",
-    "environment", "especially", "essential", "eventually", "everybody",
-    "everyday", "everything", "everywhere", "exact", "exactly", "example",
-    "examples", "expectation", "experience", "experiment", "experiments",
-    "explanation", "extraordinary", "extremely", "fascinating", "favorite",
-    "following", "fortunately", "foundation", "generations", "generally",
-    "gravity", "helicopter", "historical", "history", "horizontal", "however",
-    "immediately", "important", "impossible", "incomplete", "incredible",
-    "incredibly", "individual", "information", "ingredient", "ingredients",
-    "initially", "inside", "instantly", "instead", "interesting", "invisible",
-    "kilometer", "kilometers", "literally", "machinery", "manufacturing",
-    "material", "materials", "mechanical", "mechanism", "medical", "millimeter",
-    "millimeters", "miniature", "misleading", "modern", "moisture", "mysterious",
-    "naturally", "necessary", "newspaper", "normally", "noticeable", "noticing",
-    "observation", "observations", "obviously", "obstructing", "occasional",
-    "operation", "ordinary", "original", "originally", "otherwise", "outside",
-    "passenger", "passengers", "particular", "particularly", "perfectly",
-    "permanent", "perspective", "physical", "physically", "possibility",
-    "possible", "possibly", "powerful", "practical", "practically", "pressure",
-    "pressurized", "preventing", "previously", "primary", "probably",
-    "protection", "protective", "question", "questions", "quickly", "quietly",
-    "reality", " Protection", "realize", "really", "reasonable", "recently",
-    "recognize", "refrigerator", "regular", "regularly", "relationship",
-    "relatively", "reliably", "remember", "reminding", "protective", "scientist",
-    "scientists", "astronomer", "astronomers", "researcher", "researchers",
-    "separate", "separately", "seriously", "similar", "similarly", "simplicity",
-    "situation", "socially", "solution", "somebody", "something", "sometimes",
-    "somewhere", "specific", "specifically", "standard", "structural", "structure",
-    "structures", "suddenly", "Surrounding", "surrounding", "surprising",
-    "surprisingly", "survival", "technology", "television", "temperature",
-    "temperatures", "temporary", "thousands", "together", "traditional",
-    "traveler", "travelers", "typically", "ultimately", "umbrella", "uncomfortable",
-    "understand", "understanding", "unexpected", "unfamiliar", "unfortunately",
-    "universe", "unlikely", "unnecessary", "unusual", "usually", "valuable",
-    "variation", "vertical", "visibility", "waterproof", "whenever", "wherever",
-    "wonderful", "yesterday",
-})
-
-# Plain-English explanation cues that clarify a technical concept in context
-PLAIN_ENGLISH_EXPLANATION_CUES: tuple[str, ...] = (
-    "called", "known as", "means", "meaning", "which is", "that is", "it's the",
-    "is the point", "is a", "acts like", "works like", "like a", "basically",
-    "in other words", "simply", "because", "so that", "allowing", "preventing",
-)
-
-# Discourse/referential/causal connectors that link a sentence to the preceding idea
-SENTENCE_COHESION_MARKERS: frozenset[str] = frozenset({
-    "this", "that", "these", "those", "it", "its", "it's", "they", "their", "them",
-    "there", "here", "such", "same", "other", "another", "both", "each", "every",
-    "because", "so", "but", "yet", "still", "though", "although", "while", "when",
-    "once", "as", "until", "unless", "if", "without", "instead", "beyond", "inside",
-    "outside", "beneath", "under", "over", "through", "across", "near", "far",
-    "farther", "further", "even", "only", "just", "why", "how", "which", "where",
-})
 
 # Stopwords ignored when checking shared content keywords or repeated phrases
 STOPWORDS: frozenset[str] = frozenset({
@@ -293,14 +185,9 @@ class ScriptOutput(BaseModel):
             "must begin verbatim with the hook sentence(s) and unfold as one connected story"
         )
     )
-    angle: AngleType = Field(
-        description="The storytelling angle chosen for this video from the allowed list"
-    )
     claims_to_verify: list[str] = Field(
-        description="1 to 6 standalone factual claims made in the narration that require verification"
-    )
-    hashtags: list[str] = Field(
-        description="3 to 5 relevant hashtags for the video"
+        default_factory=list,
+        description="Optional key factual claims made in the narration that can be audited"
     )
 
 
@@ -446,19 +333,21 @@ def calculate_target_word_count_range(
 
 
 def estimate_spoken_duration_seconds(
-    narration: str, words_per_second: float | None = None
+    narration: str, words_per_second: float | None = None, voice_speed: float = 1.0
 ) -> float:
     """Estimate natural spoken duration in seconds using word count and syllable density."""
     tokens = re.findall(r"\b[\w'-]+\b", narration)
     if not tokens:
         return 0.0
-    wps = words_per_second or getattr(settings, "script_speaking_rate_wps", 2.4)
+    base_wps = words_per_second or getattr(settings, "script_speaking_rate_wps", 2.4)
+    speed = max(0.5, float(voice_speed or 1.0))
+    effective_wps = base_wps * speed
     total_syllables = sum(_count_syllables(t) for t in tokens)
-    # Blend standard wps with syllable rate (~3.75 syllables/sec) + sentence pause allowance
+    # Blend standard wps with syllable rate + sentence pause allowance
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration.strip()) if s.strip()]
-    pause_seconds = max(0, len(sentences) - 1) * 0.35
-    word_dur = len(tokens) / wps
-    syll_dur = (total_syllables / 3.9) + pause_seconds
+    pause_seconds = (max(0, len(sentences) - 1) * 0.35) / speed
+    word_dur = len(tokens) / effective_wps
+    syll_dur = (total_syllables / (3.9 * speed)) + pause_seconds
     return round((word_dur * 0.6 + syll_dur * 0.4), 1)
 
 
@@ -466,15 +355,16 @@ def evaluate_script_quality(
     script: ScriptOutput,
     target_duration_range: tuple[float, float] | None = None,
     target_word_range: tuple[int, int] | None = None,
+    voice_speed: float = 1.0,
 ) -> list[str]:
     """Evaluate storytelling, conversational clarity, sentence rhythm, and narrative progression.
 
     Checks for:
     1. Excessively complex or long sentences.
-    2. Unexplained technical vocabulary or stiff textbook/encyclopedic phrasing.
-    3. Abrupt transitions or disconnected fact-list writing.
-    4. Repeated phrases, redundant information, or repetitive sentence subjects.
-    5. Weak or missing narrative progression (delayed payoff, missing cause-and-effect, weak ending).
+    2. Stiff textbook/encyclopedic phrasing and dogmatic overclaiming.
+    3. Repeated phrases or identical sentence openings.
+    4. Internal production instruction or meta-framing leakage.
+    5. Redundant meta-summary sentences.
     6. Estimated spoken duration relative to target short-form video length and TTS-unfriendly formatting.
 
     Returns:
@@ -499,16 +389,16 @@ def evaluate_script_quality(
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration) if s.strip()]
 
     # 1. Estimated spoken duration & TTS-unfriendly number formatting
-    est_duration = estimate_spoken_duration_seconds(narration)
+    est_duration = estimate_spoken_duration_seconds(narration, voice_speed=voice_speed)
     if target_duration_range:
         min_dur, max_dur = target_duration_range
     elif target_word_range:
-        min_dur = round(target_word_range[0] / 2.6, 1)
-        max_dur = round(target_word_range[1] / 2.0, 1)
+        min_dur = round(target_word_range[0] / (2.6 * max(0.5, voice_speed)), 1)
+        max_dur = round(target_word_range[1] / (2.0 * max(0.5, voice_speed)), 1)
     else:
         min_dur, max_dur = (50.0, 70.0)
 
-    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration_range)
+    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration_range, speaking_speed=voice_speed)
     if len(words) >= min_w and len(words) <= max_w and (est_duration < min_dur or est_duration > max_dur):
         issues.append(
             f"Estimated spoken duration is {est_duration}s (target: {min_dur:.0f}-{max_dur:.0f}s for a natural short-form pace)."
@@ -521,32 +411,7 @@ def evaluate_script_quality(
             f"Spell out numbers as spoken words (e.g. 'thirty thousand')."
         )
 
-    # 2. Excessively long or complex sentences
-    long_sentences: list[str] = []
-    for idx, sent in enumerate(sentences, start=1):
-        s_words = sent.split()
-        if len(s_words) > 28:
-            long_sentences.append(f"sentence {idx} ({len(s_words)} words)")
-        if sent.count(":") + sent.count(";") >= 2:
-            issues.append(
-                f"Sentence {idx} stacks multiple colons or semicolons, making it sound like written academic prose. "
-                f"Use natural conversational clauses instead."
-            )
-
-    if long_sentences:
-        issues.append(
-            f"Narration has overly long sentences ({', '.join(long_sentences)}; keep individual sentences under 28 words for clear spoken delivery)."
-        )
-
-    if sentences:
-        avg_len = len(words) / len(sentences)
-        if avg_len > 22.5:
-            issues.append(
-                f"Average sentence length is {avg_len:.1f} words across {len(sentences)} sentences. "
-                f"Break up dense sentences and mix shorter punchy lines with medium explanations."
-            )
-
-    # 3. Stiff textbook/encyclopedic language & unexplained technical vocabulary
+    # 3. Stiff textbook/encyclopedic language
     textbook_match = TEXTBOOK_PHRASE_REGEX.search(narration)
     if textbook_match:
         issues.append(
@@ -566,94 +431,25 @@ def evaluate_script_quality(
             "Use measured, natural conversational framing (e.g. 'one idea is that', 'scientists think', 'the reason might be') to distinguish hypotheses from established consensus."
         )
 
-    # Check for unexplained complex/polysyllabic jargon (>= 4 syllables not in everyday allowlist)
-    unexplained_jargon: list[str] = []
-    for idx, sent in enumerate(sentences):
-        sent_lower = sent.lower()
-        neighbor_context = sent_lower
-        if idx + 1 < len(sentences):
-            neighbor_context += " " + sentences[idx + 1].lower()
-        has_explanation_cue = any(cue in neighbor_context for cue in PLAIN_ENGLISH_EXPLANATION_CUES)
-
-        tokens = re.findall(r"\b[a-zA-Z]{7,}\b", sent)
-        for tok in tokens:
-            low = tok.lower()
-            if low in EVERYDAY_MULTISYLLABLE_ALLOWLIST:
-                continue
-            if _count_syllables(low) >= 4 and not has_explanation_cue:
-                if low not in unexplained_jargon:
-                    unexplained_jargon.append(low)
-
-    if len(unexplained_jargon) >= 3:
-        sample_terms = ", ".join(f"'{w}'" for w in unexplained_jargon[:4])
-        issues.append(
-            f"Narration contains dense or unexplained technical vocabulary ({sample_terms}). "
-            f"Replace complex vocabulary with everyday words or explain technical terms in plain English."
-        )
-
-    # 4. Disconnected fact-list writing & abrupt transitions
-    also_trivia_count = 0
-    hard_catalog_openers: list[str] = []
-    for sent in sentences[1:]:
-        cat_m = re.match(
-            r"^(?:Additionally|Furthermore|Moreover|In\s+addition|Another\s+(?:fact|interesting\s+fact|thing))\b",
-            sent,
-            flags=re.IGNORECASE,
-        )
-        if cat_m:
-            hard_catalog_openers.append(cat_m.group(0))
-        if re.match(
-            r"^(?:[A-Z][a-z]+\s+also\b|It\s+also\s+tends\b|They\s+also\b|Scientists\s+first\s+detected\b)",
-            sent,
-        ):
-            also_trivia_count += 1
-
-    if hard_catalog_openers or also_trivia_count >= 2:
-        issues.append(
-            "Narration reads like a disconnected list of facts (using additive 'also' / 'furthermore' trivia jumps). "
-            "Focus on one connected cause-and-effect narrative thread."
-        )
-
-    # Check inter-sentence cohesion across body sentences (using a 3-sentence rolling context window + word stems)
-    if len(sentences) >= 5:
-        unlinked_sentences = 0
-        recent_stem_sets: list[set[str]] = []
-        for idx, sent in enumerate(sentences):
-            sent_tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z']+\b", sent)]
-            curr_stems = {
-                re.sub(r"(?:ies|es|s|ed|ing)$", "", w.strip("'"))[:6]
-                for w in sent_tokens
-                if len(w.strip("'")) >= 4 and w.strip("'") not in STOPWORDS
-            }
-            if idx >= 1:
-                first_four = set(sent_tokens[:4])
-                has_connector = bool(first_four & SENTENCE_COHESION_MARKERS) or any(
-                    m in sent_tokens for m in ("because", "so", "but", "while", "without", "instead", "which", "though")
-                )
-                rolling_context = set().union(*recent_stem_sets[-3:]) if recent_stem_sets else set()
-                shares_keyword = bool(curr_stems & rolling_context)
-                if not has_connector and not shares_keyword:
-                    unlinked_sentences += 1
-            recent_stem_sets.append(curr_stems)
-
-        if unlinked_sentences >= max(3, int(len(sentences) * 0.4)):
-            issues.append(
-                f"Narration has abrupt transitions between ideas ({unlinked_sentences} sentences introduce disconnected thoughts without linking to the previous context). "
-                f"Use natural conversational transitions so each sentence flows from what came before."
-            )
-
-    # 5. Repeated phrases or redundant sentence openings
+    # 4. Repeated phrases or redundant sentence openings
     consecutive_same_start = False
     for idx in range(1, len(sentences)):
         prev_w = [w.lower() for w in re.findall(r"\b[a-zA-Z']+\b", sentences[idx - 1])[:2]]
         curr_w = [w.lower() for w in re.findall(r"\b[a-zA-Z']+\b", sentences[idx])[:2]]
         if len(prev_w) == 2 and prev_w == curr_w:
-            consecutive_same_start = True
-            issues.append(
-                f"Consecutive sentences {idx} and {idx + 1} start with the identical phrase '{' '.join(curr_w)}'. "
-                f"Vary sentence openings for natural spoken flow."
+            s1_len = len(sentences[idx - 1].split())
+            s2_len = len(sentences[idx].split())
+            is_rhetorical_parallel = (
+                (s1_len <= 14 and s2_len <= 14)
+                or curr_w[0] in {"imagine", "picture", "no", "without", "what"}
             )
-            break
+            if not is_rhetorical_parallel:
+                consecutive_same_start = True
+                issues.append(
+                    f"Consecutive sentences {idx} and {idx + 1} start with the identical phrase '{' '.join(curr_w)}'. "
+                    f"Vary sentence openings for natural spoken flow."
+                )
+                break
 
     # Check repeated 3-word content phrases (occurring >= 3 times)
     norm_tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z]{3,}\b", narration)]
@@ -672,7 +468,7 @@ def evaluate_script_quality(
             f"Use pronouns or varied phrasing instead of repeating the same phrase."
         )
 
-    # 6. Production instruction & meta-framing leakage check (backstage directives leaking into dialogue)
+    # 5. Production instruction & meta-framing leakage check (backstage directives leaking into dialogue)
     meta_leak_match = META_INSTRUCTION_LEAK_REGEX.search(narration)
     if meta_leak_match:
         issues.append(
@@ -681,36 +477,7 @@ def evaluate_script_quality(
             "Narrate the story directly from an immersive perspective."
         )
 
-    # 7. Narrative progression checks (immediate payoff after hook, cause-and-effect, strong ending)
-    if len(sentences) >= 2:
-        first_sent = sentences[0].strip()
-        second_sent = sentences[1].strip()
-        hook_text = (script.hook or "").strip()
-        is_question_hook = hook_text.endswith("?") or first_sent.endswith("?")
-
-        # Check for deflated question reveal (abrupt negation that cancels curiosity before building tension)
-        if is_question_hook and DEFLATED_HOOK_REVEAL_REGEX.search(second_sent):
-            issues.append(
-                f"Second sentence immediately deflates the hook question with an abrupt denial ('{second_sent[:45]}...'). "
-                "Instead of prematurely killing the curiosity, advance the narrative, build the mystery or stakes, "
-                "and reveal the underlying mechanism naturally."
-            )
-
-        if DELAYED_PAYOFF_REGEX.search(second_sent):
-            issues.append(
-                f"Second sentence delays the explanation with filler ('{second_sent[:40]}...'). "
-                f"Answer or advance the hook immediately in the second sentence."
-            )
-
-    if sentences:
-        last_sent = sentences[-1].strip()
-        if WEAK_ENDING_REGEX.search(last_sent):
-            issues.append(
-                f"Final sentence ends weakly with a hedged disclaimer or call-to-action ('{last_sent}'). "
-                f"End with a crisp, memorable insight or reveal."
-            )
-
-    # 8. Redundant meta-summary check
+    # 6. Redundant meta-summary check
     for sent in sentences:
         if REDUNDANT_SUMMARY_REGEX.search(sent):
             issues.append(
@@ -719,23 +486,6 @@ def evaluate_script_quality(
             )
             break
 
-    # 8. Repetitive leading sentence subject check
-    leading_nouns: list[str] = []
-    for sent in sentences:
-        first_tokens = re.findall(r"\b[a-zA-Z]{4,}\b", sent)
-        if first_tokens:
-            w_low = first_tokens[0].lower()
-            if w_low not in STOPWORDS and w_low not in SENTENCE_COHESION_MARKERS:
-                leading_nouns.append(w_low)
-    if len(leading_nouns) >= 3:
-        for noun in set(leading_nouns):
-            if leading_nouns.count(noun) >= 3:
-                issues.append(
-                    f"Narration repeatedly begins sentences with '{noun}'. "
-                    "Vary sentence openings, use pronouns, and emphasize dynamic actions."
-                )
-                break
-
     return issues
 
 
@@ -743,6 +493,7 @@ def validate_script_soft_checks(
     script: ScriptOutput,
     target_duration: float | tuple[float, float] | None = None,
     target_word_range: tuple[int, int] | None = None,
+    voice_speed: float = 1.0,
 ) -> list[str]:
     """Execute code-side soft checks and storytelling quality checks on the generated script output.
 
@@ -751,9 +502,9 @@ def validate_script_soft_checks(
     warnings: list[str] = []
 
     # 1. Narration word count
-    words = script.narration.split()
+    words = (script.narration or "").split()
     word_count = len(words)
-    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration)
+    min_w, max_w = target_word_range or calculate_target_word_count_range(target_duration, speaking_speed=voice_speed)
     if word_count < min_w:
         warnings.append(
             f"Narration word count is too short ({word_count} words; target: {min_w}-{max_w} words for the requested duration)."
@@ -763,64 +514,37 @@ def validate_script_soft_checks(
             f"Narration word count is too long ({word_count} words; target: {min_w}-{max_w} words for the requested duration)."
         )
 
-    # 2. Hook / cold open length check (flexible opening, advisory check if > 35 words)
-    hook_words = script.hook.split()
-    if len(hook_words) > 35:
-        warnings.append(
-            f"Opening hook/cold open length is {len(hook_words)} words (target: concise scene-setting up to 35 words)."
-        )
-
-    # 3. Hook cliché and generic opener detection
-    cliche_match = CLICHE_HOOK_REGEX.search(script.hook)
+    # 2. Hook cliché and generic opener detection
+    cliche_match = CLICHE_HOOK_REGEX.search(script.hook or "")
     if cliche_match:
         warnings.append(
             f"Hook contains generic meta-cliché: '{cliche_match.group(0)}'. Make the hook more specific, surprising, or direct."
         )
 
-    opener_match = GENERIC_OPENER_REGEX.search(script.hook)
+    opener_match = GENERIC_OPENER_REGEX.search(script.hook or "")
     if opener_match:
         warnings.append(
             f"Hook starts with generic formula: '{opener_match.group(0).strip()}'. Ask the question directly (e.g. 'Why do...' instead of 'Do you know why...')."
         )
 
-    norm_hook = normalize_for_comparison(script.hook).rstrip(".!? ")
-    norm_narr = normalize_for_comparison(script.narration)
+    norm_hook = normalize_for_comparison(script.hook or "").rstrip(".!? ")
+    norm_narr = normalize_for_comparison(script.narration or "")
     if not norm_narr.startswith(norm_hook):
         warnings.append("Narration does not begin with the hook sentence.")
 
     # 4. No bracketed directions or parentheses
-    if re.search(r"\[.*?\]|\(.*?\)", script.narration):
+    if re.search(r"\[.*?\]|\(.*?\)", script.narration or ""):
         warnings.append("Narration contains bracketed directions or parentheses.")
 
     # 5. No markdown formatting characters
-    if re.search(r"[*#_`]", script.narration):
+    if re.search(r"[*#_`]", script.narration or ""):
         warnings.append("Narration contains markdown formatting characters.")
 
     # 6. No emojis
-    if EMOJI_PATTERN.search(script.narration):
+    if EMOJI_PATTERN.search(script.narration or ""):
         warnings.append("Narration contains emoji characters.")
 
-    # 7. Angle membership
-    if script.angle not in ALLOWED_ANGLES:
-        warnings.append(
-            f"Angle '{script.angle}' is not in the allowed angles list: {list(ALLOWED_ANGLES)}."
-        )
-
-    # 8. Claims to verify count (1 - 6)
-    claims_count = len(script.claims_to_verify)
-    if claims_count < 1 or claims_count > 6:
-        warnings.append(
-            f"Claims count is {claims_count} (target: 1-6 standalone claims)."
-        )
-
-    # 9. Hashtags count (3 - 5)
-    tags_count = len(script.hashtags)
-    if tags_count < 3 or tags_count > 5:
-        warnings.append(
-            f"Hashtags count is {tags_count} (target: 3-5 tags)."
-        )
-
-    # 10. Storytelling, conversational flow, and narrative progression checks
+    # 7. Storytelling, conversational flow, and narrative quality checks
     target_dur_range = None
     if isinstance(target_duration, (list, tuple)) and len(target_duration) >= 2:
         target_dur_range = (float(target_duration[0]), float(target_duration[1]))
@@ -831,45 +555,78 @@ def validate_script_soft_checks(
         script,
         target_duration_range=target_dur_range,
         target_word_range=(min_w, max_w),
+        voice_speed=voice_speed,
     )
     warnings.extend(quality_issues)
 
     return warnings
 
 
-def get_recent_angles(
-    db: Session | None, channel_id: Any, current_video_id: Any, limit: int = 8
+def check_objective_technical_failures(
+    script: ScriptOutput,
+    target_word_range: tuple[int, int],
+    target_duration_range: tuple[float, float] | None = None,
+    voice_speed: float = 1.0,
 ) -> list[str]:
-    """Retrieve up to `limit` angles from previous completed scripts for this channel."""
-    if db is None or not channel_id:
-        return []
+    """Check for objective technical failures that strictly warrant an LLM retry.
 
-    try:
-        stmt = (
-            select(VideoStep.output)
-            .join(Video, VideoStep.video_id == Video.id)
-            .where(
-                Video.channel_id == channel_id,
-                Video.id != current_video_id,
-                VideoStep.name == "script",
-                VideoStep.status == "done",
+    Triggering criteria:
+    - Missing narration
+    - Production note leakage (META_INSTRUCTION_LEAK_REGEX)
+    - Unsupported formatting / characters:
+      * Brackets or parentheses: [ ... ] or ( ... )
+      * Markdown symbols: * # _ `
+      * Emojis
+    - Significant duration deviation (> 25% off target duration bounds, with word count as supporting guidance)
+    """
+    failures: list[str] = []
+    narration = (script.narration or "").strip()
+    if not narration:
+        failures.append("Narration is completely missing or empty.")
+        return failures
+
+    # 1. Significant duration deviation (> 25% off bounds) as primary measure
+    if target_duration_range:
+        est_duration = estimate_spoken_duration_seconds(narration, voice_speed=voice_speed)
+        min_d, max_d = target_duration_range
+        min_allowed_d = round(min_d * 0.75, 1)
+        max_allowed_d = round(max_d * 1.25, 1)
+        if est_duration < min_allowed_d:
+            failures.append(
+                f"Estimated spoken duration is significantly too short ({est_duration}s; target: {min_d:.0f}-{max_d:.0f}s, minimum allowed {min_allowed_d:.0f}s)."
             )
-            .order_by(VideoStep.finished_at.desc().nullslast(), VideoStep.created_at.desc())
-            .limit(limit)
+        elif est_duration > max_allowed_d:
+            failures.append(
+                f"Estimated spoken duration is significantly too long ({est_duration}s; target: {min_d:.0f}-{max_d:.0f}s, maximum allowed {max_allowed_d:.0f}s)."
+            )
+
+    # Word count as supporting guidance (> 25% deviation from bounds)
+    words = narration.split()
+    word_count = len(words)
+    min_w, max_w = target_word_range
+    if word_count < int(min_w * 0.75):
+        failures.append(
+            f"Narration word count is too short (extreme underflow: {word_count} words; target: {min_w}-{max_w} words, minimum allowed {int(min_w * 0.75)})."
         )
-        rows = db.scalars(stmt).all()
-        recent_angles: list[str] = []
-        for out in rows:
-            if isinstance(out, dict):
-                # Stored shape: {"script": {"angle": ...}} or legacy {"angle": ...}
-                script_data = out.get("script")
-                if isinstance(script_data, dict) and script_data.get("angle"):
-                    recent_angles.append(script_data["angle"])
-                elif out.get("angle"):
-                    recent_angles.append(out["angle"])
-        return recent_angles
-    except Exception:
-        return []
+    elif word_count > int(max_w * 1.25):
+        failures.append(
+            f"Narration word count is too long (extreme overflow: {word_count} words; target: {min_w}-{max_w} words, maximum allowed {int(max_w * 1.25)})."
+        )
+
+    leak_match = META_INSTRUCTION_LEAK_REGEX.search(narration)
+    if leak_match:
+        failures.append(f"Narration leaks internal production instructions or meta-framing ('{leak_match.group(0)}').")
+
+    if re.search(r"\[.*?\]|\(.*?\)", narration):
+        failures.append("Narration contains bracketed directions or parentheses.")
+
+    if re.search(r"[*#_`]", narration):
+        failures.append("Narration contains markdown formatting characters.")
+
+    if EMOJI_PATTERN.search(narration):
+        failures.append("Narration contains emoji characters.")
+
+    return failures
 
 
 def build_script_prompt(
@@ -879,7 +636,6 @@ def build_script_prompt(
     channel_name: str | None = None,
     channel_niche: str | None = None,
     channel_settings: dict | None = None,
-    recent_angles: list[str] | None = None,
     previous_script: dict | None = None,
     revision_instruction: str | None = None,
     target_duration_range: tuple[float, float] | None = None,
@@ -932,7 +688,7 @@ def build_script_prompt(
                 sections.append(f"- **Information Revelation Strategy**: {narrative_plan['information_revelation_strategy']}")
             prog = narrative_plan.get("story_progression", [])
             if prog and isinstance(prog, list):
-                sections.append("- **Story Progression Stages**:")
+                sections.append("- **Story Progression Guidance**:")
                 for st in prog:
                     if isinstance(st, dict):
                         sections.append(f"  * **{st.get('stage_name', 'Stage')}**: {st.get('description', '')}")
@@ -948,8 +704,7 @@ def build_script_prompt(
         sections.append(f"- **Requested Duration**: {min_d:.0f} to {max_d:.0f} seconds")
         sections.append(
             f"- **Target Spoken Word Count**: {min_w} to {max_w} words "
-            f"(strictly enforced; do NOT write filler or repeat facts to exceed {max_w} words, "
-            f"and do not truncate below {min_w} words)."
+            f"(approximate storytelling budget; scale pacing and depth to fit this length)."
         )
 
     if channel_name or channel_niche or channel_settings:
@@ -959,15 +714,9 @@ def build_script_prompt(
         if channel_niche:
             sections.append(f"- **Niche**: {channel_niche}")
         if channel_settings:
-            sections.append(f"- **Channel Settings**: {json.dumps(channel_settings)}")
-
-    if recent_angles:
-        angles_list = ", ".join(f"'{a}'" for a in recent_angles)
-        sections.append(
-            f"\n### Angle Selection Guidance\n"
-            f"The following angles were recently used in this channel: {angles_list}.\n"
-            f"Please avoid repeating these recent angles if another allowed angle fits the topic."
-        )
+            filtered_settings = filter_conflicting_channel_settings(channel_settings)
+            if filtered_settings:
+                sections.append(f"- **Channel Settings**: {json.dumps(filtered_settings)}")
 
     if previous_script and revision_instruction:
         sections.append("\n## REVISION MODE")
@@ -978,23 +727,11 @@ def build_script_prompt(
         sections.append(f"- **Revision Instruction**: {revision_instruction}")
         sections.append(f"- **Previous Script**: {json.dumps(previous_script, indent=2)}")
 
-    sections.append(
-        "\n### Conversational Voice Requirement\n"
-        "- Write like a real person talking to viewers in a natural, conversational way—as if explaining an interesting fact to a friend across the table.\n"
-        "- Use everyday vocabulary and prefer natural contractions (it's, you're, doesn't, that's, don't) without forcing them into every single sentence.\n"
-        "- Avoid formal textbook or encyclopedia phrasing (e.g. use 'one idea is that' instead of 'one leading explanation is that', 'this happens when' instead of 'this phenomenon occurs when').\n"
-        "- Explain one clear idea at a time; treat 8 to 18 words per sentence as a pacing guideline, not a rigid constraint.\n"
-        "- Preserve the actual level of scientific certainty: if something is an unproven theory or hypothesis, describe it as an idea or theory rather than a proven fact."
-    )
-
     min_w_str = f"between {target_word_range[0]} and {target_word_range[1]} words" if target_word_range else "within the target word count"
     sections.append(
         "\n## Instructions\n"
-        "Plan one connected story arc (hook -> immediate reveal/development -> progressive cause-and-effect -> memorable payoff) "
-        f"and generate a structured script whose narration is strictly {min_w_str}, "
-        "written in natural, conversational spoken English, avoiding textbook formulations, redundant summary lines, "
-        "repetitive sentence openings, circular explanations, deflated question hooks, or vocalized backstage production notes, "
-        "and conforming to the ScriptOutput schema."
+        f"Generate a structured script whose spoken narration is approximately {min_w_str}, "
+        "written in natural, conversational spoken English, conforming to the ScriptOutput schema."
     )
 
     return "\n".join(sections)
@@ -1024,12 +761,7 @@ def generate_script_step(
     channel_niche = getattr(channel, "niche", None) if channel else None
     channel_settings = getattr(channel, "settings", None) if channel else None
 
-    # 3. Retrieve recent angles
-    recent_angles = get_recent_angles(
-        db=db, channel_id=channel_id, current_video_id=video.id, limit=8
-    )
-
-    # 3b. Extract Creative Direction if present (from 8-step pipeline)
+    # 3. Extract Creative Direction if present (from 8-step pipeline)
     cd_step = prev.get("creative_direction") if isinstance(prev, dict) else None
     cd_data = cd_step.get("creative_direction") if isinstance(cd_step, dict) else None
 
@@ -1044,7 +776,7 @@ def generate_script_step(
     rules_text, prompt_version = load_prompt_template()
 
     # 5b. Resolve target duration and word count constraints
-    voice_speed = None
+    voice_speed = 1.0
     if isinstance(channel_settings, dict):
         try:
             voice_speed = float(channel_settings.get("voice_speed", 1.0))
@@ -1071,7 +803,6 @@ def generate_script_step(
         channel_name=channel_name,
         channel_niche=channel_niche,
         channel_settings=channel_settings,
-        recent_angles=recent_angles,
         previous_script=previous_script,
         revision_instruction=step.user_prompt,
         target_duration_range=target_duration_range,
@@ -1109,23 +840,42 @@ def generate_script_step(
         script_output,
         target_duration=target_duration_range,
         target_word_range=target_word_range,
+        voice_speed=voice_speed,
     )
 
-    # 9. Targeted rewrite (once max) if soft checks or quality checks fail and not in mock mode
-    if warnings and llm.provider_name != "mock":
+    # 9. Targeted rewrite strictly on objective technical failures
+    retry_reasons = check_objective_technical_failures(
+        script_output,
+        target_word_range=target_word_range,
+        target_duration_range=target_duration_range,
+        voice_speed=voice_speed,
+    )
+    attempts_history: list[dict[str, Any]] = []
+
+    if retry_reasons and llm.provider_name != "mock":
         attempts = 2
+        attempts_history.append({
+            "attempt": 1,
+            "script": script_output.model_dump(),
+            "triggering_reasons": retry_reasons,
+            "provider": llm.provider_name,
+            "model": llm.model,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "reasoning_tokens": result.thinking_tokens,
+            "latency_seconds": round(result.latency_seconds, 4),
+        })
         retry_prompt = (
             f"{prompt}\n\n"
-            f"[IMPORTANT FEEDBACK: Your previous script draft had the following soft-check and storytelling quality issues:\n"
-            + "\n".join(f"- {w}" for w in warnings)
-            + "\n\nPreviously generated draft:\n"
+            f"[CRITICAL TECHNICAL FIX REQUIRED: Your previous script draft failed the following technical requirements:\n"
+            + "\n".join(f"- {r}" for r in retry_reasons)
+            + "\n\nPreviously generated draft (DO NOT REUSE DEFECTS):\n"
             + json.dumps(script_output.model_dump(), indent=2)
-            + f"\n\nPlease perform a targeted rewrite that fixes every listed issue while keeping verified facts accurate. "
-            f"Specifically ensure narration word count is strictly between {target_word_range[0]} and {target_word_range[1]} words "
-            f"(targeting {target_duration_range[0]:.0f}–{target_duration_range[1]:.0f}s duration), "
-            "eliminate redundant summary filler, use distinct visual progression, "
-            "connect sentences into one smooth cause-and-effect narrative, "
-            "and strictly conforms to the ScriptOutput schema.]"
+            + f"\n\nPlease rewrite the script to resolve these technical failures while preserving the core narrative and factual accuracy. "
+            f"Specifically ensure narration word count is between {target_word_range[0]} and {target_word_range[1]} words "
+            f"(target duration: {target_duration_range[0]:.0f}-{target_duration_range[1]:.0f}s), "
+            "use plain conversational spoken text without brackets, parentheses, markdown formatting characters, or emojis, "
+            "and strictly conform to the ScriptOutput schema.]"
         )
         try:
             retry_result = llm.generate_structured(
@@ -1133,23 +883,52 @@ def generate_script_step(
                 response_model=ScriptOutput,
                 task="script",
             )
-            script_output = retry_result.output
+            retry_output = retry_result.output
             total_in_tokens += retry_result.input_tokens or 0
             total_out_tokens += retry_result.output_tokens or 0
             if retry_result.thinking_tokens is not None:
                 total_think_tokens = (total_think_tokens or 0) + retry_result.thinking_tokens
             total_latency += retry_result.latency_seconds
+
+            # Verify Attempt 2 strictly; do not allow invalid final draft to become authoritative
+            attempt2_failures = check_objective_technical_failures(
+                retry_output,
+                target_word_range=target_word_range,
+                target_duration_range=target_duration_range,
+                voice_speed=voice_speed,
+            )
+            if attempt2_failures:
+                attempts_history.append({
+                    "attempt": 2,
+                    "script": retry_output.model_dump(),
+                    "triggering_reasons": attempt2_failures,
+                    "provider": llm.provider_name,
+                    "model": llm.model,
+                    "input_tokens": retry_result.input_tokens,
+                    "output_tokens": retry_result.output_tokens,
+                    "reasoning_tokens": retry_result.thinking_tokens,
+                    "latency_seconds": round(retry_result.latency_seconds, 4),
+                })
+                raise LLMError(
+                    f"Script generation failed technical validation after retry: {'; '.join(attempt2_failures)}"
+                )
+
+            script_output = retry_output
             # Re-evaluate warnings for Attempt 2
             warnings = validate_script_soft_checks(
                 script_output,
                 target_duration=target_duration_range,
                 target_word_range=target_word_range,
+                voice_speed=voice_speed,
             )
-        except Exception:
-            # If retry call fails, retain original output and its warnings
-            pass
+        except Exception as exc:
+            if isinstance(exc, LLMError):
+                raise
+            raise LLMError(f"Script retry generation failed: {exc}") from exc
 
-    est_spoken_seconds = estimate_spoken_duration_seconds(script_output.narration)
+    est_spoken_seconds = estimate_spoken_duration_seconds(
+        script_output.narration, voice_speed=voice_speed
+    )
 
     # 10. Formulate output payload
     return {
@@ -1165,6 +944,7 @@ def generate_script_step(
             "reasoning_tokens": total_think_tokens,
             "latency_seconds": round(total_latency, 4),
             "attempts": attempts,
+            "attempts_history": attempts_history,
             "revision": is_revision,
             "target_duration_seconds": list(target_duration_range),
             "target_word_count_range": list(target_word_range),

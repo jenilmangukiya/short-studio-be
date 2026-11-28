@@ -13,7 +13,6 @@ from app.steps.script import (
     ScriptOutput,
     build_script_prompt,
     generate_script_step,
-    get_recent_angles,
     load_prompt_template,
     normalize_for_comparison,
     validate_script_soft_checks,
@@ -23,9 +22,7 @@ from app.steps.script import (
 def _make_sample_script(
     hook="Have a look at airplane windows.",
     narration=None,
-    angle="why it's designed this way",
     claims=None,
-    hashtags=None,
 ) -> ScriptOutput:
     """Helper to build a valid ScriptOutput with controlled word counts."""
     if narration is None:
@@ -46,7 +43,6 @@ def _make_sample_script(
         title="Why Airplane Windows Have Tiny Holes",
         hook=hook,
         narration=narration,
-        angle=angle,
         claims_to_verify=(
             claims
             if claims is not None
@@ -55,11 +51,6 @@ def _make_sample_script(
                 "The bleed hole balances cabin pressure.",
                 "The hole vents moisture to stop frost.",
             ]
-        ),
-        hashtags=(
-            hashtags
-            if hashtags is not None
-            else ["#aviation", "#engineering", "#travel", "#facts"]
         ),
     )
 
@@ -88,18 +79,17 @@ def test_validator_detects_narration_too_long():
     assert any("word count" in w.lower() for w in warnings)
 
 
-def test_validator_detects_hook_too_long():
+def test_validator_hook_length_flexible():
     long_hook = (
-        "This is an extremely long opening hook sentence that comfortably exceeds thirty-five words "
-        "and keeps rambling on and on with extra clauses, additional facts, and unnecessary descriptions "
-        "far beyond what any short-form video opening should ever attempt to say aloud."
+        "This is an atmospheric opening scene-setting cold open that comfortably sets a vivid narrative tone "
+        "and keeps unfolding with sensory details, environmental observations, and dramatic context "
+        "giving the audience immediate immersion into the historical anomaly before revealing the underlying cause "
+        "without triggering arbitrary length ceilings."
     )
-    assert len(long_hook.split()) > 35
     narr = f"{long_hook} " + "word " * 115
     script = _make_sample_script(hook=long_hook, narration=narr)
     warnings = validate_script_soft_checks(script)
-    assert any("hook/cold open length" in w.lower() for w in warnings)
-    assert any("up to 35 words" in w.lower() for w in warnings)
+    assert not any("hook/cold open length" in w.lower() for w in warnings)
 
 
 def test_validator_flags_hook_exceeding_ten_words_soft_warning():
@@ -234,101 +224,11 @@ def test_validator_detects_emojis():
     assert any("emoji" in w.lower() for w in warnings)
 
 
-def test_validator_detects_invalid_claims_count():
-    # 0 claims
+def test_validator_claims_optional():
+    # 0 claims is valid optional metadata under Phase 1D.7
     script_empty = _make_sample_script(claims=[])
     warnings_empty = validate_script_soft_checks(script_empty)
-    assert any("claims count" in w.lower() for w in warnings_empty)
-
-    # 7 claims (exceeds max of 6)
-    script_many = _make_sample_script(claims=[f"Claim {i}" for i in range(1, 8)])
-    warnings_many = validate_script_soft_checks(script_many)
-    assert any("claims count" in w.lower() for w in warnings_many)
-
-
-def test_validator_detects_invalid_hashtags_count():
-    # 2 tags (fewer than 3)
-    script_few = _make_sample_script(hashtags=["#one", "#two"])
-    warnings_few = validate_script_soft_checks(script_few)
-    assert any("hashtags count" in w.lower() for w in warnings_few)
-
-    # 6 tags (more than 5)
-    script_many = _make_sample_script(hashtags=[f"#tag{i}" for i in range(1, 7)])
-    warnings_many = validate_script_soft_checks(script_many)
-    assert any("hashtags count" in w.lower() for w in warnings_many)
-
-
-# ==============================================================================
-# 2. Recent Angles Lookup Tests
-# ==============================================================================
-
-def test_recent_angles_returns_empty_when_no_session():
-    angles = get_recent_angles(db=None, channel_id=uuid.uuid4(), current_video_id=uuid.uuid4())
-    assert angles == []
-
-
-def test_recent_angles_query_with_in_memory_db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-
-    with Session(engine) as session:
-        user = User(email="test@example.com", password_hash="secret")
-        session.add(user)
-        session.flush()
-
-        channel = Channel(user_id=user.id, name="Facts Channel", niche="Engineering")
-        other_channel = Channel(user_id=user.id, name="Other Channel", niche="Nature")
-        session.add_all([channel, other_channel])
-        session.flush()
-
-        # Video 1: Done with "origin story"
-        v1 = Video(channel_id=channel.id, topic="Topic 1")
-        session.add(v1)
-        session.flush()
-        s1 = VideoStep(
-            video_id=v1.id,
-            name="script",
-            position=0,
-            status="done",
-            output={"script": {"angle": "origin story", "title": "T1"}},
-            finished_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
-
-        # Video 2: Done with "why it's designed this way" (more recent)
-        v2 = Video(channel_id=channel.id, topic="Topic 2")
-        session.add(v2)
-        session.flush()
-        s2 = VideoStep(
-            video_id=v2.id,
-            name="script",
-            position=0,
-            status="done",
-            output={"script": {"angle": "why it's designed this way", "title": "T2"}},
-            finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
-        )
-
-        # Video 3: Other channel (should be ignored)
-        v3 = Video(channel_id=other_channel.id, topic="Topic 3")
-        session.add(v3)
-        session.flush()
-        s3 = VideoStep(
-            video_id=v3.id,
-            name="script",
-            position=0,
-            status="done",
-            output={"script": {"angle": "myth vs reality", "title": "T3"}},
-            finished_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
-        )
-
-        # Current video
-        current_v = Video(channel_id=channel.id, topic="Current Topic")
-        session.add(current_v)
-        session.add_all([s1, s2, s3])
-        session.commit()
-
-        angles = get_recent_angles(db=session, channel_id=channel.id, current_video_id=current_v.id)
-        # Should return v2's angle then v1's angle
-        assert angles == ["why it's designed this way", "origin story"]
+    assert not any("claims count" in w.lower() for w in warnings_empty)
 
 
 # ==============================================================================
@@ -338,7 +238,7 @@ def test_recent_angles_query_with_in_memory_db():
 def test_load_prompt_template_reads_version_and_hash():
     text, version_str = load_prompt_template()
     assert len(text) > 100
-    assert "script-v2" in version_str
+    assert "script-v" in version_str
     assert ":" in version_str
     # Verify hash portion is 8 characters
     hash_part = version_str.split(":", 1)[1]
@@ -354,13 +254,11 @@ def test_build_script_prompt_fresh_mode():
         channel_name="Everyday Mysteries",
         channel_niche="Tech History",
         channel_settings={"tone": "curious"},
-        recent_angles=["myth vs reality"],
     )
 
     assert "Submarine fiber optic cables" in prompt
     assert "Carrying global internet traffic" in prompt
     assert "Everyday Mysteries" in prompt
-    assert "myth vs reality" in prompt
     assert "REVISION MODE" not in prompt
 
 
@@ -426,7 +324,6 @@ def test_full_script_step_with_mock_provider(monkeypatch):
     assert "meta" in result
 
     script = result["script"]
-    assert script["angle"] in ALLOWED_ANGLES
     assert "title" in script
     assert "hook" in script
     assert "narration" in script
@@ -437,7 +334,7 @@ def test_full_script_step_with_mock_provider(monkeypatch):
     assert meta["task"] == "script"
     assert meta["attempts"] == 1
     assert meta["revision"] is False
-    assert "script-v2" in meta["prompt_version"]
+    assert "script-v" in meta["prompt_version"]
 
 
 def test_full_script_step_revision_mode(monkeypatch):
@@ -479,7 +376,7 @@ def test_full_script_step_revision_mode(monkeypatch):
 
 
 def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
-    """Verify that an initial cliché warning triggers a retry attempt with corrective feedback."""
+    """Verify that under Phase 1D.7, cliché warnings are advisory and do NOT trigger automatic retries."""
     from unittest.mock import MagicMock
     from app.llm.types import LLMResult
     from app.steps.script import ScriptOutput, generate_script_step
@@ -487,10 +384,6 @@ def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
     cliche_script = _make_sample_script(
         hook="That tiny hole is doing more than you think.",
         narration="That tiny hole is doing more than you think. " + "word " * 115,
-    )
-    clean_script = _make_sample_script(
-        hook="Airplane windows have tiny holes to prevent cracks.",
-        narration="Airplane windows have tiny holes to prevent cracks. " + "word " * 115,
     )
 
     mock_llm = MagicMock()
@@ -505,15 +398,7 @@ def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
         output_tokens=50,
         latency_seconds=1.0,
     )
-    res2 = LLMResult(
-        output=clean_script,
-        provider="openai",
-        model="gpt-mock",
-        input_tokens=120,
-        output_tokens=50,
-        latency_seconds=1.2,
-    )
-    mock_llm.generate_structured.side_effect = [res1, res2]
+    mock_llm.generate_structured.return_value = res1
 
     monkeypatch.setattr("app.steps.script.get_llm", lambda task: mock_llm)
 
@@ -533,16 +418,14 @@ def test_generate_script_step_retries_on_cliche_warning(monkeypatch):
 
     result = generate_script_step(DummyVideo(), {}, DummyStep())
 
-    assert mock_llm.generate_structured.call_count == 2
-    retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
-    assert "generic meta-cliché" in retry_prompt
-    assert result["meta"]["attempts"] == 2
-    assert result["script"]["hook"] == "Airplane windows have tiny holes to prevent cracks."
-    assert result["warnings"] == []
+    # Under Phase 1D.7, soft warnings like clichés do not trigger retries
+    assert mock_llm.generate_structured.call_count == 1
+    assert result["meta"]["attempts"] == 1
+    assert any("generic meta-cliché" in w for w in result["warnings"])
 
 
 def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
-    """Verify that a generic question formula (e.g. 'Do you know why...') triggers a retry."""
+    """Verify that generic question formulas produce soft warnings without triggering an unnecessary retry."""
     from unittest.mock import MagicMock
     from app.llm.types import LLMResult
     from app.steps.script import ScriptOutput, generate_script_step
@@ -550,10 +433,6 @@ def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
     formula_script = _make_sample_script(
         hook="Do you know why airplane windows have tiny holes?",
         narration="Do you know why airplane windows have tiny holes? " + "word " * 115,
-    )
-    direct_script = _make_sample_script(
-        hook="Why do airplane windows need a tiny hole?",
-        narration="Why do airplane windows need a tiny hole? " + "word " * 115,
     )
 
     mock_llm = MagicMock()
@@ -568,15 +447,7 @@ def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
         output_tokens=50,
         latency_seconds=1.0,
     )
-    res2 = LLMResult(
-        output=direct_script,
-        provider="openai",
-        model="gpt-mock",
-        input_tokens=120,
-        output_tokens=50,
-        latency_seconds=1.1,
-    )
-    mock_llm.generate_structured.side_effect = [res1, res2]
+    mock_llm.generate_structured.return_value = res1
 
     monkeypatch.setattr("app.steps.script.get_llm", lambda task: mock_llm)
 
@@ -596,12 +467,10 @@ def test_generate_script_step_retries_on_generic_opener_warning(monkeypatch):
 
     result = generate_script_step(DummyVideo(), {}, DummyStep())
 
-    assert mock_llm.generate_structured.call_count == 2
-    retry_prompt = mock_llm.generate_structured.call_args_list[1].kwargs["prompt"]
-    assert "generic formula" in retry_prompt
-    assert result["meta"]["attempts"] == 2
-    assert result["script"]["hook"] == "Why do airplane windows need a tiny hole?"
-    assert result["warnings"] == []
+    # Under Phase 1D.7, generic openers are advisory and do not trigger retries
+    assert mock_llm.generate_structured.call_count == 1
+    assert result["meta"]["attempts"] == 1
+    assert any("generic formula" in w for w in result["warnings"])
 
 
 # ==============================================================================
@@ -622,7 +491,7 @@ def test_evaluate_script_quality_detects_long_sentences_and_textbook_phrasing():
     script = _make_sample_script(hook=hook, narration=narration)
     issues = evaluate_script_quality(script)
 
-    assert any("overly long sentences" in i.lower() for i in issues)
+    assert not any("overly long sentences" in i.lower() for i in issues)
     assert any("textbook or academic phrasing" in i.lower() for i in issues)
     assert any("comma-formatted digits" in i.lower() for i in issues)
 
@@ -641,8 +510,9 @@ def test_evaluate_script_quality_detects_disconnected_fact_list_and_weak_ending(
     script = _make_sample_script(hook=hook, narration=narration)
     issues = evaluate_script_quality(script)
 
-    assert any("disconnected list of facts" in i.lower() for i in issues)
-    assert any("final sentence ends weakly" in i.lower() for i in issues)
+    # Under Phase 1D.7, catalog opener and weak ending heuristics are removed
+    assert not any("disconnected list of facts" in i.lower() for i in issues)
+    assert not any("final sentence ends weakly" in i.lower() for i in issues)
 
 
 def test_evaluate_script_quality_detects_unexplained_jargon_and_repeated_phrases():
@@ -658,7 +528,8 @@ def test_evaluate_script_quality_detects_unexplained_jargon_and_repeated_phrases
     script = _make_sample_script(hook=hook, narration=narration)
     issues = evaluate_script_quality(script)
 
-    assert any("unexplained technical vocabulary" in i.lower() for i in issues)
+    # Jargon syllable heuristic is removed; repeated phrase detection is preserved
+    assert not any("unexplained technical vocabulary" in i.lower() for i in issues)
     assert any("repeats the phrase" in i.lower() or "start with the identical phrase" in i.lower() for i in issues)
 
 
@@ -830,7 +701,7 @@ def test_build_script_prompt_injects_duration_and_word_count():
     )
     assert "**Requested Duration**: 35 to 42 seconds" in prompt
     assert "**Target Spoken Word Count**: 71 to 106 words" in prompt
-    assert "strictly between 71 and 106 words" in prompt
+    assert "between 71 and 106 words" in prompt
 
 
 def test_generate_script_step_retries_on_duration_aware_word_count_failure(monkeypatch):
@@ -921,7 +792,8 @@ def test_evaluate_script_quality_detects_redundant_summary_and_repetitive_subjec
     issues = evaluate_script_quality(script, target_duration_range=(35.0, 45.0), target_word_range=(60, 100))
 
     assert any("redundant summary filler" in i.lower() for i in issues)
-    assert any("repeatedly begins sentences with 'honey'" in i.lower() for i in issues)
+    # Under Phase 1D.7, repetitive leading noun heuristic is removed
+    assert not any("repeatedly begins sentences with 'honey'" in i.lower() for i in issues)
 
 
 def test_soft_checks_flag_formal_textbook_phrases():
@@ -960,16 +832,12 @@ def test_soft_checks_pass_on_natural_conversational_phrasing():
 
 
 def test_build_script_prompt_injects_conversational_voice_guidelines():
-    """Verify build_script_prompt includes explicit conversational voice requirements."""
-    prompt = build_script_prompt(
-        rules_text="Base Rules",
-        topic="Hypnic Jerks",
-        description="Explaining sleep starts",
-    )
-    assert "Conversational Voice Requirement" in prompt
-    assert "real person talking to viewers in a natural, conversational way" in prompt
-    assert "prefer natural contractions" in prompt
-    assert "Avoid formal textbook or encyclopedia phrasing" in prompt
+    """Verify script prompt rules template includes explicit conversational voice requirements."""
+    rules_text, _ = load_prompt_template()
+    assert "Conversational Style" in rules_text
+    assert "real person speaking aloud to a friend" in rules_text
+    assert "prefer natural contractions" in rules_text.lower()
+    assert "avoid textbook & encyclopedia narration" in rules_text.lower()
 
 
 

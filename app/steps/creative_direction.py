@@ -134,7 +134,7 @@ def build_creative_direction_prompt(
                 sections.append(f"- **Lighting Philosophy**: {art.get('lighting_philosophy')}")
         sections.append(
             "- **Note**: Artistic rendering and visual presentation are governed canonical by this frozen visual style preset. "
-            "Creative Direction defines the narrative structure, emotional progression, storytelling angle, and human presence."
+            "Creative Direction defines the narrative structure, storytelling angle, and human presence."
         )
 
     if channel_name or channel_niche or channel_settings:
@@ -162,7 +162,7 @@ def build_creative_direction_prompt(
     sections.append(
         "\n## Instructions\n"
         "Generate a structured CreativeDirectionOutput conforming strictly to the schema. "
-        "Select the most appropriate format archetype, storytelling angle, and emotional arc for this topic.\n"
+        "Select the most appropriate format archetype and storytelling angle for this topic.\n"
         "Apply the balanced character and subject selection guidelines:\n"
         "- When the topic explores human bodily sensations, sleep, dreams, emotions, or physical reflexes, strongly consider defining a relatable human character/subject.\n"
         "- When the topic involves historical crises, disasters, or societal impacts affecting people, consider human_presence='contextual' to represent witnesses, workers, or communities without forcing a recurring hero.\n"
@@ -180,19 +180,10 @@ def validate_creative_direction(cd: CreativeDirectionOutput, topic: str = "") ->
     if cd.protagonist_config.human_presence in ("single", "ensemble") and not cd.protagonist_config.archetype_summary:
         warnings.append("Protagonist config specified characters but provided no archetype summary.")
 
-    if len(cd.emotional_progression) < 3:
-        warnings.append("Emotional progression has fewer than 3 stages; aim for a complete 5-stage emotional arc.")
-
-    if not cd.creative_constraints:
-        warnings.append("No creative constraints specified; provide 3-5 rules to prevent downstream production drift.")
-
     if cd.recommended_duration_seconds < 30 or cd.recommended_duration_seconds > 180:
         warnings.append(
             f"Recommended duration {cd.recommended_duration_seconds}s is outside valid range (30-180 seconds)."
         )
-
-    if cd.narrative_plan and len(cd.narrative_plan.story_progression) < 2:
-        warnings.append("Narrative plan has fewer than 2 story progression stages.")
 
     # Non-blocking advisory check for human sensory/bodily topics with human_presence == "none"
     if cd.protagonist_config.human_presence == "none":

@@ -1774,9 +1774,6 @@ def build_storyboard_prompt(
     hook = script_data.get("hook")
     if hook:
         sections.append(f"- **Opening Hook**: {hook}")
-    angle = script_data.get("angle")
-    if angle:
-        sections.append(f"- **Storytelling Angle**: {angle}")
 
     narration = script_data.get("narration", "")
     sections.append(f"\n### Spoken Script Narration to Split (Reproduce Verbatim):\n{narration}")

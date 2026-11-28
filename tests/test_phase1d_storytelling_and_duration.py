@@ -279,12 +279,10 @@ def test_script_allows_multi_sentence_and_scene_setting_openings():
         title="The Year Without a Summer",
         hook=hook,
         narration=narration,
-        angle="origin story",
         claims_to_verify=[
             "Mount Tambora erupted in eighteen fifteen.",
             "Eighteen sixteen was known as the Year Without a Summer.",
         ],
-        hashtags=["#history", "#volcano", "#weather"],
     )
 
     warnings = validate_script_soft_checks(script, target_duration=60.0)
@@ -310,9 +308,7 @@ def test_script_flags_production_instruction_leakage():
         title="Testing Meta Leakage",
         hook=hook,
         narration=leaked_narration,
-        angle="origin story",
         claims_to_verify=["Mount Tambora erupted."],
-        hashtags=["#history", "#science", "#volcano"],
     )
 
     issues = evaluate_script_quality(script)
@@ -320,7 +316,7 @@ def test_script_flags_production_instruction_leakage():
 
 
 def test_script_ending_guidance():
-    """Verify that clean thematic endings pass, while weak disclaimers are flagged."""
+    """Verify that ending quality is not blocked by rigid subjective ending checks."""
     # Good ending: Resonant historical capstone
     good_hook = "Why did summer never arrive in eighteen sixteen?"
     good_narr = (
@@ -332,25 +328,21 @@ def test_script_ending_guidance():
         title="Good Ending",
         hook=good_hook,
         narration=good_narr,
-        angle="origin story",
         claims_to_verify=["Claim"],
-        hashtags=["#history", "#science", "#nature"],
     )
     issues_good = evaluate_script_quality(good_script)
     assert not any("ends weakly" in i for i in issues_good)
 
-    # Bad ending: Academic hedging or CTA
+    # Under Phase 1D.7 simplification, subjective weak-ending heuristics are removed
     bad_narr = good_narr + " But more research is needed."
     bad_script = ScriptOutput(
-        title="Bad Ending",
+        title="Ending with research note",
         hook=good_hook,
         narration=bad_narr,
-        angle="origin story",
         claims_to_verify=["Claim"],
-        hashtags=["#history", "#science", "#nature"],
     )
     issues_bad = evaluate_script_quality(bad_script)
-    assert any("ends weakly" in i for i in issues_bad)
+    assert not any("ends weakly" in i for i in issues_bad)
 
 
 # ==============================================================================
@@ -496,9 +488,7 @@ def test_simple_topic_and_direct_explanation_flexibility():
         title="Why Airplane Windows Have Tiny Holes",
         hook="Why do airplane windows have a tiny hole?",
         narration=direct_body,
-        angle="why it's designed this way",
         claims_to_verify=["Airplane windows have three acrylic panes."],
-        hashtags=["#aviation", "#engineering", "#travel"],
     )
 
     issues = evaluate_script_quality(direct_script, target_word_range=(55, 100))

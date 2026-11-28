@@ -346,7 +346,6 @@ class CreativeDirectionOutput(BaseModel):
     central_thesis: str
     tone: str
     protagonist_config: ProtagonistConfig
-    emotional_progression: list[EmotionalBeat] = Field(default_factory=list)
     creative_constraints: list[str] = Field(default_factory=list)
     narrative_plan: NarrativePlan | None = Field(default=None, description="Detailed narrative storytelling plan")
     recommended_duration_seconds: int = Field(

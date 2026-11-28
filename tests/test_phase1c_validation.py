@@ -32,7 +32,7 @@ from app.styles.registry import get_style
 # ==============================================================================
 
 def test_creative_direction_schema_has_no_visual_genre():
-    """Verify visual_genre is removed from CreativeDirectionOutput."""
+    """Verify visual_genre and emotional_progression are removed from CreativeDirectionOutput."""
     cd = CreativeDirectionOutput(
         format_archetype="deep_dive",
         storytelling_angle="Distant climate domino effect",
@@ -44,6 +44,8 @@ def test_creative_direction_schema_has_no_visual_genre():
     )
     assert not hasattr(cd, "visual_genre")
     assert "visual_genre" not in cd.model_dump()
+    assert not hasattr(cd, "emotional_progression")
+    assert "emotional_progression" not in cd.model_dump()
 
 
 def test_filter_conflicting_channel_settings():

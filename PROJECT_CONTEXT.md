@@ -139,23 +139,63 @@ The obsolete per-scene audio architecture has been completely removed from the b
 
 ### 2. Story-Driven Creative Direction (`app/prompts/creative_direction.md` & `app/steps/creative_direction.py`)
 
-- **Version**: `creative-direction-v4`.
+- **Version**: `creative-direction-v5`.
 - **Narrative Archetypes & Flexibility**: Story-driven structures replace formulaic templates. Narrative stages and pacing allocations serve as flexible guidance. Simple topics or direct explainers do not require artificial tension, manufactured conflict, or forced philosophical endings. Direct storytelling and simple explanations remain fully valid.
+- **Removed Unconsumed Fields**: `emotional_progression` has been removed from `CreativeDirectionOutput` schema and prompts, eliminating unconsumed overhead.
 - **Factual Integrity on Sensory Details**: When sensory scene-setting or hypothetical viewpoints are used, they must ground documented reality without introducing unsupported factual claims, fake events, or fabricated quotes.
-- **Narrative Plan**: Explicit stages (`stage_name`, `target_beat_percentage`, `pacing`, `story_beat_goal`, `emotional_target`).
+- **Narrative Plan**: High-level flexible planning guidance (`narrative_perspective`, `opening_situation`, `information_revelation_strategy`, `story_progression`, `audience_takeaway`, `resolution_payoff`) without rigid stage count quotas.
+- **Creative Constraints**: Made strictly optional (0 to 3); empty `creative_constraints = []` is fully valid when standard guidelines suffice.
 - **Duration Recommendation**: Evaluates topic complexity to propose `recommended_duration_seconds` and `duration_rationale` (or respects manual duration in `resolved_target_duration`).
 
 ### 3. High-Retention Narration & Script Quality (`app/prompts/script.md` & `app/steps/script.py`)
 
-- **Version**: `script-v2`.
-- **Flexible Openings**:
-  - Relaxed obsolete 4–10 word hook constraint; allows punchy single sentences or 1–3 sentence immersive cold opens.
-  - Scene-setting phrases such as `"Imagine"` or `"Picture this"` are explicitly permitted for sensory grounding (banned only as empty meta-windups).
+- **Version**: `script-v3`.
+- **Narrative Progression Across Scenes (Removal of Rules 17 & 66)**:
+  - Eliminated micro-level sentence restrictions ("Each sentence must introduce new progression" and "Every sentence must advance the narrative").
+  - Narrative progression is evaluated across the overall scene arc, explicitly encouraging atmospheric scene-setting, sensory grounding, and physical texture.
+- **Channel Settings Filtering**:
+  - `build_script_prompt()` filters out conflicting artistic instructions from `channel_settings` using `filter_conflicting_channel_settings()` to ensure raw 3D visual styles never leak into spoken narration.
+- **Prompt Simplification**:
+  - Eliminated triple-repeated prompt blocks in `build_script_prompt()` (`### Conversational Voice Requirement` and duplicate `## Instructions`).
+  - Removed obsolete angle enum selection rules and recent-angles de-duplication from script prompts.
+- **Schema Simplification (`ScriptOutput`)**:
+  - Removed unconsumed `angle` field; `format_archetype` from Creative Direction governs angle.
+  - Removed `hashtags` completely (zero product consumers).
+  - Removed `model_config = ConfigDict(extra="ignore")` from `CreativeDirectionOutput` and `ScriptOutput`.
+  - Made `claims_to_verify` optional metadata (`Field(default_factory=list)`) for auditing without failing validation or triggering retries.
+- **Flexible Openings & Payoffs**:
+  - Allows single punchy sentences or multi-sentence atmospheric cold opens without arbitrary 50-word ceilings.
+  - Scene-setting phrases such as `"Imagine"` or `"Picture this"` are explicitly permitted for sensory grounding.
   - Removed mandate for an immediate scientific explanation in sentence 2; tension, mystery, and stakes are encouraged to breathe.
-- **Flexible Payoffs**: Endings can be simple, surprising, emotional, historical, or intellectual depending on the topic. Specific historical references (e.g. Mount Tambora) are not hardcoded into production prompts.
-- **Quality Gate**:
-  - Checks for backstage instruction leakage (e.g., *"Picture a fictional farmer"*, *"As a representative figure"*).
-  - Evaluates dynamic word count targets based on canonical resolved duration and speaking speed.
+  - Endings can be simple, surprising, emotional, historical, or intellectual depending on the topic.
+- **Streamlined Code Validators (`evaluate_script_quality` & `validate_script_soft_checks`)**:
+  - Removed unreliable heuristics and arbitrary thresholds:
+    - Syllable-based jargon detector (`_count_syllables() >= 4` and `EVERYDAY_MULTISYLLABLE_ALLOWLIST`).
+    - Inter-sentence transition cohesion check (`SENTENCE_COHESION_MARKERS` and stem overlap).
+    - Catalog opener detector based on `"Additionally"` / `"Furthermore"` / `"also"`.
+    - Second-sentence filler (`DELAYED_PAYOFF_REGEX`) and deflated question regex (`DEFLATED_HOOK_REVEAL_REGEX`).
+    - Fixed 28-word sentence length and 22.5-word average sentence thresholds.
+    - Fixed 50-word hook ceiling.
+    - Repetitive leading sentence subject check.
+    - Subjective weak-ending check (`WEAK_ENDING_REGEX`).
+  - Retained core safeguards:
+    - Production-note / backstage leakage check (`META_INSTRUCTION_LEAK_REGEX`).
+    - Genuine accidental duplication check (preserves intentional narrative parallelism / rhetorical emphasis).
+    - Epistemic calibration (dogmatic overclaiming check) and redundant meta-summary check.
+    - Hook match check (`narration` must begin verbatim with `hook`).
+- **TTS Normalization & Formatting Safety**:
+  - Verified Kokoro synthesis, text normalization (`normalize_text_for_tts`), balanced chunking, and Vosk acoustic alignment.
+  - Ordinary spoken punctuation (colons, semicolons, dashes, ellipses, quotes, comma-formatted digits) is safely normalized into natural pauses and spoken numbers by the voice pipeline.
+  - Full script regeneration retry is NEVER triggered for safely normalizable punctuation.
+  - Objective technical failures are strictly reserved for unrenderable content: missing narration, bracketed directions/parentheses `[...]`/`(...)`, markdown formatting (`*`, `#`, `` ` ``), emojis, internal production instruction leakage, and significant duration/word deviation (> 25% off bounds).
+- **Adaptive Duration Consistency & Primary Measure**:
+  - `estimate_spoken_duration_seconds()` is the primary duration quality measure, with word count as supporting guidance.
+  - Factors `voice_speed` into word rate, syllable rate, and sentence pause allowances consistently across duration budgeting and estimation.
+  - Duration is treated as an approximate storytelling budget; minor deviations remain advisory warnings.
+- **Objective Retry Policy & Diagnostic Isolation**:
+  - Automatic retry (`attempts = 2`) is gated strictly on objective technical failures; subjective warnings never trigger retries.
+  - When retry triggers, Attempt 1 draft, triggering reasons, and full provider telemetry are stored in `attempts_history`.
+  - Attempt 2 is strictly re-validated; if Attempt 2 fails objective technical validation, it raises `LLMError` so invalid drafts can never silently become authoritative narration or enter downstream generation.
 
 ### 4. Downstream Adaptive Scaling (`app/steps/storyboard.py`, `app/steps/render.py`, `app/steps/subtitles.py`, `app/subtitles/acoustic.py`)
 
@@ -187,7 +227,12 @@ When updating the frontend repository to match this backend cleanup:
      - Mode Selector: `Automatic` (default) vs `Custom Duration`.
      - Target Duration Picker (active when mode is `Custom`): Preset pills (`30s`, `45s`, `60s`, `90s`, `120s`, `180s`) or slider/stepper within `[30, 180]`.
      - Request payload: `{ topic, visual_style_id, duration_mode: "auto" | "manual", target_duration: number | null }`.
-5. **Creative Direction UI Updates**:
-   - Display `narrative_plan.archetype` badge and stages breakdown.
-   - Display `resolved_target_duration` and `duration_rationale`.
+5. **Phase 1D.7 Schema Alignment**:
+   - In Creative Direction interfaces (`types/video.ts`):
+     - Remove `emotional_progression` (no longer emitted by backend).
+     - Ensure `creative_constraints` accepts empty array `[]`.
+     - Render `narrative_plan` with high-level fields (`narrative_perspective`, `opening_situation`, `information_revelation_strategy`, `story_progression`, `audience_takeaway`, `resolution_payoff`).
+   - In Script interfaces:
+     - Remove `angle` and `hashtags` (no longer emitted by backend).
+     - Treat `claims_to_verify` as optional array.
 
